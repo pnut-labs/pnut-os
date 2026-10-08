@@ -1,0 +1,12 @@
+# Made by nuttx-apps' build in src/ (apps/external links there)
+/src/Kconfig
+.kconfig
+.built
+.depend
+Make.dep
+*.o
+*.a
+*.d
+
+# Made by the top-level Makefile
+/build/

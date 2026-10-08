@@ -1,0 +1,9 @@
+############################################################################
+# pnut-os/src/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+include $(wildcard $(APPDIR)/external/*/Make.defs)
