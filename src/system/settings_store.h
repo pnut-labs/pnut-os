@@ -38,15 +38,15 @@
 #define SETTINGS_TEXT_MAX     256
 #define SETTINGS_CHOICES_MAX  16
 
-/* An owner's file holds at most so many bytes: a choice's value is its
- * name, and only a string's value takes a text (its default another)
- */
-
 /* The longest wait before an owner's file is tried again, after its
  * writes failed, in milliseconds
  */
 
 #define SETTINGS_BACKOFF_MAX  60000
+
+/* An owner's file holds at most so many bytes: a choice's value is its
+ * name, and only a string's value takes a text (its default another)
+ */
 
 #define SETTINGS_ENTRY_SMALL  108
 #define SETTINGS_ENTRY_TEXT   331
