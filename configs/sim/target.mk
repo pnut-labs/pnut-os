@@ -10,3 +10,8 @@
 
 BOARD_CONFIG = sim:nsh
 RUN          = $(NUTTX)/nuttx
+
+# libpnut's unit tests, built as programs (src/tests), run in the simulator
+
+TEST         = $(PYTHON) $(ROOT)/tools/sim-test.py $(NUTTX)/nuttx \
+               pnut_test_loop pnut_test_pool pnut_test_timer pnut_test_worker

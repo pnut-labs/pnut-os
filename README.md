@@ -7,8 +7,9 @@ packages. It is written from its design, in
 what the system does and why.
 
 The work has just started. The tree builds NuttX's configurations for the
-simulator, QEMU and the LilyGo T-Deck Max, with nothing of pnut-os in them
-yet.
+simulator, QEMU and the LilyGo T-Deck Max, and the first piece of pnut-os:
+the service library, `libpnut`, tested on the computer and in the
+simulator.
 
 ## Getting the tree
 
@@ -29,6 +30,7 @@ warns when they differ from the commits pnut-os records.
 | every target | GNU make; kconfig-frontends; Python 3 with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc` |
 | `sim` | gcc, zlib's headers |
 | `qemu`, `tdeck-max` | Espressif's toolchain `xtensa-esp-elf` 14.2 (GCC 15 does not build the ESP HAL); esptool; Espressif's QEMU, which has the `esp32s3` machine |
+| `make test` | cmocka (`apt install libcmocka-dev`), or `CMOCKA_CFLAGS` and `CMOCKA_LIBS` naming it |
 
 ## Building
 
@@ -37,6 +39,8 @@ warns when they differ from the commits pnut-os records.
 | `make <target>` | configures NuttX for the target, and builds it |
 | `make <target> run` | builds it, then runs it: `sim` on the computer (`poweroff` leaves), `qemu` in QEMU (Ctrl-A X leaves) |
 | `make <target> flash` | builds it, then writes it to the device |
+| `make test` | runs the unit tests, on the computer |
+| `make <target> test` | builds it, then runs the tests inside it: `sim` runs libpnut's unit tests in the simulator |
 | `make style` | checks pnut-os's C code with NuttX's `nxstyle` |
 | `make clean` | removes the build |
 
@@ -69,18 +73,19 @@ One target is configured at a time; building another configures afresh.
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
-| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target |
+| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging |
+| `src/tests/` | the unit tests, built as programs for the simulator |
+| `tests/unit/` | the unit tests, with cmocka |
+| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator |
 
 As the code arrives:
 
 | Path | What |
 |---|---|
-| `src/lib/` | the service library, `libpnut` |
 | `src/system/<program>/` | the system's programs and their services |
 | `src/apps/<id>/` | built-in apps |
 | `proto/` | the interfaces, topics and schemas, as `.proto` files |
 | `sdk/` | the SDK for app developers |
-| `tests/` | unit and system tests |
 | `docs/` | reference documentation |
 
 ## Contributing

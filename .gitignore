@@ -8,5 +8,12 @@ Make.dep
 *.a
 *.d
 
+# Python's caches
+__pycache__/
+
+# Coverage data, from the simulator's build
+*.gcda
+*.gcno
+
 # Made by the top-level Makefile
 /build/

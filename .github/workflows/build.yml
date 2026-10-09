@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Mateusz Pianka
 
-# The checks on every pull request: every target builds, and the code
-# follows NuttX's style.
+# The checks on every pull request: every target builds, the tests pass on
+# the computer and in the simulator, and the code follows NuttX's style.
 
 name: Build
 
@@ -72,19 +72,42 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: make "$TARGET" PYTHON=/usr/bin/python3
 
-  # One check to require, whatever the list of targets
+      - name: Test in the simulator
+        if: ${{ matrix.target == 'sim' }}
+        run: make sim test PYTHON=/usr/bin/python3
+
+  # One check to require, whatever the list of targets: every target built,
+  # and every test passed
 
   builds:
     name: builds
-    needs: build
+    needs: [build, unit]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Every target built
+      - name: Every target built, every test passed
         env:
-          RESULT: ${{ needs.build.result }}
-        run: test "$RESULT" = success
+          BUILD: ${{ needs.build.result }}
+          UNIT: ${{ needs.unit.result }}
+        run: test "$BUILD" = success && test "$UNIT" = success
+
+  unit:
+    name: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cmocka
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcmocka-dev
+
+      - name: Run the unit tests
+        run: make test
 
   style:
     name: style

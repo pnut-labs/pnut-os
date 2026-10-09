@@ -1,0 +1,16 @@
+############################################################################
+# pnut-os/src/lib/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+ifneq ($(CONFIG_PNUT_LIB),)
+CONFIGURED_APPS += $(APPDIR)/external/lib
+
+# Every program finds the library's headers as <pnut/...>
+
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/lib/include
+CXXFLAGS += ${INCDIR_PREFIX}$(APPDIR)/external/lib/include
+endif

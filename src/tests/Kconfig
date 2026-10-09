@@ -1,0 +1,15 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_TESTS
+	bool "libpnut's unit tests, as programs"
+	default n
+	depends on PNUT_LIB && TESTING_CMOCKA
+	---help---
+		The unit tests of tests/unit, built as NuttX programs:
+		pnut_test_loop, pnut_test_pool, pnut_test_timer and
+		pnut_test_worker.  make <target> test runs them.

@@ -1,0 +1,11 @@
+############################################################################
+# pnut-os/src/tests/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+ifneq ($(CONFIG_PNUT_TESTS),)
+CONFIGURED_APPS += $(APPDIR)/external/tests
+endif

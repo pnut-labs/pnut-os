@@ -1,0 +1,52 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_LIB
+	bool "libpnut, the service library"
+	default n
+	depends on !DISABLE_ALL_SIGNALS && !DISABLE_PTHREAD
+	select EVENT_FD
+	select TIMER_FD
+	select SIGNAL_FD
+	---help---
+		The code every pnut-os program shares (RFC 0023): an event loop on
+		epoll, timers, workers, modules, fixed pools and logging.
+
+if PNUT_LIB
+
+config PNUT_LIB_FDS
+	int "Descriptors a loop watches at once"
+	default 16
+
+config PNUT_LIB_TIMERS
+	int "Timers a loop runs at once"
+	default 16
+
+config PNUT_LIB_JOBS
+	int "Jobs a loop queues at once"
+	default 8
+
+config PNUT_LIB_WORKERS
+	int "Worker threads of a loop"
+	default 1
+
+config PNUT_LIB_WORKER_STACKSIZE
+	int "A worker's stack, in bytes"
+	default 4096
+
+config PNUT_LIB_BUDGET
+	int "A handler's budget, in milliseconds"
+	default 10
+	---help---
+		A handler that runs longer is logged (RFC 0007).  Zero turns the
+		check off.
+
+config PNUT_LIB_LOG_LINE
+	int "The longest log line, in characters"
+	default 160
+
+endif # PNUT_LIB
