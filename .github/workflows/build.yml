@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Mateusz Pianka
 
-# The checks on every pull request: the simulator's target builds, and the
-# code follows NuttX's style.  QEMU's and the device's targets join once a
-# container image holds Espressif's toolchain.
+# The checks on every pull request: every target builds, and the code
+# follows NuttX's style.
 
 name: Build
 
@@ -15,21 +14,36 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request or branch cancels the older run
+# A newer push to the same pull request cancels the older run; every push
+# to master is checked
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Espressif's toolchain and esptool, pinned as in pnut-labs/nuttx's own
+# checks; bump them deliberately.  GCC 15 does not build the ESP HAL of
+# NuttX 13.1, so the toolchain stays at 14.
+
+env:
+  XTENSA_GCC: esp-14.2.0_20260121
+  XTENSA_GCC_SHA256: da31f36d79d4e99f24e55a90a71e65d5694714f16199960bf7885724b706a48c
+  ESPTOOL: 5.4.0
 
 jobs:
-  sim:
-    name: build-sim
+  build:
+    name: build (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [sim, qemu, tdeck-max]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Install the host's tools
         run: |
@@ -37,8 +51,40 @@ jobs:
           sudo apt-get install -y kconfig-frontends python3-kconfiglib \
             genromfs xxd zlib1g-dev
 
+      - name: Install Espressif's toolchain and esptool
+        if: ${{ matrix.target != 'sim' }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install "esptool==$ESPTOOL"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          version=${XTENSA_GCC#esp-}
+          curl -fsSL -o "$RUNNER_TEMP/xtensa.tar.xz" \
+            "https://github.com/espressif/crosstool-NG/releases/download/$XTENSA_GCC/xtensa-esp-elf-$version-x86_64-linux-gnu.tar.xz"
+          echo "$XTENSA_GCC_SHA256  $RUNNER_TEMP/xtensa.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/xtensa.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xtensa-esp-elf/bin" >> "$GITHUB_PATH"
+
+      # esptool's venv comes first on the PATH and has no kconfiglib, so
+      # name the system's Python, which has it
+
       - name: Build
-        run: make sim
+        env:
+          TARGET: ${{ matrix.target }}
+        run: make "$TARGET" PYTHON=/usr/bin/python3
+
+  # One check to require, whatever the list of targets
+
+  builds:
+    name: builds
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every target built
+        env:
+          RESULT: ${{ needs.build.result }}
+        run: test "$RESULT" = success
 
   style:
     name: style
@@ -48,6 +94,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Check
         run: make style

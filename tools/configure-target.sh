@@ -40,10 +40,13 @@ if ! command -v kconfig-tweak > /dev/null; then
 fi
 
 # merge_config.py exits with success when kconfiglib is missing, so this
-# check is what stops the build
+# check is what stops the build.  ESP-IDF's Python environment carries a
+# kconfiglib of its own (it has no VERSION), which cannot read NuttX's
+# Kconfig.
 
-if ! "$python" -c 'import kconfiglib' 2> /dev/null; then
-  echo "error: $python has no kconfiglib, which merge_config.py needs" >&2
+if ! "$python" -c 'import kconfiglib; kconfiglib.VERSION' 2> /dev/null; then
+  echo "error: $python has no kconfiglib, or has ESP-IDF's, which cannot" \
+       "read NuttX's Kconfig; name another Python with PYTHON=" >&2
   exit 1
 fi
 
