@@ -12,6 +12,7 @@
 #   make <target> run     build, then run it (the simulator, QEMU)
 #   make <target> flash   build, then write it to the device
 #   make test             run the unit tests, on the computer
+#   make gen              generate the interfaces' code from proto/
 #   make <target> test    build, then run the tests inside it (sim)
 #   make style            check pnut-os's C code with NuttX's nxstyle
 #   make clean            remove the build
@@ -27,6 +28,16 @@ BUILD   := $(ROOT)/build
 PYTHON  ?= python3
 JOBS    ?= $(shell nproc 2> /dev/null || echo 1)
 
+# nanopb, pinned (below), and the interfaces' code generated in build/gen
+
+NANOPB_VERSION := 0.4.9.1
+NANOPB_SHA256  := 882cd8473ad932b24787e676a808e4fb29c12e086d20bcbfbacc66c183094b5c
+NANOPB_TARBALL := $(BUILD)/dl/nanopb-$(NANOPB_VERSION).tar.gz
+NANOPB         := $(BUILD)/nanopb-$(NANOPB_VERSION)
+NANOPB_LINK    := $(APPS)/netutils/nanopb/nanopb
+GEN            := $(BUILD)/gen
+PROTOS         := $(shell find proto tests/proto -name '*.proto' 2> /dev/null)
+
 # NuttX builds with -j$(JOBS), unless make was given its own -j; decided
 # in the recipe, since make 4.3 sets MAKEFLAGS only after parsing
 
@@ -38,6 +49,7 @@ TARGET  := $(firstword $(GOALS))
 
 .DEFAULT_GOAL := help
 .PHONY: help $(TARGETS) run flash test style clean submodules external force
+.PHONY: nanopb gen
 
 ifneq ($(word 2,$(GOALS)),)
   $(error one target at a time: $(GOALS))
@@ -89,12 +101,16 @@ ifneq ($(shell cat $(BUILD)/target 2> /dev/null),$(TARGET))
   RECONFIGURE := force
 endif
 
-$(TARGET): $(NUTTX)/.config
+# Configuring runs nuttx-apps' distclean, which removes the nanopb link:
+# it is made again here, after configuring, before building
+
+$(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
+	$(nanopb_link)
 	$(MAKE) -C $(NUTTX) $(NUTTXJOBS)
 
 .PRECIOUS: $(NUTTX)/.config
 
-$(NUTTX)/.config: configs/$(TARGET)/target.mk configs/$(TARGET)/fragment.config $(RECONFIGURE) | submodules external
+$(NUTTX)/.config: configs/$(TARGET)/target.mk configs/$(TARGET)/fragment.config $(RECONFIGURE) | submodules external nanopb
 	rm -f $(BUILD)/target
 	PYTHON=$(PYTHON) $(ROOT)/tools/configure-target.sh \
 	  $(NUTTX) $(BOARD_CONFIG) $(ROOT)/configs/$(TARGET)/fragment.config
@@ -131,11 +147,52 @@ external: | submodules
 	fi
 	@ln -sfn ../src $(APPS)/external
 
+# nanopb (RFC 0023), pinned and checked, in a directory named for its
+# version, so that a new version is fetched.  NuttX's build compiles it
+# through nuttx-apps' package, which finds it at the link instead of
+# downloading its own; the unit tests compile it from here; its generator
+# runs on the computer.
+
+define nanopb_link
+	@if [ -e $(NANOPB_LINK) ] && [ ! -L $(NANOPB_LINK) ]; then \
+	  echo "error: $(NANOPB_LINK) is nuttx-apps' own download: remove it" >&2; \
+	  exit 1; \
+	fi
+	@ln -sfn $(NANOPB) $(NANOPB_LINK)
+endef
+
+nanopb: $(NANOPB)/pb.h | submodules
+	$(nanopb_link)
+
+$(NANOPB)/pb.h:
+	rm -rf $(NANOPB) $(NANOPB).tmp
+	mkdir -p $(BUILD)/dl $(NANOPB).tmp
+	curl -fsSL -o $(NANOPB_TARBALL) \
+	  https://jpa.kapsi.fi/nanopb/download/nanopb-$(NANOPB_VERSION).tar.gz
+	echo "$(NANOPB_SHA256)  $(NANOPB_TARBALL)" | sha256sum -c -
+	tar xzf $(NANOPB_TARBALL) -C $(NANOPB).tmp --strip-components=1
+	mv $(NANOPB).tmp $(NANOPB)
+
+# The interfaces' code (RFC 0023), made afresh in build/gen whenever a
+# .proto file or the generator changes, or a .proto file comes or goes
+# (the list of them changes); never committed
+
+gen: $(GEN)/.stamp
+
+$(BUILD)/protos: force
+	@mkdir -p $(BUILD)
+	@printf '%s\n' $(sort $(PROTOS)) > $@.new
+	@if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+
+$(GEN)/.stamp: $(PROTOS) $(BUILD)/protos tools/protoc-gen-pnut tools/generate.sh $(NANOPB)/pb.h
+	$(ROOT)/tools/generate.sh $(ROOT) $(GEN) $(PYTHON) $(NANOPB)
+	touch $@
+
 # The unit tests: libpnut built for the computer, with cmocka
 
 ifneq ($(TARGETTEST),y)
-test:
-	$(MAKE) -C tests/unit
+test: $(GEN)/.stamp
+	$(MAKE) -C tests/unit GEN=$(GEN) NANOPB=$(NANOPB)
 endif
 
 # Style: NuttX's nxstyle on every C file of pnut-os, submodules apart

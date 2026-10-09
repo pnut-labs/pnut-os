@@ -4,3 +4,6 @@
 [submodule "apps"]
 	path = apps
 	url = https://github.com/pnut-labs/nuttx-apps.git
+	# The build links nanopb into it (Makefile), which its own .gitignore,
+	# made for a directory, does not cover
+	ignore = untracked

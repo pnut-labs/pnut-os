@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// pnut-os's own options, read by tools/protoc-gen-pnut (RFC 0023): what
+// the library needs to know of an interface beyond its messages.
+
+syntax = "proto2";
+
+package pnut;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.ServiceOptions {
+  // The interface's number, from proto/interfaces.md; never reused
+  optional uint32 iface = 51000;
+}
+
+extend google.protobuf.MethodOptions {
+  // The method's number in its interface, from 1; never reused
+  optional uint32 method = 51000;
+
+  // The method's version, from 1: a new one when its messages change
+  // meaning (RFC 0005)
+  optional uint32 version = 51001 [default = 1];
+
+  // The permission a caller needs (RFC 0009); none when empty
+  optional string permission = 51002;
+}

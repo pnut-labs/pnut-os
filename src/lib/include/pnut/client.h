@@ -20,6 +20,18 @@
 #include <pnut/loop.h>
 
 /****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* Calls a client has in flight at once, unless it says otherwise */
+
+#ifdef CONFIG_PNUT_LIB_INFLIGHT
+#  define PNUT_CLIENT_INFLIGHT  CONFIG_PNUT_LIB_INFLIGHT
+#else
+#  define PNUT_CLIENT_INFLIGHT  8
+#endif
+
+/****************************************************************************
  * Public Types
  ****************************************************************************/
 

@@ -49,7 +49,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y kconfig-frontends python3-kconfiglib \
-            genromfs xxd zlib1g-dev
+            genromfs xxd zlib1g-dev protobuf-compiler python3-protobuf
 
       - name: Install Espressif's toolchain and esptool
         if: ${{ matrix.target != 'sim' }}
@@ -101,10 +101,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install cmocka
+      - name: Install cmocka and protoc
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcmocka-dev
+          sudo apt-get install -y libcmocka-dev protobuf-compiler \
+            python3-protobuf
 
       - name: Run the unit tests
         run: make test

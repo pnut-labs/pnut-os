@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// An interface for libpnut's tests of the generated code
+
+syntax = "proto3";
+
+package pnut.test;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Echo {
+  option (pnut.iface) = 65000;
+
+  // Answers with the text, and how many times anything was said
+  rpc Say (SayRequest) returns (SayReply) {
+    option (pnut.method) = 1;
+    option (pnut.permission) = "test.say";
+  }
+
+  // How many times anything was said; the tests leave it unserved
+  rpc Count (CountRequest) returns (CountReply) {
+    option (pnut.method) = 2;
+    option (pnut.version) = 2;
+  }
+}
+
+message SayRequest {
+  string text = 1 [(nanopb).max_size = 64];
+}
+
+message SayReply {
+  string text = 1 [(nanopb).max_size = 64];
+  uint32 count = 2;
+}
+
+message CountRequest {
+}
+
+message CountReply {
+  uint32 count = 1;
+}
