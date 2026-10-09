@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// A topic for libpnut's tests
+
+syntax = "proto3";
+
+package pnut.test;
+
+import "pnut/options.proto";
+
+// A count, published again and again
+message Tick {
+  option (pnut.topic) = "test_tick";
+  option (pnut.depth) = 4;
+
+  uint32 count = 1;
+}

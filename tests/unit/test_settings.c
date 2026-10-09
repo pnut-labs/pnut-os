@@ -65,6 +65,10 @@ struct service_s
   char dir[64];
   bool reread;                    /* Only read the value back */
   bool two;                       /* Two owners, then wait */
+  struct pnut_settings_change_reader_s changes;
+  int nchanges;                   /* Changes announced */
+  char keys[16][66];              /* Their keys */
+  uint32_t versions[16];          /* And versions */
   int step;                       /* Where the calls have got to */
   int status;                     /* The last answer's */
   uint32_t code;                  /* And its detail's code, if any */
@@ -898,8 +902,24 @@ static void service_next(FAR struct service_s *s)
         break;
 
       default:
-        pnut_loop_stop(s->loop, 0);
+
+        /* A moment for the last change to be announced */
+
+        pnut_timer_start(s->loop, 50, 0, service_stop, NULL, NULL);
         break;
+    }
+}
+
+static void service_change(FAR struct pnut_settings_change_reader_s *reader,
+                           FAR const pnut_settings_change_t *msg,
+                           FAR void *arg)
+{
+  FAR struct service_s *s = arg;
+
+  if (s->nchanges < 16 && strcmp(msg->owner, OWNER) == 0)
+    {
+      strcpy(s->keys[s->nchanges], msg->key);
+      s->versions[s->nchanges++] = msg->version;
     }
 }
 
@@ -929,8 +949,11 @@ static void service_run(FAR struct service_s *s, bool reread)
   settings_init(&s->settings, &sconfig);
   assert_int_equal(pnut_module_add(s->loop, &s->settings.module), 0);
 
-  s->step   = 0;
-  s->reread = reread;
+  s->step     = 0;
+  s->reread   = reread;
+  s->nchanges = 0;
+  assert_int_equal(pnut_settings_change_subscribe(s->loop, service_change,
+                                                  s, &s->changes), 0);
   assert_int_equal(pnut_settings_connect(s->loop, SETTINGS_SERVICE,
                                          service_state, s, &s->client), 0);
   pnut_timer_start(s->loop, s->two ? 500 : 2000, 0, service_stop, NULL,
@@ -938,8 +961,22 @@ static void service_run(FAR struct service_s *s, bool reread)
   assert_int_equal(pnut_loop_run(s->loop), 0);
 
   pnut_settings_disconnect(&s->client);
+  pnut_settings_change_unsubscribe(&s->changes);
   pnut_loop_destroy(s->loop);
   settings_deinit(&s->settings);
+}
+
+/* Remove a test's directory, with the settings topic's, on the computer */
+
+static void service_clean(FAR struct service_s *s)
+{
+  char path[160];
+
+  snprintf(path, sizeof(path), "%s/topic.settings/last", s->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.settings", s->dir);
+  rmdir(path);
+  rmdir(s->dir);
 }
 
 static void test_settings_service(void **state)
@@ -956,6 +993,16 @@ static void test_settings_service(void **state)
   assert_int_equal(s->step, 4);
   assert_int_equal(s->status, PNUT_STATUS_OK);
   assert_int_equal(s->value.value.integer, 8);
+
+  /* Announced: the schema, then the value set, one version after; on
+   * NuttX the topic's latest, from before, may come first
+   */
+
+  assert_true(s->nchanges >= 2);
+  assert_string_equal(s->keys[s->nchanges - 2], "");
+  assert_string_equal(s->keys[s->nchanges - 1], "volume");
+  assert_int_equal(s->versions[s->nchanges - 1],
+                   s->versions[s->nchanges - 2] + 1);
 
   /* Written as the module stopped, at the latest */
 
@@ -981,7 +1028,7 @@ static void test_settings_service(void **state)
   assert_int_equal(stat(path, &st), 0);
 
   unlink(path);
-  rmdir(s->dir);
+  service_clean(s);
   free(s);
 }
 
@@ -1013,7 +1060,7 @@ static void test_settings_service_starve(void **state)
   assert_int_not_equal(stat(path, &st), 0);
 
   rmdir(blocked);
-  rmdir(s->dir);
+  service_clean(s);
   free(s);
 }
 
@@ -1042,7 +1089,7 @@ static void test_settings_service_unreadable(void **state)
   assert_true(S_ISDIR(st.st_mode));
 
   rmdir(path);
-  rmdir(s->dir);
+  service_clean(s);
   free(s);
 }
 
@@ -1084,7 +1131,7 @@ static void test_settings_service_bad_file(void **state)
 
   unlink(bad);
   unlink(path);
-  rmdir(s->dir);
+  service_clean(s);
   free(s);
 }
 

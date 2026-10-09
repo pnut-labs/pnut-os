@@ -680,6 +680,39 @@ static void settings_flush(FAR struct settings_s *settings)
 }
 
 /****************************************************************************
+ * Name: settings_changed
+ *
+ * Description:
+ *   Announce a change on the settings topic: the owner and the key, or
+ *   none when several of its settings may have changed (RFC 0025).
+ *
+ ****************************************************************************/
+
+static void settings_changed(FAR struct settings_s *settings,
+                             FAR const char *owner, FAR const char *key)
+{
+  pnut_settings_change_t msg;
+  int ret;
+
+  if (settings->changes == NULL)
+    {
+      return;
+    }
+
+  memset(&msg, 0, sizeof(msg));
+  strlcpy(msg.owner, owner, sizeof(msg.owner));
+  strlcpy(msg.key, key, sizeof(msg.key));
+  msg.version = ++settings->version;
+
+  ret = pnut_settings_change_publish(settings->changes, &msg);
+  if (ret < 0)
+    {
+      pnut_log(&settings->module, PNUT_LOG_WARNING,
+               "Cannot announce a change: %d", ret);
+    }
+}
+
+/****************************************************************************
  * Name: settings_register_schema
  ****************************************************************************/
 
@@ -711,6 +744,15 @@ settings_register_schema(FAR struct pnut_settings_server_s *server,
   if (load)
     {
       settings_load(settings, in->owner);
+    }
+
+  /* A schema whole: values may have come from the file, gone back to
+   * their defaults, or gone
+   */
+
+  if (in->last)
+    {
+      settings_changed(settings, in->owner, "");
     }
 
   settings_schedule(settings);
@@ -770,6 +812,7 @@ static void settings_set(FAR struct pnut_settings_server_s *server,
 
   if (changed)
     {
+      settings_changed(settings, in->owner, in->key);
       settings_schedule(settings);
     }
 
@@ -800,6 +843,7 @@ static void settings_reset(FAR struct pnut_settings_server_s *server,
 
   if (changed)
     {
+      settings_changed(settings, in->owner, in->key);
       settings_schedule(settings);
     }
 
@@ -889,6 +933,16 @@ static int settings_start(FAR struct pnut_module_s *module,
       goto errout;
     }
 
+  /* Changes are announced where there are topics; Settings serves without
+   * them
+   */
+
+  ret = pnut_settings_change_advertise(loop, &settings->changes);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_WARNING, "No settings topic: %d", ret);
+    }
+
   ret = pnut_settings_serve(loop, SETTINGS_SERVICE, 0, &g_settings_handlers,
                             settings, &settings->server);
   if (ret < 0)
@@ -902,6 +956,8 @@ static int settings_start(FAR struct pnut_module_s *module,
   return OK;
 
 errout:
+  pnut_topic_unadvertise(settings->changes);
+  settings->changes = NULL;
   free(settings->buffer);
   settings->buffer = NULL;
   settings_store_deinit(&settings->store);
@@ -930,6 +986,9 @@ static void settings_stop(FAR struct pnut_module_s *module,
       pnut_settings_close(&settings->server);
       settings->serving = false;
     }
+
+  pnut_topic_unadvertise(settings->changes);
+  settings->changes = NULL;
 }
 
 /****************************************************************************

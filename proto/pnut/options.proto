@@ -2,7 +2,8 @@
 // Copyright 2026 Mateusz Pianka
 
 // pnut-os's own options, read by tools/protoc-gen-pnut (RFC 0023): what
-// the library needs to know of an interface beyond its messages.
+// the library needs to know of an interface and its topics beyond their
+// messages.
 
 syntax = "proto2";
 
@@ -13,6 +14,18 @@ import "google/protobuf/descriptor.proto";
 extend google.protobuf.ServiceOptions {
   // The interface's number, from proto/interfaces.md; never reused
   optional uint32 iface = 51000;
+}
+
+extend google.protobuf.MessageOptions {
+  // The uORB topic the message is published on (RFC 0005): lowercase
+  // letters, digits and underscores, at most 20 of them (uORB's path to
+  // it, /dev/uorb/<name><instance>, must fit 32 bytes), one topic to a
+  // top-level message
+  optional string topic = 51000;
+
+  // How many messages the topic keeps for a reader who has not read them:
+  // one for a topic that carries state, more for events
+  optional uint32 depth = 51001 [default = 1];
 }
 
 extend google.protobuf.MethodOptions {

@@ -172,6 +172,25 @@ message SettingsSchema {
   bool more = 2;
 }
 
+// A change of settings, on the settings topic: never a value, since any
+// native program may read a topic (RFC 0025).  The version is Settings'
+// count of changes, all owners' together, one up for each message, from 1
+// when it starts: a reader who sees a gap, or a smaller one, has missed
+// changes and reads its settings again.  A reader who cares for some
+// owners only looks at every message's version all the same.
+message SettingsChange {
+  option (pnut.topic) = "settings";
+  option (pnut.depth) = 8;
+
+  string owner = 1 [(nanopb).max_size = 65];
+
+  // Empty when several of the owner's settings may have changed: its
+  // schema was registered, or all were reset
+  string key = 2 [(nanopb).max_size = 65];
+
+  uint32 version = 3;
+}
+
 // An owner's file in flash: its values, by key
 message SettingsFile {
   repeated SettingsEntry entries = 1;
