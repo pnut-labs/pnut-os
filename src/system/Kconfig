@@ -1,0 +1,65 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_SYSTEM
+	bool "The system program"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB
+	---help---
+		pnut_system, the program of the services every other program waits
+		on (RFC 0007).  So far it serves Settings (RFC 0025).
+
+if PNUT_SYSTEM
+
+config PNUT_SYSTEM_STACKSIZE
+	int "Its stack, in bytes"
+	default 8192
+
+config PNUT_SETTINGS_DIR
+	string "Where the settings' files are"
+	default "/tmp/settings"
+	---help---
+		One file for each owner.  /var/lib/settings once the device has a
+		file system in flash (RFC 0010); in /tmp, settings are lost at a
+		restart.
+
+config PNUT_SETTINGS_OWNERS
+	int "Owners of settings"
+	default 16
+	range 1 255
+
+config PNUT_SETTINGS_MAX
+	int "Settings, all owners' together"
+	default 256
+	range 1 65535
+	---help---
+		About 240 bytes each, with its key, label, group, unit, range and
+		value.
+
+config PNUT_SETTINGS_TEXTS
+	int "Strings, values and defaults together"
+	default 64
+	range 2 65535
+	---help---
+		About 270 bytes each; a string setting takes two, its value and
+		its default.
+
+config PNUT_SETTINGS_CHOICES
+	int "Choices' names, all settings' together"
+	default 128
+	range 1 65535
+	---help---
+		About 40 bytes each.
+
+config PNUT_SETTINGS_DELAY
+	int "From a change to its write, in milliseconds"
+	default 1000
+	range 1 60000
+	---help---
+		A burst of changes makes one write (RFC 0025).
+
+endif # PNUT_SYSTEM
