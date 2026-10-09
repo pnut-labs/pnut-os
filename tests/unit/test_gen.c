@@ -48,10 +48,34 @@ struct fixture_s
   char text[64];
   bool later;                     /* Answer later */
   bool silent;                    /* Never answer */
+  int failwith;                   /* Answer with this error status */
+  bool bare;                      /* The error without its detail */
+  FAR const char *why;            /* The detail's text */
   int expect;                     /* Answers to wait for */
   int answers;
   int status[PNUT_CLIENT_INFLIGHT + 2];
   pnut_test_say_reply_t out[PNUT_CLIENT_INFLIGHT + 2];
+  bool detail[PNUT_CLIENT_INFLIGHT + 2];
+  pnut_error_t err[PNUT_CLIENT_INFLIGHT + 2];
+};
+
+/****************************************************************************
+ * Private Function Prototypes
+ ****************************************************************************/
+
+static void h_junk(FAR struct pnut_service_s *service,
+                   FAR const struct pnut_request_s *req,
+                   FAR const uint8_t *payload, uint16_t len, FAR void *arg);
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+/* Say, served by hand: answers with a detail that does not decode */
+
+static const struct pnut_method_s g_junk[] =
+{
+  { PNUT_TEST_ECHO_IFACE, PNUT_TEST_ECHO_SAY, 1, h_junk, 16 },
 };
 
 /****************************************************************************
@@ -66,8 +90,16 @@ static void stop_timer(FAR struct pnut_loop_s *loop,
 
 /* An answer came: the test is over once all it waits for have */
 
-static void answered(FAR struct fixture_s *f, int status)
+static void answered(FAR struct fixture_s *f, int status,
+                     FAR const pnut_error_t *err)
 {
+  if (err != NULL)
+    {
+      assert_int_not_equal(status, PNUT_STATUS_OK);
+      f->detail[f->answers] = true;
+      f->err[f->answers] = *err;
+    }
+
   f->status[f->answers++] = status;
   if (f->answers == f->expect)
     {
@@ -101,6 +133,22 @@ static void on_say(FAR struct pnut_test_echo_server_s *server,
       return;
     }
 
+  if (f->failwith != PNUT_STATUS_OK && f->bare)
+    {
+      assert_int_equal(pnut_test_echo_say_reply(server, req, f->failwith,
+                                                NULL), 0);
+      return;
+    }
+
+  if (f->failwith != PNUT_STATUS_OK)
+    {
+      assert_int_equal(pnut_test_echo_fail(server, req, PNUT_STATUS_OK, 1,
+                                           "ok is no error"), -EINVAL);
+      assert_int_equal(pnut_test_echo_fail(server, req, f->failwith, 7,
+                                           f->why), 0);
+      return;
+    }
+
   if (f->later)
     {
       f->kept = *req;
@@ -122,6 +170,15 @@ static void on_count(FAR struct pnut_test_echo_server_s *server,
   FAR struct fixture_s *f = arg;
   pnut_test_count_reply_t out = PNUT_TEST_COUNT_REPLY_INIT_ZERO;
 
+  /* Its answer is a few bytes, and its room an error's detail */
+
+  if (f->failwith != PNUT_STATUS_OK)
+    {
+      assert_int_equal(pnut_test_echo_fail(server, req, f->failwith, 9,
+                                           f->why), 0);
+      return;
+    }
+
   out.count = f->said;
   assert_int_equal(pnut_test_echo_count_reply(server, req, PNUT_STATUS_OK,
                                               &out), 0);
@@ -142,7 +199,7 @@ static const struct pnut_test_echo_handlers_s g_all =
 
 static void on_said(FAR struct pnut_test_echo_client_s *client,
                     int status, FAR const pnut_test_say_reply_t *out,
-                    FAR void *arg)
+                    FAR const pnut_error_t *err, FAR void *arg)
 {
   FAR struct fixture_s *f = arg;
 
@@ -155,12 +212,12 @@ static void on_said(FAR struct pnut_test_echo_client_s *client,
       assert_int_not_equal(status, PNUT_STATUS_OK);
     }
 
-  answered(f, status);
+  answered(f, status, err);
 }
 
 static void on_counted(FAR struct pnut_test_echo_client_s *client,
                        int status, FAR const pnut_test_count_reply_t *out,
-                       FAR void *arg)
+                       FAR const pnut_error_t *err, FAR void *arg)
 {
   FAR struct fixture_s *f = arg;
 
@@ -174,7 +231,7 @@ static void on_counted(FAR struct pnut_test_echo_client_s *client,
       assert_null(out);
     }
 
-  answered(f, status);
+  answered(f, status, err);
 }
 
 static void on_raw(FAR struct pnut_client_s *client, int status,
@@ -182,7 +239,7 @@ static void on_raw(FAR struct pnut_client_s *client, int status,
 {
   FAR struct fixture_s *f = arg;
 
-  answered(f, status);
+  answered(f, status, NULL);
 }
 
 static int setup(void **state)
@@ -431,6 +488,108 @@ static void test_gen_unencodable(void **state)
   assert_int_equal(f->said, 0);
 }
 
+/* An error answer with its detail: the interface's code and a text */
+
+static void test_gen_fail(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  int i;
+
+  f->failwith = PNUT_STATUS_INVALID;
+  f->why      = "read-only";
+  run(f, say_state, 2);
+  assert_int_equal(f->answers, 2);
+  for (i = 0; i < 2; i++)
+    {
+      assert_int_equal(f->status[i], PNUT_STATUS_INVALID);
+      assert_true(f->detail[i]);
+      assert_int_equal(f->err[i].code, 7);
+      assert_string_equal(f->err[i].text, "read-only");
+    }
+}
+
+/* An error answer without one */
+
+static void test_gen_fail_bare(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  f->failwith = PNUT_STATUS_UNAVAILABLE;
+  f->bare     = true;
+  run(f, say_state, 2);
+  assert_int_equal(f->answers, 2);
+  assert_int_equal(f->status[0], PNUT_STATUS_UNAVAILABLE);
+  assert_false(f->detail[0]);
+  assert_int_equal(f->status[1], PNUT_STATUS_UNAVAILABLE);
+  assert_false(f->detail[1]);
+}
+
+/* A method whose answer is a few bytes has room for an error's whole
+ * detail; a longer text is cut, and not inside a character
+ */
+
+static void test_gen_fail_long(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  char why[100];
+  char cut[64];
+
+  /* 62 letters, then a two-byte character whose first byte is the 63rd,
+   * so that it straddles the cut
+   */
+
+  memset(why, 'a', sizeof(why) - 1);
+  why[sizeof(why) - 1] = '\0';
+  why[62] = (char)0xc5;
+  why[63] = (char)0x82;
+  memset(cut, 'a', 62);
+  cut[62] = '\0';
+
+  pnut_test_echo_close(&f->server);
+  assert_int_equal(pnut_test_echo_serve(f->loop, "echo", 0, &g_all, f,
+                                        &f->server), 0);
+  f->failwith = PNUT_STATUS_DENIED;
+  f->why      = why;
+  run(f, count_state, 1);
+  assert_int_equal(f->answers, 1);
+  assert_int_equal(f->status[0], PNUT_STATUS_DENIED);
+  assert_true(f->detail[0]);
+  assert_int_equal(f->err[0].code, 9);
+  assert_string_equal(f->err[0].text, cut);
+}
+
+/* A detail that does not decode is dropped, and the status stands */
+
+static void h_junk(FAR struct pnut_service_s *service,
+                   FAR const struct pnut_request_s *req,
+                   FAR const uint8_t *payload, uint16_t len, FAR void *arg)
+{
+  static const uint8_t junk[] =
+  {
+    0x12, 0x7f, 'x'               /* Field 2, 127 bytes long: cut short */
+  };
+
+  assert_int_equal(pnut_reply(req, PNUT_STATUS_DENIED, junk,
+                              sizeof(junk)), 0);
+}
+
+static void test_gen_fail_junk(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  FAR struct pnut_service_s *junk;
+
+  pnut_test_echo_close(&f->server);
+  assert_int_equal(pnut_service_open(f->loop, "echo", g_junk, 1, 0, f,
+                                     &junk), 0);
+  run(f, say_state, 2);
+  assert_int_equal(f->answers, 2);
+  assert_int_equal(f->status[0], PNUT_STATUS_DENIED);
+  assert_false(f->detail[0]);
+  assert_int_equal(f->status[1], PNUT_STATUS_DENIED);
+  assert_false(f->detail[1]);
+  pnut_service_close(junk);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -446,6 +605,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_gen_invalid, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_later, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_unencodable, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_fail, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_fail_bare, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_fail_long, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_fail_junk, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("gen", tests, NULL, NULL);

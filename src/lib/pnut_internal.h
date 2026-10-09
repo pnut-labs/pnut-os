@@ -76,6 +76,10 @@
 #  define CONFIG_PNUT_LIB_CONNS             8
 #endif
 
+#ifndef CONFIG_PNUT_LIB_PERCALLER
+#  define CONFIG_PNUT_LIB_PERCALLER         2
+#endif
+
 #ifndef CONFIG_PNUT_LIB_INFLIGHT
 #  define CONFIG_PNUT_LIB_INFLIGHT          8
 #endif

@@ -75,7 +75,7 @@ One target is configured at a time; building another configures afresh.
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
 | `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets |
-| `proto/` | the interfaces (RFC 0023): one `.proto` file each, pnut-os's options in `proto/pnut/options.proto`, their numbers in `proto/interfaces.md` |
+| `proto/` | the interfaces (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
 | `tests/proto/` | interfaces for the tests |

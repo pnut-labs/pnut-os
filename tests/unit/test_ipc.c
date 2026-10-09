@@ -50,6 +50,10 @@
 
 #define NMETHODS      (sizeof(g_methods) / sizeof(g_methods[0]))
 
+/* One more client than a program may hold connections to a service */
+
+#define CALLERS       (CONFIG_PNUT_LIB_PERCALLER + 1)
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -738,6 +742,56 @@ static void test_ipc_backoff(void **state)
   pnut_service_close(one);
 }
 
+/* A program holds a few of a service's connections at most: one more,
+ * from the same program, is closed as soon as it is accepted, and its
+ * tries grow apart, while the others stay
+ */
+
+static void caller_state(FAR struct pnut_client_s *client, bool up,
+                         FAR void *arg)
+{
+  FAR int *ups = arg;
+
+  if (up)
+    {
+      (*ups)++;
+    }
+}
+
+static void test_ipc_per_caller(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  FAR struct pnut_client_s *clients[CALLERS];
+  int ups[CALLERS];
+  int i;
+
+  memset(ups, 0, sizeof(ups));
+  for (i = 0; i < CALLERS; i++)
+    {
+      assert_int_equal(pnut_client_open(f->loop, "test", 0, NULL,
+                                        caller_state, &ups[i],
+                                        &clients[i]), 0);
+    }
+
+  pnut_timer_start(f->loop, 1000, 0, stop_timer, NULL, NULL);
+  assert_int_equal(pnut_loop_run(f->loop), 0);
+
+  for (i = 0; i < CALLERS - 1; i++)
+    {
+      assert_int_equal(ups[i], 1);
+      assert_true(pnut_client_connected(clients[i]));
+    }
+
+  /* Refused, and tried again: at 0, 100, 300 and 700 ms */
+
+  assert_in_range(ups[CALLERS - 1], 2, 5);
+
+  for (i = 0; i < CALLERS; i++)
+    {
+      pnut_client_close(clients[i]);
+    }
+}
+
 /* A client takes one of the loop's timers, however many calls it has in
  * flight
  */
@@ -828,6 +882,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_ipc_service_busy, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_ipc_backoff, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_ipc_per_caller, setup,
+                                    teardown),
     cmocka_unit_test_setup_teardown(test_ipc_timers, setup, teardown),
   };
 

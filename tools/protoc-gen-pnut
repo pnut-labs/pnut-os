@@ -38,8 +38,8 @@ from pnut import options_pb2
 # Names the generated code takes for itself, which a method's would clash
 # with
 
-RESERVED = {"serve", "close", "connect", "disconnect", "state", "iface",
-            "request_max", "reply_max"}
+RESERVED = {"serve", "close", "connect", "disconnect", "state", "fail",
+            "iface", "request_max", "reply_max"}
 
 
 class GenError(Exception):
@@ -175,6 +175,7 @@ def header(path, svc, fdesc):
     w.append("#include <pnut/service.h>")
     w.append("")
     w.append(f'#include "{path}.pb.h"')
+    w.append('#include "pnut/error.pb.h"')
     w.append("")
     w.append(f"/* {svc.full}, interface {svc.iface} */")
     w.append("")
@@ -197,7 +198,8 @@ def header(path, svc, fdesc):
     w.append("")
 
     # The largest request and answer bodies, as the size of a union: linear
-    # in the methods, where nested conditionals would double with each
+    # in the methods, where nested conditionals would double with each.  An
+    # answer may be an error's detail instead.
 
     for kind, attr in (("request", "req"), ("reply", "reply")):
         w.append(f"union {p}_{kind}_max_u")
@@ -205,9 +207,12 @@ def header(path, svc, fdesc):
         for i, m in enumerate(svc.methods):
             size = getattr(m, attr).size
             w.append(f"  uint8_t m{i}[{size} > 0 ? {size} : 1];")
+        if kind == "reply":
+            w.append("  uint8_t error[PNUT_ERROR_SIZE];")
         w.append("};")
         w.append("")
-    w.append("/* The largest request and answer bodies */")
+    w.append("/* The largest request and answer bodies, an error's detail "
+             "included */")
     w.append("")
     w.append(f"#define {u}_REQUEST_MAX sizeof(union {p}_request_max_u)")
     w.append(f"#define {u}_REPLY_MAX sizeof(union {p}_reply_max_u)")
@@ -222,9 +227,17 @@ def header(path, svc, fdesc):
              "what is")
     w.append(" * needed of the body.  A handler left NULL is not served.  An "
              "error")
-    w.append(" * answer carries no body yet (RFC 0023), and the permission "
-             "a method")
-    w.append(" * names is not checked yet.")
+    w.append(" * answer may carry a detail, pnut.Error, given with "
+             f"{p}_fail();")
+    w.append(" * its code is one of the interface's own (RFC 0023), and its "
+             "text is cut")
+    w.append(" * at a character's start to 63 bytes.  _fail() returns "
+             "-EINVAL for")
+    w.append(" * PNUT_STATUS_OK, -ENOTCONN once the server is closed, or "
+             "what")
+    w.append(" * pnut_reply() returns.  The permission a method names is not "
+             "checked")
+    w.append(" * yet.")
     w.append(" */")
     w.append("")
     w.append(f"struct {p}_server_s;")
@@ -257,9 +270,12 @@ def header(path, svc, fdesc):
 
     w.append("/* The client: a program keeps one for each connection to a "
              "service")
-    w.append(" * of this interface.  An answer's body is valid while its "
-             "handler")
-    w.append(" * runs, and NULL unless the status is PNUT_STATUS_OK.")
+    w.append(" * of this interface.  An answer's body, out, is valid while "
+             "its handler")
+    w.append(" * runs, and NULL unless the status is PNUT_STATUS_OK; an "
+             "error's detail,")
+    w.append(" * err, likewise, and NULL unless the service gave one that "
+             "decodes.")
     w.append(" */")
     w.append("")
     w.append(f"struct {p}_client_s;")
@@ -271,7 +287,8 @@ def header(path, svc, fdesc):
     for m in svc.methods:
         w.append(f"typedef CODE void (*{p}_{m.snake}_done_t)")
         w.append(f"  (FAR struct {p}_client_s *client, int status,")
-        w.append(f"   FAR const {m.reply.type} *out, FAR void *arg);")
+        w.append(f"   FAR const {m.reply.type} *out,")
+        w.append("   FAR const pnut_error_t *err, FAR void *arg);")
     w.append("")
     w.append(f"struct {p}_call_s")
     w.append("{")
@@ -294,6 +311,7 @@ def header(path, svc, fdesc):
     for m in svc.methods:
         w.append(f"    {m.reply.type} {m.snake};")
     w.append("  } in;")
+    w.append("  pnut_error_t error;")
     w.append(f"  uint8_t out[{u}_REQUEST_MAX];")
     w.append("};")
     w.append("")
@@ -311,6 +329,10 @@ def header(path, svc, fdesc):
              "*handlers,")
     w.append(f"    FAR void *arg, FAR struct {p}_server_s *server);")
     w.append(f"void {p}_close(FAR struct {p}_server_s *server);")
+    w.append(f"int {p}_fail(FAR struct {p}_server_s *server,")
+    w.append("    FAR const struct pnut_request_s *req, int status, "
+             "uint32_t code,")
+    w.append("    FAR const char *text);")
     for m in svc.methods:
         w.append(f"int {p}_{m.snake}_reply(FAR struct {p}_server_s *server,")
         w.append("    FAR const struct pnut_request_s *req, int status,")
@@ -396,7 +418,8 @@ def source(path, svc, fdesc):
     for m in svc.methods:
         w.append(f"  {{ {u}_IFACE, {u}_{m.snake.upper()}, {m.version}, "
                  f"{p}_{m.snake}_handler,")
-        w.append(f"    {m.reply.size} > 0 ? {m.reply.size} : 1 }},")
+        w.append(f"    {m.reply.size} > PNUT_ERROR_SIZE ? {m.reply.size} : "
+                 "PNUT_ERROR_SIZE },")
     w.append("};")
     w.append("")
 
@@ -414,6 +437,7 @@ def source(path, svc, fdesc):
                  f"({p}_{m.snake}_done_t)call->done;")
         w.append("  FAR void *darg = call->arg;")
         w.append(f"  FAR const {m.reply.type} *out = NULL;")
+        w.append("  FAR const pnut_error_t *err = NULL;")
         w.append("  pb_istream_t stream;")
         w.append("")
         w.append("  (void)c;")
@@ -432,8 +456,22 @@ def source(path, svc, fdesc):
         w.append("          status = PNUT_STATUS_INVALID;")
         w.append("        }")
         w.append("    }")
+        w.append("  else if (len > 0)")
+        w.append("    {")
+        w.append("      /* An error's detail that does not decode is "
+                 "dropped: the status")
+        w.append("       * stands")
+        w.append("       */")
         w.append("")
-        w.append("  done(client, status, out, darg);")
+        w.append("      stream = pb_istream_from_buffer(payload, len);")
+        w.append("      if (pb_decode(&stream, PNUT_ERROR_FIELDS, "
+                 "&client->error))")
+        w.append("        {")
+        w.append("          err = &client->error;")
+        w.append("        }")
+        w.append("    }")
+        w.append("")
+        w.append("  done(client, status, out, err, darg);")
         w.append("}")
         w.append("")
 
@@ -476,6 +514,56 @@ def source(path, svc, fdesc):
     w.append("  server->service = NULL;")
     w.append("}")
     w.append("")
+    w.append(f"int {p}_fail(FAR struct {p}_server_s *server,")
+    w.append("    FAR const struct pnut_request_s *req, int status, "
+             "uint32_t code,")
+    w.append("    FAR const char *text)")
+    w.append("{")
+    w.append("  pb_ostream_t stream = pb_ostream_from_buffer"
+             "(server->out,")
+    w.append("                                               "
+             "sizeof(server->out));")
+    w.append("  pnut_error_t err = PNUT_ERROR_INIT_ZERO;")
+    w.append("  size_t n;")
+    w.append("")
+    w.append("  if (server->service == NULL)")
+    w.append("    {")
+    w.append("      return -ENOTCONN;")
+    w.append("    }")
+    w.append("")
+    w.append("  if (status == PNUT_STATUS_OK)")
+    w.append("    {")
+    w.append("      return -EINVAL;")
+    w.append("    }")
+    w.append("")
+    w.append("  err.code = code;")
+    w.append("  if (text != NULL)")
+    w.append("    {")
+    w.append("      /* A longer text is cut, at a character's start */")
+    w.append("")
+    w.append("      n = strlen(text);")
+    w.append("      if (n >= sizeof(err.text))")
+    w.append("        {")
+    w.append("          n = sizeof(err.text) - 1;")
+    w.append("          while (n > 0 && ((uint8_t)text[n] & 0xc0) == 0x80)")
+    w.append("            {")
+    w.append("              n--;")
+    w.append("            }")
+    w.append("        }")
+    w.append("")
+    w.append("      memcpy(err.text, text, n);")
+    w.append("      err.text[n] = '\\0';")
+    w.append("    }")
+    w.append("")
+    w.append("  if (!pb_encode(&stream, PNUT_ERROR_FIELDS, &err))")
+    w.append("    {")
+    w.append("      return -EINVAL;")
+    w.append("    }")
+    w.append("")
+    w.append("  return pnut_reply(req, status, server->out, "
+             "(uint16_t)stream.bytes_written);")
+    w.append("}")
+    w.append("")
     for m in svc.methods:
         w.append(f"int {p}_{m.snake}_reply(FAR struct {p}_server_s *server,")
         w.append("    FAR const struct pnut_request_s *req, int status,")
@@ -493,7 +581,8 @@ def source(path, svc, fdesc):
         w.append("      return -ENOTCONN;")
         w.append("    }")
         w.append("")
-        w.append("  /* An error answer carries no body yet (RFC 0023) */")
+        w.append("  /* An error answer here has no body: _fail() gives one "
+                 "its detail */")
         w.append("")
         w.append("  if (status == PNUT_STATUS_OK && out != NULL &&")
         w.append(f"      !pb_encode(&stream, {m.reply.fields}, out))")
@@ -605,6 +694,8 @@ def reference(svc, fdesc):
                  f"`{m.req.proto}` | `{m.reply.proto}` | "
                  f"{m.permission or '—'} |")
     w.append("")
+    w += ["An error answer may carry `pnut.Error`, whose code is one of the "
+          "interface's own (RFC 0023).", ""]
     for m in svc.methods:
         if m.doc:
             w += [f"## {m.name}", "", m.doc, ""]
