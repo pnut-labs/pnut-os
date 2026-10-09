@@ -1,0 +1,666 @@
+#!/usr/bin/env python3
+############################################################################
+# pnut-os/tools/protoc-gen-pnut
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+"""protoc's plugin for pnut-os's interfaces (RFC 0023).
+
+    protoc --plugin=protoc-gen-pnut=tools/protoc-gen-pnut \\
+           --pnut_out=<dir> -I proto ... <file>.proto
+
+For every service of a file it writes, beside nanopb's <file>.pb.h:
+
+    <file>.pnut.h, <file>.pnut.c   typed client calls and server handlers,
+                                   on libpnut's services and clients
+    <file>.md                      the interface's reference
+
+The services carry pnut-os's options (proto/pnut/options.proto): the
+interface's number, and each method's number, version and permission.
+The module made from options.proto (options_pb2) must be on the Python
+path.
+"""
+
+import re
+import sys
+
+try:
+    from google.protobuf.compiler import plugin_pb2
+except ImportError:
+    sys.exit("protoc-gen-pnut: Python's protobuf module is missing "
+             "(apt install python3-protobuf)")
+
+from pnut import options_pb2
+
+# Names the generated code takes for itself, which a method's would clash
+# with
+
+RESERVED = {"serve", "close", "connect", "disconnect", "state", "iface",
+            "request_max", "reply_max"}
+
+
+class GenError(Exception):
+    """An interface the generator refuses."""
+
+
+def underscore(word):
+    """nanopb's C style (its --c-style): SayRequest -> say_request.
+
+    The same rule as nanopb's NamingStyleC, so that the names written here
+    are the ones nanopb wrote.
+    """
+    word = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", word)
+    word = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", word)
+    return word.replace("-", "_").lower()
+
+
+def c_name(type_name):
+    """nanopb's C name of a message, without its _t: pnut_test_say_request."""
+    return underscore(type_name.lstrip(".").replace(".", "_"))
+
+
+class Msg:
+    """A message's names in nanopb's C style."""
+
+    def __init__(self, type_name):
+        name = c_name(type_name)
+        self.type = name + "_t"
+        self.size = name.upper() + "_SIZE"
+        self.fields = name.upper() + "_FIELDS"
+        self.proto = type_name.lstrip(".")
+
+
+
+
+class Method:
+    def __init__(self, svc, desc):
+        opts = desc.options
+        if desc.client_streaming or desc.server_streaming:
+            raise GenError(f"{svc.full}.{desc.name}: streams come later")
+        if not opts.HasExtension(options_pb2.method):
+            raise GenError(f"{svc.full}.{desc.name}: no (pnut.method)")
+
+        self.name = desc.name
+        self.snake = underscore(desc.name)
+        self.number = opts.Extensions[options_pb2.method]
+        self.version = opts.Extensions[options_pb2.version]
+        self.permission = opts.Extensions[options_pb2.permission]
+        self.req = Msg(desc.input_type)
+        self.reply = Msg(desc.output_type)
+        self.doc = ""
+
+        if not 0 < self.number < 0x10000:
+            raise GenError(f"{svc.full}.{desc.name}: method {self.number}")
+        if not 0 < self.version < 0x100:
+            raise GenError(f"{svc.full}.{desc.name}: version {self.version}")
+
+
+class Service:
+    def __init__(self, fdesc, desc):
+        self.full = f"{fdesc.package}.{desc.name}" if fdesc.package \
+            else desc.name
+        if not desc.options.HasExtension(options_pb2.iface):
+            raise GenError(f"{self.full}: no (pnut.iface)")
+
+        self.iface = desc.options.Extensions[options_pb2.iface]
+        if not 0 < self.iface < 0x10000:
+            raise GenError(f"{self.full}: interface {self.iface}")
+
+        self.name = desc.name
+        self.prefix = c_name(self.full)
+        self.upper = self.prefix.upper()
+        self.doc = ""
+        self.methods = [Method(self, m) for m in desc.method]
+
+        if not self.methods:
+            raise GenError(f"{self.full}: no methods")
+
+        numbers = [m.number for m in self.methods]
+        if len(set(numbers)) != len(numbers):
+            raise GenError(f"{self.full}: a method number used twice")
+
+        # A method's names must not clash with the generated code's own,
+        # nor with another method's
+
+        snakes = [m.snake for m in self.methods]
+        if len(set(snakes)) != len(snakes):
+            raise GenError(f"{self.full}: two methods with one C name")
+
+        taken = set()
+        for m in self.methods:
+            if m.snake in RESERVED:
+                raise GenError(f"{self.full}.{m.name}: the name {m.snake} "
+                               "is the generated code's own")
+            taken |= {m.snake + s for s in
+                      ("_reply", "_handler", "_answer", "_done")}
+        for m in self.methods:
+            if m.snake in taken:
+                raise GenError(f"{self.full}.{m.name}: clashes with the "
+                               "names generated for another method")
+
+
+def comments(fdesc):
+    """The leading comments of services and methods, by path."""
+    out = {}
+    for loc in fdesc.source_code_info.location:
+        if loc.leading_comments:
+            lines = [ln.strip() for ln in loc.leading_comments.splitlines()]
+            out[tuple(loc.path)] = "\n".join(lines).strip()
+    return out
+
+
+def header(path, svc, fdesc):
+    p, u = svc.prefix, svc.upper
+    guard = "__PNUT_GEN_" + re.sub(r"\W", "_", path).upper() + "_PNUT_H"
+    w = []
+    w.append(f"/* Generated by tools/protoc-gen-pnut from {fdesc.name}: "
+             "do not edit */")
+    w.append("")
+    w.append(f"#ifndef {guard}")
+    w.append(f"#define {guard}")
+    w.append("")
+    w.append("#ifdef __NuttX__")
+    w.append("#  include <nuttx/config.h>")
+    w.append("#endif")
+    w.append("")
+    w.append("#include <stdbool.h>")
+    w.append("#include <stdint.h>")
+    w.append("")
+    w.append("#include <pnut/client.h>")
+    w.append("#include <pnut/loop.h>")
+    w.append("#include <pnut/msg.h>")
+    w.append("#include <pnut/service.h>")
+    w.append("")
+    w.append(f'#include "{path}.pb.h"')
+    w.append("")
+    w.append(f"/* {svc.full}, interface {svc.iface} */")
+    w.append("")
+    w.append(f"#define {u}_IFACE {svc.iface}")
+    for m in svc.methods:
+        w.append(f"#define {u}_{m.snake.upper()} {m.number}")
+    w.append("")
+    # Every message needs bounds, for its largest encoding
+
+    msgs = {}
+    for m in svc.methods:
+        msgs[m.req.size] = m.req.proto
+        msgs[m.reply.size] = m.reply.proto
+    for size, proto in msgs.items():
+        w.append(f"#ifndef {size}")
+        w.append(f'#  error "{proto} has no largest size: bound its '
+                 'strings, bytes and lists with (nanopb).max_size and '
+                 'max_count (RFC 0023)"')
+        w.append("#endif")
+    w.append("")
+
+    # The largest request and answer bodies, as the size of a union: linear
+    # in the methods, where nested conditionals would double with each
+
+    for kind, attr in (("request", "req"), ("reply", "reply")):
+        w.append(f"union {p}_{kind}_max_u")
+        w.append("{")
+        for i, m in enumerate(svc.methods):
+            size = getattr(m, attr).size
+            w.append(f"  uint8_t m{i}[{size} > 0 ? {size} : 1];")
+        w.append("};")
+        w.append("")
+    w.append("/* The largest request and answer bodies */")
+    w.append("")
+    w.append(f"#define {u}_REQUEST_MAX sizeof(union {p}_request_max_u)")
+    w.append(f"#define {u}_REPLY_MAX sizeof(union {p}_reply_max_u)")
+    w.append("")
+
+    # The server
+
+    w.append("/* The server: a program keeps one for each service of this")
+    w.append(" * interface it serves.  A handler's request body is valid "
+             "while the")
+    w.append(" * handler runs; to answer later, keep a copy of *req, and of "
+             "what is")
+    w.append(" * needed of the body.  A handler left NULL is not served.  An "
+             "error")
+    w.append(" * answer carries no body yet (RFC 0023), and the permission "
+             "a method")
+    w.append(" * names is not checked yet.")
+    w.append(" */")
+    w.append("")
+    w.append(f"struct {p}_server_s;")
+    w.append("")
+    w.append(f"struct {p}_handlers_s")
+    w.append("{")
+    for m in svc.methods:
+        w.append(f"  CODE void (*{m.snake})(FAR struct {p}_server_s *server,")
+        w.append("               FAR const struct pnut_request_s *req,")
+        w.append(f"               FAR const {m.req.type} *in, FAR void *arg);")
+    w.append("};")
+    w.append("")
+    w.append(f"struct {p}_server_s")
+    w.append("{")
+    w.append("  /* The library's */")
+    w.append("")
+    w.append("  FAR struct pnut_service_s *service;")
+    w.append(f"  FAR const struct {p}_handlers_s *handlers;")
+    w.append("  FAR void *arg;")
+    w.append("  union")
+    w.append("  {")
+    for m in svc.methods:
+        w.append(f"    {m.req.type} {m.snake};")
+    w.append("  } in;")
+    w.append(f"  uint8_t out[{u}_REPLY_MAX];")
+    w.append("};")
+    w.append("")
+
+    # The client
+
+    w.append("/* The client: a program keeps one for each connection to a "
+             "service")
+    w.append(" * of this interface.  An answer's body is valid while its "
+             "handler")
+    w.append(" * runs, and NULL unless the status is PNUT_STATUS_OK.")
+    w.append(" */")
+    w.append("")
+    w.append(f"struct {p}_client_s;")
+    w.append("")
+    w.append(f"typedef CODE void (*{p}_state_t)"
+             f"(FAR struct {p}_client_s *client,")
+    w.append("                                bool connected, "
+             "FAR void *arg);")
+    for m in svc.methods:
+        w.append(f"typedef CODE void (*{p}_{m.snake}_done_t)")
+        w.append(f"  (FAR struct {p}_client_s *client, int status,")
+        w.append(f"   FAR const {m.reply.type} *out, FAR void *arg);")
+    w.append("")
+    w.append(f"struct {p}_call_s")
+    w.append("{")
+    w.append(f"  FAR struct {p}_client_s *client;")
+    w.append("  CODE void (*done)(void);")
+    w.append("  FAR void *arg;")
+    w.append("  bool used;")
+    w.append("};")
+    w.append("")
+    w.append(f"struct {p}_client_s")
+    w.append("{")
+    w.append("  /* The library's */")
+    w.append("")
+    w.append("  FAR struct pnut_client_s *client;")
+    w.append(f"  {p}_state_t state;")
+    w.append("  FAR void *arg;")
+    w.append(f"  struct {p}_call_s calls[PNUT_CLIENT_INFLIGHT];")
+    w.append("  union")
+    w.append("  {")
+    for m in svc.methods:
+        w.append(f"    {m.reply.type} {m.snake};")
+    w.append("  } in;")
+    w.append(f"  uint8_t out[{u}_REQUEST_MAX];")
+    w.append("};")
+    w.append("")
+
+    # Prototypes
+
+    w.append("#ifdef __cplusplus")
+    w.append('extern "C"')
+    w.append("{")
+    w.append("#endif")
+    w.append("")
+    w.append(f"int {p}_serve(FAR struct pnut_loop_s *loop, "
+             "FAR const char *name,")
+    w.append(f"    uint8_t conns, FAR const struct {p}_handlers_s "
+             "*handlers,")
+    w.append(f"    FAR void *arg, FAR struct {p}_server_s *server);")
+    w.append(f"void {p}_close(FAR struct {p}_server_s *server);")
+    for m in svc.methods:
+        w.append(f"int {p}_{m.snake}_reply(FAR struct {p}_server_s *server,")
+        w.append("    FAR const struct pnut_request_s *req, int status,")
+        w.append(f"    FAR const {m.reply.type} *out);")
+    w.append("")
+    w.append(f"int {p}_connect(FAR struct pnut_loop_s *loop, "
+             "FAR const char *name,")
+    w.append(f"    {p}_state_t state, FAR void *arg,")
+    w.append(f"    FAR struct {p}_client_s *client);")
+    w.append(f"void {p}_disconnect(FAR struct {p}_client_s *client);")
+    for m in svc.methods:
+        w.append(f"int {p}_{m.snake}(FAR struct {p}_client_s *client,")
+        w.append(f"    FAR const {m.req.type} *in, uint32_t timeout,")
+        w.append(f"    {p}_{m.snake}_done_t done, FAR void *arg);")
+    w.append("")
+    w.append("#ifdef __cplusplus")
+    w.append("}")
+    w.append("#endif")
+    w.append("")
+    w.append(f"#endif /* {guard} */")
+    return "\n".join(w) + "\n"
+
+
+def source(path, svc, fdesc):
+    p, u = svc.prefix, svc.upper
+    w = []
+    w.append(f"/* Generated by tools/protoc-gen-pnut from {fdesc.name}: "
+             "do not edit */")
+    w.append("")
+    w.append("#include <errno.h>")
+    w.append("#include <string.h>")
+    w.append("")
+    w.append("#include <pb_decode.h>")
+    w.append("#include <pb_encode.h>")
+    w.append("")
+    w.append(f'#include "{path}.pnut.h"')
+    w.append("")
+
+    # Every body must fit a message
+
+    for m in svc.methods:
+        for kind, t in (("request", m.req), ("reply", m.reply)):
+            w.append(f"typedef char {p}_{m.snake}_{kind}_fits"
+                     f"[{t.size} <= PNUT_MSG_PAYLOAD_MAX ? 1 : -1];")
+    w.append("")
+
+    # The server's handlers, decoding the request
+
+    for m in svc.methods:
+        w.append(f"static void {p}_{m.snake}_handler"
+                 "(FAR struct pnut_service_s *service,")
+        w.append("    FAR const struct pnut_request_s *req, "
+                 "FAR const uint8_t *payload,")
+        w.append("    uint16_t len, FAR void *arg)")
+        w.append("{")
+        w.append(f"  FAR struct {p}_server_s *server = arg;")
+        w.append("  pb_istream_t stream = pb_istream_from_buffer(payload, "
+                 "len);")
+        w.append("")
+        w.append("  (void)service;")
+        w.append("")
+        w.append(f"  if (server->handlers->{m.snake} == NULL)")
+        w.append("    {")
+        w.append("      pnut_reply(req, PNUT_STATUS_NOTFOUND, NULL, 0);")
+        w.append("      return;")
+        w.append("    }")
+        w.append("")
+        w.append(f"  if (!pb_decode(&stream, {m.req.fields}, "
+                 f"&server->in.{m.snake}))")
+        w.append("    {")
+        w.append("      pnut_reply(req, PNUT_STATUS_INVALID, NULL, 0);")
+        w.append("      return;")
+        w.append("    }")
+        w.append("")
+        w.append(f"  server->handlers->{m.snake}(server, req, "
+                 f"&server->in.{m.snake},")
+        w.append("                     server->arg);")
+        w.append("}")
+        w.append("")
+
+    w.append(f"static const struct pnut_method_s g_{p}_methods[] =")
+    w.append("{")
+    for m in svc.methods:
+        w.append(f"  {{ {u}_IFACE, {u}_{m.snake.upper()}, {m.version}, "
+                 f"{p}_{m.snake}_handler,")
+        w.append(f"    {m.reply.size} > 0 ? {m.reply.size} : 1 }},")
+    w.append("};")
+    w.append("")
+
+    # The client's answers, decoding the reply
+
+    for m in svc.methods:
+        w.append(f"static void {p}_{m.snake}_answer"
+                 "(FAR struct pnut_client_s *c, int status,")
+        w.append("    FAR const uint8_t *payload, uint16_t len, "
+                 "FAR void *arg)")
+        w.append("{")
+        w.append(f"  FAR struct {p}_call_s *call = arg;")
+        w.append(f"  FAR struct {p}_client_s *client = call->client;")
+        w.append(f"  {p}_{m.snake}_done_t done = "
+                 f"({p}_{m.snake}_done_t)call->done;")
+        w.append("  FAR void *darg = call->arg;")
+        w.append(f"  FAR const {m.reply.type} *out = NULL;")
+        w.append("  pb_istream_t stream;")
+        w.append("")
+        w.append("  (void)c;")
+        w.append("  call->used = false;")
+        w.append("")
+        w.append("  if (status == PNUT_STATUS_OK)")
+        w.append("    {")
+        w.append("      stream = pb_istream_from_buffer(payload, len);")
+        w.append(f"      if (pb_decode(&stream, {m.reply.fields}, "
+                 f"&client->in.{m.snake}))")
+        w.append("        {")
+        w.append(f"          out = &client->in.{m.snake};")
+        w.append("        }")
+        w.append("      else")
+        w.append("        {")
+        w.append("          status = PNUT_STATUS_INVALID;")
+        w.append("        }")
+        w.append("    }")
+        w.append("")
+        w.append("  done(client, status, out, darg);")
+        w.append("}")
+        w.append("")
+
+    w.append(f"static void {p}_state(FAR struct pnut_client_s *c, "
+             "bool connected,")
+    w.append("    FAR void *arg)")
+    w.append("{")
+    w.append(f"  FAR struct {p}_client_s *client = arg;")
+    w.append("")
+    w.append("  (void)c;")
+    w.append("  if (client->state != NULL)")
+    w.append("    {")
+    w.append("      client->state(client, connected, client->arg);")
+    w.append("    }")
+    w.append("}")
+    w.append("")
+
+    # Public functions: the server
+
+    w.append(f"int {p}_serve(FAR struct pnut_loop_s *loop, "
+             "FAR const char *name,")
+    w.append(f"    uint8_t conns, FAR const struct {p}_handlers_s "
+             "*handlers,")
+    w.append(f"    FAR void *arg, FAR struct {p}_server_s *server)")
+    w.append("{")
+    w.append("  memset(server, 0, sizeof(*server));")
+    w.append("  server->handlers = handlers;")
+    w.append("  server->arg      = arg;")
+    w.append("")
+    w.append(f"  return pnut_service_open(loop, name, g_{p}_methods,")
+    w.append(f"                           sizeof(g_{p}_methods) /")
+    w.append(f"                           sizeof(g_{p}_methods[0]),")
+    w.append("                           conns, server, "
+             "&server->service);")
+    w.append("}")
+    w.append("")
+    w.append(f"void {p}_close(FAR struct {p}_server_s *server)")
+    w.append("{")
+    w.append("  pnut_service_close(server->service);")
+    w.append("  server->service = NULL;")
+    w.append("}")
+    w.append("")
+    for m in svc.methods:
+        w.append(f"int {p}_{m.snake}_reply(FAR struct {p}_server_s *server,")
+        w.append("    FAR const struct pnut_request_s *req, int status,")
+        w.append(f"    FAR const {m.reply.type} *out)")
+        w.append("{")
+        w.append("  pb_ostream_t stream = pb_ostream_from_buffer"
+                 "(server->out,")
+        w.append("                                               "
+                 "sizeof(server->out));")
+        w.append("")
+        w.append("  /* Closed, the request's connection is gone with it */")
+        w.append("")
+        w.append("  if (server->service == NULL)")
+        w.append("    {")
+        w.append("      return -ENOTCONN;")
+        w.append("    }")
+        w.append("")
+        w.append("  /* An error answer carries no body yet (RFC 0023) */")
+        w.append("")
+        w.append("  if (status == PNUT_STATUS_OK && out != NULL &&")
+        w.append(f"      !pb_encode(&stream, {m.reply.fields}, out))")
+        w.append("    {")
+        w.append("      return -EINVAL;")
+        w.append("    }")
+        w.append("")
+        w.append("  return pnut_reply(req, status, server->out, "
+                 "(uint16_t)stream.bytes_written);")
+        w.append("}")
+        w.append("")
+
+    # Public functions: the client
+
+    w.append(f"int {p}_connect(FAR struct pnut_loop_s *loop, "
+             "FAR const char *name,")
+    w.append(f"    {p}_state_t state, FAR void *arg,")
+    w.append(f"    FAR struct {p}_client_s *client)")
+    w.append("{")
+    w.append("  int i;")
+    w.append("")
+    w.append("  memset(client, 0, sizeof(*client));")
+    w.append("  client->state = state;")
+    w.append("  client->arg   = arg;")
+    w.append("  for (i = 0; i < PNUT_CLIENT_INFLIGHT; i++)")
+    w.append("    {")
+    w.append("      client->calls[i].client = client;")
+    w.append("    }")
+    w.append("")
+    w.append("  return pnut_client_open(loop, name, PNUT_CLIENT_INFLIGHT, "
+             "NULL,")
+    w.append(f"                          {p}_state, client, "
+             "&client->client);")
+    w.append("}")
+    w.append("")
+    w.append(f"void {p}_disconnect(FAR struct {p}_client_s *client)")
+    w.append("{")
+    w.append("  pnut_client_close(client->client);")
+    w.append("  client->client = NULL;")
+    w.append("}")
+    w.append("")
+    for m in svc.methods:
+        w.append(f"int {p}_{m.snake}(FAR struct {p}_client_s *client,")
+        w.append(f"    FAR const {m.req.type} *in, uint32_t timeout,")
+        w.append(f"    {p}_{m.snake}_done_t done, FAR void *arg)")
+        w.append("{")
+        w.append(f"  FAR struct {p}_call_s *call = NULL;")
+        w.append("  pb_ostream_t stream;")
+        w.append("  int ret;")
+        w.append("  int i;")
+        w.append("")
+        w.append("  if (client->client == NULL || done == NULL)")
+        w.append("    {")
+        w.append("      return client->client == NULL ? -ENOTCONN : "
+                 "-EINVAL;")
+        w.append("    }")
+        w.append("")
+        w.append("  for (i = 0; i < PNUT_CLIENT_INFLIGHT && call == NULL; "
+                 "i++)")
+        w.append("    {")
+        w.append("      if (!client->calls[i].used)")
+        w.append("        {")
+        w.append("          call = &client->calls[i];")
+        w.append("        }")
+        w.append("    }")
+        w.append("")
+        w.append("  if (call == NULL)")
+        w.append("    {")
+        w.append("      return -EBUSY;")
+        w.append("    }")
+        w.append("")
+        w.append("  stream = pb_ostream_from_buffer(client->out, "
+                 "sizeof(client->out));")
+        w.append(f"  if (!pb_encode(&stream, {m.req.fields}, in))")
+        w.append("    {")
+        w.append("      return -EINVAL;")
+        w.append("    }")
+        w.append("")
+        w.append("  call->done = (CODE void (*)(void))done;")
+        w.append("  call->arg  = arg;")
+        w.append("  call->used = true;")
+        w.append("")
+        w.append(f"  ret = pnut_call(client->client, {u}_IFACE, "
+                 f"{u}_{m.snake.upper()}, {m.version},")
+        w.append("                  client->out, "
+                 "(uint16_t)stream.bytes_written, timeout,")
+        w.append(f"                  {p}_{m.snake}_answer, call);")
+        w.append("  if (ret < 0)")
+        w.append("    {")
+        w.append("      call->used = false;")
+        w.append("    }")
+        w.append("")
+        w.append("  return ret;")
+        w.append("}")
+        w.append("")
+    return "\n".join(w)
+
+
+def reference(svc, fdesc, notes):
+    w = [f"# {svc.full}", ""]
+    if svc.doc:
+        w += [svc.doc, ""]
+    w += [f"Interface **{svc.iface}**, from `{fdesc.name}`; C prefix "
+          f"`{svc.prefix}_`.", ""]
+    w += ["| Method | Number | Version | Request | Answer | Permission |",
+          "|---|---|---|---|---|---|"]
+    for m in svc.methods:
+        w.append(f"| `{m.name}` | {m.number} | {m.version} | "
+                 f"`{m.req.proto}` | `{m.reply.proto}` | "
+                 f"{m.permission or '—'} |")
+    w.append("")
+    for m in svc.methods:
+        if m.doc:
+            w += [f"## {m.name}", "", m.doc, ""]
+    return "\n".join(w)
+
+
+def generate(request):
+    response = plugin_pb2.CodeGeneratorResponse()
+
+    # proto3's optional fields are fine here, as for nanopb
+
+    if hasattr(plugin_pb2.CodeGeneratorResponse, "FEATURE_PROTO3_OPTIONAL"):
+        response.supported_features = \
+            plugin_pb2.CodeGeneratorResponse.FEATURE_PROTO3_OPTIONAL
+    files = {f.name: f for f in request.proto_file}
+    ifaces = {}
+
+    for name in request.file_to_generate:
+        fdesc = files[name]
+        notes = comments(fdesc)
+        path = name[:-len(".proto")] if name.endswith(".proto") else name
+
+        if len(fdesc.service) > 1:
+            raise GenError(f"{name}: one interface to a file")
+
+        for si, sdesc in enumerate(fdesc.service):
+            svc = Service(fdesc, sdesc)
+            svc.doc = notes.get((6, si), "")
+            for mi, m in enumerate(svc.methods):
+                m.doc = notes.get((6, si, 2, mi), "")
+
+            if svc.iface in ifaces:
+                raise GenError(f"{svc.full}: interface {svc.iface} is "
+                               f"{ifaces[svc.iface]}'s too")
+            ifaces[svc.iface] = svc.full
+
+            for suffix, text in ((".pnut.h", header(path, svc, fdesc)),
+                                 (".pnut.c", source(path, svc, fdesc)),
+                                 (".md", reference(svc, fdesc, notes))):
+                out = response.file.add()
+                out.name = path + suffix
+                out.content = text
+
+    return response
+
+
+def main():
+    request = plugin_pb2.CodeGeneratorRequest.FromString(
+        sys.stdin.buffer.read())
+    try:
+        response = generate(request)
+    except GenError as e:
+        response = plugin_pb2.CodeGeneratorResponse()
+        response.error = str(e)
+    sys.stdout.buffer.write(response.SerializeToString())
+
+
+if __name__ == "__main__":
+    main()

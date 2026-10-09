@@ -27,7 +27,7 @@ warns when they differ from the commits pnut-os records.
 
 | For | Tools |
 |---|---|
-| every target | GNU make; kconfig-frontends; Python 3 with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc` |
+| every target | GNU make; kconfig-frontends; Python 3 with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc`. protoc and Python's protobuf module, for the interfaces' code (`apt install protobuf-compiler python3-protobuf`); curl, which fetches nanopb, checked against its pinned checksum |
 | `sim` | gcc, zlib's headers |
 | `qemu`, `tdeck-max` | Espressif's toolchain `xtensa-esp-elf` 14.2 (GCC 15 does not build the ESP HAL); esptool; Espressif's QEMU, which has the `esp32s3` machine |
 | `make test` | cmocka (`apt install libcmocka-dev`), or `CMOCKA_CFLAGS` and `CMOCKA_LIBS` naming it |
@@ -40,6 +40,7 @@ warns when they differ from the commits pnut-os records.
 | `make <target> run` | builds it, then runs it: `sim` on the computer (`poweroff` leaves), `qemu` in QEMU (Ctrl-A X leaves) |
 | `make <target> flash` | builds it, then writes it to the device |
 | `make test` | runs the unit tests, on the computer |
+| `make gen` | generates the interfaces' code from their `.proto` files into `build/gen` (every build does it when they change) |
 | `make <target> test` | builds it, then runs the tests inside it: `sim` runs libpnut's unit tests in the simulator |
 | `make style` | checks pnut-os's C code with NuttX's `nxstyle` |
 | `make clean` | removes the build |
@@ -74,9 +75,11 @@ One target is configured at a time; building another configures afresh.
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
 | `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets |
+| `proto/` | the interfaces (RFC 0023): one `.proto` file each, pnut-os's options in `proto/pnut/options.proto`, their numbers in `proto/interfaces.md` |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
-| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator |
+| `tests/proto/` | interfaces for the tests |
+| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers and references, run with nanopb's by `generate.sh` |
 
 As the code arrives:
 
