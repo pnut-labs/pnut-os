@@ -16,4 +16,4 @@ RUN          = $(NUTTX)/nuttx
 TEST         = $(PYTHON) $(ROOT)/tools/sim-test.py $(NUTTX)/nuttx \
                pnut_test_conn pnut_test_gen pnut_test_ipc \
                pnut_test_loop pnut_test_msg pnut_test_pool \
-               pnut_test_timer pnut_test_worker
+               pnut_test_timer pnut_test_worker pnut_test_settings

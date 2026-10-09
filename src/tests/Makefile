@@ -28,6 +28,14 @@ MAINSRC  += $(UNITDIR)/test_ipc.c $(UNITDIR)/test_loop.c
 MAINSRC  += $(UNITDIR)/test_msg.c $(UNITDIR)/test_pool.c
 MAINSRC  += $(UNITDIR)/test_timer.c $(UNITDIR)/test_worker.c
 
+# Settings' tests, with the system program's modules, which it compiles
+
+ifneq ($(CONFIG_PNUT_SYSTEM),)
+PROGNAME += pnut_test_settings
+MAINSRC  += $(UNITDIR)/test_settings.c
+CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/system
+endif
+
 CSRCS     = $(GENDIR)/pnut/test/echo.pb.c $(GENDIR)/pnut/test/echo.pnut.c
 
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/lib

@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Settings (RFC 0025): every setting, named by its owner and its key.
+// An owner registers its schema before using its settings; Settings
+// refuses a key it does not know.  The owner is named in each request,
+// and the caller is not checked yet: that comes with Service states
+// (RFC 0006).
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Settings {
+  option (pnut.iface) = 1;
+
+  // A page of an owner's schema.  The first page marks the owner's
+  // settings undeclared; each page declares some again, or new ones; the
+  // last drops those still undeclared, gives new ones their defaults, and
+  // reads the owner's values from flash the first time.
+  rpc RegisterSchema (SettingsRegisterRequest) returns (SettingsReply) {
+    option (pnut.method) = 1;
+  }
+
+  // A setting's value; a secret's is never given
+  rpc Get (SettingsGetRequest) returns (SettingValue) {
+    option (pnut.method) = 2;
+  }
+
+  // Change a setting's value, checked against its schema
+  rpc Set (SettingsSetRequest) returns (SettingsReply) {
+    option (pnut.method) = 3;
+  }
+
+  // One setting, or all of an owner's, back to the default
+  rpc Reset (SettingsResetRequest) returns (SettingsReply) {
+    option (pnut.method) = 4;
+  }
+
+  // A page of an owner's values, in the order of their keys
+  rpc List (SettingsPageRequest) returns (SettingsValues) {
+    option (pnut.method) = 5;
+  }
+
+  // A page of an owner's schema, in the order of its keys: what the system
+  // UI draws its screens from (RFC 0019)
+  rpc Describe (SettingsPageRequest) returns (SettingsSchema) {
+    option (pnut.method) = 6;
+  }
+}
+
+// A setting's value: one of these, as its type says
+message SettingValue {
+  oneof value {
+    bool boolean = 1;
+    sint64 integer = 2;
+
+    // A string, or the name of a choice
+    string text = 3 [(nanopb).max_size = 257];
+  }
+}
+
+// A setting, as declared in its owner's schema
+message Setting {
+  enum Type {
+    NONE = 0;
+    BOOLEAN = 1;
+    INTEGER = 2;
+    STRING = 3;
+    CHOICE = 4;
+
+    // Stored encrypted (RFC 0025): refused until Security can do it
+    SECRET = 5;
+  }
+
+  // Lowercase letters, digits, dots and underscores
+  string key = 1 [(nanopb).max_size = 65];
+  Type type = 2;
+
+  // None for a secret
+  SettingValue default_value = 3;
+
+  // An integer's range
+  sint64 min = 4;
+  sint64 max = 5;
+
+  // The longest string or secret, in bytes
+  uint32 max_length = 6;
+
+  // A choice's values
+  repeated string choices = 7 [(nanopb).max_count = 16,
+                               (nanopb).max_size = 32];
+
+  // For the screens, string ids translated by the system UI (RFC 0017):
+  // the setting's label, its group, and an integer's unit
+  string label = 8 [(nanopb).max_size = 49];
+  string group = 9 [(nanopb).max_size = 49];
+  string unit = 10 [(nanopb).max_size = 17];
+
+  // Anyone may read it: the language, 12 or 24 hours, and the like
+  bool is_public = 11;
+}
+
+// The detail of an error answer (pnut.Error's code)
+message SettingsError {
+  enum Code {
+    NONE = 0;
+    UNKNOWN_OWNER = 1;            // Not registered
+    UNKNOWN_KEY = 2;              // Not in its owner's schema
+    WRONG_TYPE = 3;               // A value of another type
+    OUT_OF_RANGE = 4;             // An integer outside its range
+    TOO_LONG = 5;                 // A string longer than its schema says
+    NOT_A_CHOICE = 6;             // A name not among the choices
+    SECRET = 7;                   // Secrets cannot be stored yet
+    FULL = 8;                     // No room left in Settings' pools
+    BAD_SCHEMA = 9;               // A schema that does not hold together
+    NOT_REGISTERING = 10;         // A page of a schema without its first
+    BAD_NAME = 11;                // An owner or key with other characters
+  }
+}
+
+message SettingsReply {
+}
+
+message SettingsRegisterRequest {
+  string owner = 1 [(nanopb).max_size = 65];
+  bool first = 2;
+  bool last = 3;
+  repeated Setting settings = 4 [(nanopb).max_count = 3];
+}
+
+message SettingsGetRequest {
+  string owner = 1 [(nanopb).max_size = 65];
+  string key = 2 [(nanopb).max_size = 65];
+}
+
+message SettingsSetRequest {
+  string owner = 1 [(nanopb).max_size = 65];
+  string key = 2 [(nanopb).max_size = 65];
+  SettingValue value = 3;
+}
+
+// An empty key resets all of the owner's settings
+message SettingsResetRequest {
+  string owner = 1 [(nanopb).max_size = 65];
+  string key = 2 [(nanopb).max_size = 65];
+}
+
+// A page after the key last given; an empty one for the first page
+message SettingsPageRequest {
+  string owner = 1 [(nanopb).max_size = 65];
+  string after = 2 [(nanopb).max_size = 65];
+}
+
+// A setting's key and value; a secret's value is left out
+message SettingsEntry {
+  string key = 1 [(nanopb).max_size = 65];
+  SettingValue value = 2;
+}
+
+message SettingsValues {
+  repeated SettingsEntry entries = 1 [(nanopb).max_count = 8];
+  bool more = 2;
+}
+
+message SettingsSchema {
+  repeated Setting settings = 1 [(nanopb).max_count = 3];
+  bool more = 2;
+}
+
+// An owner's file in flash: its values, by key
+message SettingsFile {
+  repeated SettingsEntry entries = 1;
+}

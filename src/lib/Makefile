@@ -13,14 +13,15 @@ include $(APPDIR)/Make.defs
 CSRCS  = client.c clock.c conn.c log.c loop.c module.c msg.c pool.c
 CSRCS += service.c timer.c worker.c
 
-# The messages every interface shares (proto/pnut), once for all of the
-# interfaces' generated code, which needs nanopb; the top-level Makefile
-# generates them into build/gen
+# The interfaces' generated code (proto/pnut), once for every program that
+# serves or calls them, which needs nanopb; the top-level Makefile
+# generates it into build/gen.  The tests' interfaces, in pnut/test/, are
+# the tests' own.
 
 ifneq ($(CONFIG_NETUTILS_NANOPB),)
 GENDIR  = $(realpath $(APPDIR)/external)/../build/gen
 
-CSRCS  += $(GENDIR)/pnut/error.pb.c
+CSRCS  += $(wildcard $(GENDIR)/pnut/*.c)
 
 CFLAGS += ${INCDIR_PREFIX}$(GENDIR)
 CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/netutils/nanopb/nanopb

@@ -7,9 +7,9 @@ packages. It is written from its design, in
 what the system does and why.
 
 The work has just started. The tree builds NuttX's configurations for the
-simulator, QEMU and the LilyGo T-Deck Max, and the first piece of pnut-os:
-the service library, `libpnut`, tested on the computer and in the
-simulator.
+simulator, QEMU and the LilyGo T-Deck Max, and the first pieces of
+pnut-os: the service library, `libpnut`, and the system program with its
+first service, Settings, tested on the computer and in the simulator.
 
 ## Getting the tree
 
@@ -74,7 +74,8 @@ One target is configured at a time; building another configures afresh.
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
-| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets |
+| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; the interfaces' generated code |
+| `src/system/` | the system program, `pnut_system` (RFC 0007), with Settings (RFC 0025) |
 | `proto/` | the interfaces (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
@@ -85,7 +86,7 @@ As the code arrives:
 
 | Path | What |
 |---|---|
-| `src/system/<program>/` | the system's programs and their services |
+| `src/<program>/` | the system's other programs and their services |
 | `src/apps/<id>/` | built-in apps |
 | `proto/` | the interfaces, topics and schemas, as `.proto` files |
 | `sdk/` | the SDK for app developers |
