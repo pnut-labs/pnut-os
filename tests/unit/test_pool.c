@@ -13,8 +13,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
-#include <stdalign.h>
 #include <signal.h>
+#include <stdalign.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
