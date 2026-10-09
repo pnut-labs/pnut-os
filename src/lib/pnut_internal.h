@@ -23,11 +23,14 @@
 #include <stdint.h>
 #include <sys/epoll.h>
 
+#include <pnut/client.h>
 #include <pnut/compiler.h>
 #include <pnut/log.h>
 #include <pnut/loop.h>
 #include <pnut/module.h>
+#include <pnut/msg.h>
 #include <pnut/pool.h>
+#include <pnut/service.h>
 #include <pnut/timer.h>
 #include <pnut/worker.h>
 
@@ -65,6 +68,34 @@
 #  define CONFIG_PNUT_LIB_LOG_LINE          160
 #endif
 
+#ifndef CONFIG_PNUT_LIB_RUNDIR
+#  define CONFIG_PNUT_LIB_RUNDIR            "/var/run"
+#endif
+
+#ifndef CONFIG_PNUT_LIB_CONNS
+#  define CONFIG_PNUT_LIB_CONNS             8
+#endif
+
+#ifndef CONFIG_PNUT_LIB_INFLIGHT
+#  define CONFIG_PNUT_LIB_INFLIGHT          8
+#endif
+
+#ifndef CONFIG_PNUT_LIB_CALL_TIMEOUT
+#  define CONFIG_PNUT_LIB_CALL_TIMEOUT      5000
+#endif
+
+#ifndef CONFIG_PNUT_LIB_RECONNECT_MIN
+#  define CONFIG_PNUT_LIB_RECONNECT_MIN     100
+#endif
+
+#ifndef CONFIG_PNUT_LIB_RECONNECT_MAX
+#  define CONFIG_PNUT_LIB_RECONNECT_MAX     5000
+#endif
+
+#ifndef CONFIG_PNUT_LIB_SENDBUF
+#  define CONFIG_PNUT_LIB_SENDBUF           8192
+#endif
+
 /* The loop watches three descriptors of its own: signals, timers and the
  * workers' results.
  */
@@ -93,7 +124,15 @@ enum pnut_timer_state_e
   PNUT_TIMER_ARMED = 0,
   PNUT_TIMER_FIRING,              /* Its handler runs */
   PNUT_TIMER_CANCELLED,           /* Cancelled by its handler */
+  PNUT_TIMER_IDLE,                /* Kept, not armed */
+  PNUT_TIMER_REARMED,             /* Kept, set again by its handler */
 };
+
+/* A timer runs once, periodically, or is kept: a kept timer stays in the
+ * pool from pnut_timer_keep() to pnut_timer_drop(), and is set and
+ * cleared any number of times in between, so that its owner never runs
+ * short of one.
+ */
 
 struct pnut_timer_s
 {
@@ -101,6 +140,7 @@ struct pnut_timer_s
   uint64_t deadline;              /* Milliseconds, monotonic */
   uint32_t period;                /* Milliseconds; zero for once */
   uint8_t state;
+  bool kept;
   pnut_timer_handler_t handler;
   FAR void *arg;
 };
@@ -164,6 +204,53 @@ struct pnut_loop_s
  * Public Function Prototypes
  ****************************************************************************/
 
+/* A connection: a socket with a receive buffer of one message and a send
+ * buffer the loop drains as the socket takes more.  Its generation changes
+ * whenever it closes, so that an endpoint kept from before sees it.
+ *
+ * Its owner may leave a message for later, when the send buffer has no
+ * room for what it would answer: the connection is then held, reading
+ * nothing, and offers the message again once the buffer has drained, or
+ * once the owner says room was given back (pnut_conn_recheck()).
+ */
+
+enum pnut_conn_next_e
+{
+  PNUT_CONN_NEXT = 0,             /* Handled: on to the next message */
+  PNUT_CONN_GONE,                 /* The owner, or the connection, gone */
+  PNUT_CONN_WAIT,                 /* Offer it again when there is room */
+};
+
+struct pnut_conn_s
+{
+  FAR struct pnut_loop_s *loop;
+  int fd;                         /* -1 when closed */
+  uint32_t gen;
+  uint32_t events;                /* What the loop watches it for */
+  bool held;                      /* A message waits for room */
+  bool recheck;                   /* Held, and room was given back */
+  uint8_t pending;                /* Requests not answered yet */
+  size_t reserved;                /* Kept for their answers, in bytes */
+  FAR uint8_t *rx;                /* PNUT_MSG_MAX bytes */
+  uint16_t rxlen;
+  FAR uint8_t *tx;
+  size_t txlen;
+  size_t txsize;
+  pid_t pid;                      /* The peer, from SO_PEERCRED */
+  uid_t uid;
+  gid_t gid;
+
+  /* The owner's handlers: a message has come in (a PNUT_CONN_ value);
+   * the peer has gone.
+   */
+
+  CODE int (*message)(FAR struct pnut_conn_s *conn,
+                      FAR const struct pnut_msghdr_s *hdr,
+                      FAR const uint8_t *payload);
+  CODE void (*closed)(FAR struct pnut_conn_s *conn);
+  FAR void *owner;
+};
+
 /* clock.c */
 
 uint64_t pnut_now(void);
@@ -183,10 +270,37 @@ void pnut_loop_budget(FAR struct pnut_loop_s *loop, uint64_t start,
 int pnut_timer_init(FAR struct pnut_loop_s *loop);
 void pnut_timer_deinit(FAR struct pnut_loop_s *loop);
 
+/* timer.c: kept timers.  keep returns -EBUSY when the pool is empty; set
+ * (re)arms it delay ms from now, also from its own handler; clear disarms
+ * it; drop gives it back, also from its own handler.
+ */
+
+int pnut_timer_keep(FAR struct pnut_loop_s *loop,
+                    pnut_timer_handler_t handler, FAR void *arg,
+                    FAR struct pnut_timer_s **timerp);
+void pnut_timer_set(FAR struct pnut_loop_s *loop,
+                    FAR struct pnut_timer_s *timer, uint32_t delay);
+void pnut_timer_clear(FAR struct pnut_loop_s *loop,
+                      FAR struct pnut_timer_s *timer);
+void pnut_timer_drop(FAR struct pnut_loop_s *loop,
+                     FAR struct pnut_timer_s *timer);
+
 /* worker.c */
 
 int pnut_worker_init(FAR struct pnut_loop_s *loop);
 void pnut_worker_deinit(FAR struct pnut_loop_s *loop);
+
+/* conn.c */
+
+int pnut_conn_init(FAR struct pnut_conn_s *conn,
+                   FAR struct pnut_loop_s *loop, size_t txsize);
+void pnut_conn_deinit(FAR struct pnut_conn_s *conn);
+int pnut_conn_attach(FAR struct pnut_conn_s *conn, int fd);
+void pnut_conn_close(FAR struct pnut_conn_s *conn);
+int pnut_conn_send(FAR struct pnut_conn_s *conn,
+                   FAR const struct pnut_msghdr_s *hdr,
+                   FAR const void *payload);
+void pnut_conn_recheck(FAR struct pnut_conn_s *conn);
 
 /* module.c */
 
