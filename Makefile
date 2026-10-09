@@ -11,6 +11,8 @@
 #   make <target>         configure NuttX for the target, and build it
 #   make <target> run     build, then run it (the simulator, QEMU)
 #   make <target> flash   build, then write it to the device
+#   make test             run the unit tests, on the computer
+#   make <target> test    build, then run the tests inside it (sim)
 #   make style            check pnut-os's C code with NuttX's nxstyle
 #   make clean            remove the build
 #
@@ -35,7 +37,7 @@ GOALS   := $(filter $(TARGETS),$(MAKECMDGOALS))
 TARGET  := $(firstword $(GOALS))
 
 .DEFAULT_GOAL := help
-.PHONY: help $(TARGETS) run flash style clean submodules external force
+.PHONY: help $(TARGETS) run flash test style clean submodules external force
 
 ifneq ($(word 2,$(GOALS)),)
   $(error one target at a time: $(GOALS))
@@ -47,8 +49,14 @@ ifneq ($(filter run flash,$(MAKECMDGOALS)),)
   endif
 endif
 
+ifneq ($(filter test,$(MAKECMDGOALS)),)
+  ifneq ($(TARGET),)
+    TARGETTEST := y
+  endif
+endif
+
 help:
-	@echo "make <target> [run|flash], make style, make clean"
+	@echo "make <target> [run|flash], make test, make style, make clean"
 	@echo "targets: $(TARGETS)"
 
 # A target: configure when the target changes or its files do, then build.
@@ -68,6 +76,12 @@ endif
 ifneq ($(filter flash,$(MAKECMDGOALS)),)
   ifeq ($(FLASH),)
     $(error target $(TARGET) has no device to flash)
+  endif
+endif
+
+ifeq ($(TARGETTEST),y)
+  ifeq ($(TEST),)
+    $(error target $(TARGET) has no tests)
   endif
 endif
 
@@ -92,6 +106,11 @@ run: $(TARGET)
 
 flash: $(TARGET)
 	$(FLASH)
+
+ifeq ($(TARGETTEST),y)
+test: $(TARGET)
+	$(TEST)
+endif
 endif
 
 force:
@@ -111,6 +130,13 @@ external: | submodules
 	  echo "error: $(APPS)/external is not a link" >&2; exit 1; \
 	fi
 	@ln -sfn ../src $(APPS)/external
+
+# The unit tests: libpnut built for the computer, with cmocka
+
+ifneq ($(TARGETTEST),y)
+test:
+	$(MAKE) -C tests/unit
+endif
 
 # Style: NuttX's nxstyle on every C file of pnut-os, submodules apart
 
