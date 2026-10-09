@@ -22,8 +22,8 @@
  * Name: module_checkready
  *
  * Description:
- *   The program is ready once every module is.  Telling nxinit (RFC 0006)
- *   waits for nxinit to learn it; until then the loop logs it.
+ *   The program is ready once every module is: the loop logs it, and
+ *   tells NxInit (RFC 0006).
  *
  ****************************************************************************/
 
@@ -46,6 +46,7 @@ static void module_checkready(FAR struct pnut_loop_s *loop)
 
   loop->ready = true;
   pnut_loop_log(loop, PNUT_LOG_INFO, "Ready");
+  pnut_ready_tell(loop);
 }
 
 /****************************************************************************
@@ -144,6 +145,8 @@ int pnut_module_startall(FAR struct pnut_loop_s *loop)
 void pnut_module_stopall(FAR struct pnut_loop_s *loop)
 {
   FAR struct pnut_module_s *module;
+
+  pnut_ready_stop(loop);
 
   for (module = loop->last; module != NULL; module = module->prev)
     {

@@ -1,0 +1,39 @@
+/****************************************************************************
+ * pnut-os/etc/init.d/pnut.rc
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Mateusz Pianka
+ *
+ ****************************************************************************/
+
+/* NxInit's configuration for pnut-os (RFC 0006): the board's own first,
+ * for its file systems and console, then pnut-os's programs.  NxInit
+ * reads this file (CONFIG_SYSTEM_NXINIT_RC_FILE_PATH); the build lays
+ * pnut-os's etc/ over the board's /etc (ETC_OVERLAY).
+ */
+
+#include <nuttx/config.h>
+
+import /etc/init.d/init.rc
+
+#ifdef CONFIG_PNUT_SYSTEM
+
+/* The system program: Settings and Service states (RFC 0007).  It says
+ * when it is ready, through NxInit's control socket, and the others wait
+ * for it:
+ *
+ *   on property:svc.system.state=ready
+ *
+ * Asked to stop, it writes the settings not written yet:
+ * CONFIG_SYSTEM_NXINIT_SERVICE_GENTLE_KILL_TIMEOUT gives it the time.
+ */
+
+service system pnut_system
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on init
+   start system
+#endif

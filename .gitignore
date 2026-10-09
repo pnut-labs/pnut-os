@@ -8,6 +8,9 @@ Make.dep
 *.a
 *.d
 
+# but not /etc's init.d, which *.d would match
+!/etc/init.d/
+
 # Python's caches
 __pycache__/
 

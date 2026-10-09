@@ -148,6 +148,51 @@ static void loop_reap(FAR struct pnut_loop_s *loop)
 }
 
 /****************************************************************************
+ * Name: loop_watch
+ *
+ * Description:
+ *   Watch a descriptor in the slot chosen, or -EBUSY when there is none.
+ *
+ ****************************************************************************/
+
+static int loop_watch(FAR struct pnut_loop_s *loop,
+                      FAR struct pnut_watch_s *watch, int fd,
+                      uint32_t events, pnut_fd_handler_t handler,
+                      FAR void *arg)
+{
+  struct epoll_event ev;
+
+  if (fd < 0 || handler == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (loop_find(loop, fd) != NULL)
+    {
+      return -EEXIST;
+    }
+
+  if (watch == NULL)
+    {
+      return -EBUSY;
+    }
+
+  memset(&ev, 0, sizeof(ev));
+  ev.events   = events;
+  ev.data.ptr = watch;
+
+  if (epoll_ctl(loop->epfd, EPOLL_CTL_ADD, fd, &ev) < 0)
+    {
+      return -errno;
+    }
+
+  watch->fd      = fd;
+  watch->handler = handler;
+  watch->arg     = arg;
+  return OK;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -162,6 +207,9 @@ void pnut_loop_defaults(FAR struct pnut_loop_config_s *config)
   config->stacksize = CONFIG_PNUT_LIB_WORKER_STACKSIZE;
   config->budget    = CONFIG_PNUT_LIB_BUDGET;
   config->rundir    = CONFIG_PNUT_LIB_RUNDIR;
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+  config->initctl   = CONFIG_SYSTEM_NXINIT_CONTROL_PATH;
+#endif
 }
 
 int pnut_loop_create(FAR const struct pnut_loop_config_s *config,
@@ -173,7 +221,8 @@ int pnut_loop_create(FAR const struct pnut_loop_config_s *config,
 
   *loopp = NULL;
 
-  if (config != NULL && config->fds > UINT16_MAX - PNUT_LOOP_OWN_FDS)
+  if (config != NULL && (config->fds > UINT16_MAX - PNUT_LOOP_OWN_FDS - 1 ||
+                         config->timers == UINT16_MAX))
     {
       return -EINVAL;
     }
@@ -193,12 +242,14 @@ int pnut_loop_create(FAR const struct pnut_loop_config_s *config,
       pnut_loop_defaults(&loop->config);
     }
 
-  loop->epfd    = -1;
-  loop->sigfd   = -1;
-  loop->timerfd = -1;
-  loop->eventfd = -1;
+  loop->epfd      = -1;
+  loop->sigfd     = -1;
+  loop->timerfd   = -1;
+  loop->eventfd   = -1;
+  loop->nxinit.fd = -1;
 
-  loop->nwatches = loop->config.fds + PNUT_LOOP_OWN_FDS;
+  loop->nwatches = loop->config.fds + PNUT_LOOP_OWN_FDS +
+                   PNUT_LOOP_READY(loop);
   loop->watches  = calloc(loop->nwatches, sizeof(*loop->watches));
   loop->events   = calloc(loop->nwatches, sizeof(*loop->events));
   if (loop->watches == NULL || loop->events == NULL)
@@ -239,6 +290,12 @@ int pnut_loop_create(FAR const struct pnut_loop_config_s *config,
     }
 
   ret = pnut_timer_init(loop);
+  if (ret < 0)
+    {
+      goto errout;
+    }
+
+  ret = pnut_ready_init(loop);
   if (ret < 0)
     {
       goto errout;
@@ -378,20 +435,11 @@ int pnut_loop_watch(FAR struct pnut_loop_s *loop, int fd, uint32_t events,
                     pnut_fd_handler_t handler, FAR void *arg)
 {
   FAR struct pnut_watch_s *watch = NULL;
-  struct epoll_event ev;
   uint16_t i;
 
-  if (fd < 0 || handler == NULL)
-    {
-      return -EINVAL;
-    }
+  /* The last slot is kept for telling NxInit, when there is one */
 
-  if (loop_find(loop, fd) != NULL)
-    {
-      return -EEXIST;
-    }
-
-  for (i = 0; i < loop->nwatches; i++)
+  for (i = 0; i < loop->nwatches - PNUT_LOOP_READY(loop); i++)
     {
       if (loop->watches[i].fd < 0 && !loop->watches[i].dead)
         {
@@ -400,24 +448,22 @@ int pnut_loop_watch(FAR struct pnut_loop_s *loop, int fd, uint32_t events,
         }
     }
 
-  if (watch == NULL)
+  return loop_watch(loop, watch, fd, events, handler, arg);
+}
+
+int pnut_loop_watch_ready(FAR struct pnut_loop_s *loop, int fd,
+                          uint32_t events, pnut_fd_handler_t handler,
+                          FAR void *arg)
+{
+  FAR struct pnut_watch_s *watch = &loop->watches[loop->nwatches - 1];
+
+  if (!PNUT_LOOP_READY(loop))
     {
-      return -EBUSY;
+      return -EINVAL;
     }
 
-  memset(&ev, 0, sizeof(ev));
-  ev.events   = events;
-  ev.data.ptr = watch;
-
-  if (epoll_ctl(loop->epfd, EPOLL_CTL_ADD, fd, &ev) < 0)
-    {
-      return -errno;
-    }
-
-  watch->fd      = fd;
-  watch->handler = handler;
-  watch->arg     = arg;
-  return OK;
+  return loop_watch(loop, watch->fd < 0 && !watch->dead ? watch : NULL,
+                    fd, events, handler, arg);
 }
 
 int pnut_loop_rewatch(FAR struct pnut_loop_s *loop, int fd,
