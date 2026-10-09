@@ -84,8 +84,10 @@ typedef CODE void (*pnut_handler_t)(FAR struct pnut_service_s *service,
 
 /* A method the service serves.  A request for another method is answered
  * "not found", one for another version of it "invalid", by the library.
- * replymax is the largest body its answers have, which the generator takes
- * from the interface's limits; zero, a whole message.
+ * replymax is the largest body its answers have, an error's detail
+ * included, which the generator takes from the interface's limits: the
+ * larger of its answer's and pnut.Error's, PNUT_ERROR_SIZE.  Zero, a whole
+ * message.
  */
 
 struct pnut_method_s
@@ -113,7 +115,8 @@ struct pnut_method_s
  *   methods  - The methods served; kept, not copied.
  *   nmethods - How many.
  *   conns    - Connections at once; zero for CONFIG_PNUT_LIB_CONNS.  One
- *              more is closed as soon as it is accepted.
+ *              more is closed as soon as it is accepted, and so is one
+ *              more than CONFIG_PNUT_LIB_PERCALLER from one program.
  *   arg      - Passed to the handlers.
  *   servicep - Where to return the service.
  *

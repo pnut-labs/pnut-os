@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// The detail of an error answer (RFC 0023): the body of any answer whose
+// status is not OK, when the service gives one.  Every method's room for
+// its answer counts it.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+
+message Error {
+  // Which error of the status's kind: the interface's own numbers, from
+  // an enum in its .proto; 0 for none
+  uint32 code = 1;
+
+  // For the log and developers, never shown on a screen (RFC 0017), and
+  // never the user's data (RFC 0026)
+  string text = 2 [(nanopb).max_size = 64];
+}

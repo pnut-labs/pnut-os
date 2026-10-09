@@ -68,6 +68,17 @@ config PNUT_LIB_CONNS
 		buffer (PNUT_LIB_SENDBUF): 96 KB for 8 connections with the
 		defaults.  A client takes as much for its own connection.
 
+config PNUT_LIB_PERCALLER
+	int "Connections a program holds to one service"
+	default 2
+	range 1 255
+	---help---
+		One more from the same program, known by its pid from
+		SO_PEERCRED, is closed as soon as it is accepted, so that one
+		program cannot take every connection (RFC 0023).  Two let a
+		client reconnect before the service has seen its old connection
+		close.
+
 config PNUT_LIB_INFLIGHT
 	int "Calls a client has in flight at once"
 	default 8

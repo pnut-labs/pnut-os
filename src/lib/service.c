@@ -245,6 +245,30 @@ static int service_message(FAR struct pnut_conn_s *conn,
 }
 
 /****************************************************************************
+ * Name: service_held
+ *
+ * Description:
+ *   How many of the service's connections a program holds.
+ *
+ ****************************************************************************/
+
+static int service_held(FAR struct pnut_service_s *service, pid_t pid)
+{
+  int held = 0;
+  uint8_t i;
+
+  for (i = 0; i < service->nconns; i++)
+    {
+      if (service->conns[i].fd >= 0 && service->conns[i].pid == pid)
+        {
+          held++;
+        }
+    }
+
+  return held;
+}
+
+/****************************************************************************
  * Name: service_resume
  *
  * Description:
@@ -316,6 +340,32 @@ static void service_accept(FAR struct pnut_loop_s *loop, int fd,
 
       service->failing = false;
 
+      memset(&cred, 0, sizeof(cred));
+      len = sizeof(cred);
+      if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &len) < 0)
+        {
+          cred.pid = -1;
+          cred.uid = -1;
+          cred.gid = -1;
+        }
+
+      /* A program holds a few of the service's connections at most, so
+       * that it cannot take them all (RFC 0023).  A caller not known by
+       * its pid is not counted: it cannot be told from the others.  A
+       * refused client's tries grow apart, and so do these lines in the
+       * log.
+       */
+
+      if (cred.pid > 0 &&
+          service_held(service, cred.pid) >= CONFIG_PNUT_LIB_PERCALLER)
+        {
+          pnut_loop_log(loop, PNUT_LOG_WARNING,
+                        "%s: pid %d holds as many connections as it may",
+                        service->addr.sun_path, (int)cred.pid);
+          close(cfd);
+          continue;
+        }
+
       conn = NULL;
       for (i = 0; i < service->nconns; i++)
         {
@@ -333,15 +383,6 @@ static void service_accept(FAR struct pnut_loop_s *loop, int fd,
                         service->addr.sun_path);
           close(cfd);
           continue;
-        }
-
-      memset(&cred, 0, sizeof(cred));
-      len = sizeof(cred);
-      if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cred, &len) < 0)
-        {
-          cred.pid = -1;
-          cred.uid = -1;
-          cred.gid = -1;
         }
 
       conn->pid = cred.pid;
