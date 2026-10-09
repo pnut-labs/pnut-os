@@ -26,8 +26,8 @@ warns when they differ from the commits pnut-os records.
 
 | For | Tools |
 |---|---|
-| every target | GNU make; kconfig-frontends; Python 3 with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3` |
-| `sim` | gcc, genromfs, xxd, zlib's headers |
+| every target | GNU make; kconfig-frontends; Python 3 with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc` |
+| `sim` | gcc, zlib's headers |
 | `qemu`, `tdeck-max` | Espressif's toolchain `xtensa-esp-elf` 14.2 (GCC 15 does not build the ESP HAL); esptool; Espressif's QEMU, which has the `esp32s3` machine |
 
 ## Building
@@ -44,7 +44,7 @@ warns when they differ from the commits pnut-os records.
 |---|---|
 | `sim` | NuttX's simulator, `sim:nsh` |
 | `qemu` | the ESP32-S3 in Espressif's QEMU, `esp32s3-devkit:qemu_debug` |
-| `tdeck-max` | the LilyGo T-Deck Max, `lilygo-tdeck-max:nsh`, flashed over USB (`ESPTOOL_PORT`, `/dev/ttyACM0` by default) |
+| `tdeck-max` | the LilyGo T-Deck Max, `lilygo-tdeck-max:full`, flashed over USB (`ESPTOOL_PORT`, `/dev/ttyACM0` by default) |
 
 The boards live in [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx).
 

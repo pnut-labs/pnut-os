@@ -8,6 +8,6 @@
 
 # The LilyGo T-Deck Max, flashed over its USB Serial/JTAG port.
 
-BOARD_CONFIG  = lilygo-tdeck-max:nsh
+BOARD_CONFIG  = lilygo-tdeck-max:full
 ESPTOOL_PORT ?= /dev/ttyACM0
 FLASH         = $(MAKE) -C $(NUTTX) flash ESPTOOL_PORT=$(ESPTOOL_PORT)
