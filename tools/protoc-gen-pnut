@@ -238,7 +238,7 @@ def topics_header(path, topics, fdesc):
     w.append(f'#include "{path}.pb.h"')
     w.append("")
     for t in topics:
-        p, u = t.prefix, t.prefix.upper()
+        p = t.prefix
         lines = [f"{t.name}: {t.full}, {t.depth} deep"]
         lines += t.doc.splitlines() if t.doc else []
         if len(lines) == 1:
