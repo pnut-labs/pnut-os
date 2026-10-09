@@ -161,6 +161,7 @@ void pnut_loop_defaults(FAR struct pnut_loop_config_s *config)
   config->workers   = CONFIG_PNUT_LIB_WORKERS;
   config->stacksize = CONFIG_PNUT_LIB_WORKER_STACKSIZE;
   config->budget    = CONFIG_PNUT_LIB_BUDGET;
+  config->rundir    = CONFIG_PNUT_LIB_RUNDIR;
 }
 
 int pnut_loop_create(FAR const struct pnut_loop_config_s *config,

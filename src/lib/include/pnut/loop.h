@@ -43,6 +43,7 @@ struct pnut_loop_config_s
   uint8_t workers;                /* Worker threads */
   size_t stacksize;               /* A worker's stack, in bytes */
   uint32_t budget;                /* A handler's budget, in ms */
+  FAR const char *rundir;         /* Where services' sockets are */
 };
 
 /* Called on the loop when a watched descriptor is ready.  events are

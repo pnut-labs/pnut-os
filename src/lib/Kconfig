@@ -9,12 +9,14 @@ config PNUT_LIB
 	bool "libpnut, the service library"
 	default n
 	depends on !DISABLE_ALL_SIGNALS && !DISABLE_PTHREAD
+	depends on NET_LOCAL_STREAM && NET_LOCAL_SCM && NET_SOCKOPTS
 	select EVENT_FD
 	select TIMER_FD
 	select SIGNAL_FD
 	---help---
 		The code every pnut-os program shares (RFC 0023): an event loop on
-		epoll, timers, workers, modules, fixed pools and logging.
+		epoll, timers, workers, modules, fixed pools, logging, and
+		services and clients on local stream sockets.
 
 if PNUT_LIB
 
@@ -25,6 +27,10 @@ config PNUT_LIB_FDS
 config PNUT_LIB_TIMERS
 	int "Timers a loop runs at once"
 	default 16
+	---help---
+		The program's own, and one for each service and each client open.
+		A handler that closes one and opens another needs one more: the
+		old one's is given back once the handler returns.
 
 config PNUT_LIB_JOBS
 	int "Jobs a loop queues at once"
@@ -48,5 +54,50 @@ config PNUT_LIB_BUDGET
 config PNUT_LIB_LOG_LINE
 	int "The longest log line, in characters"
 	default 160
+
+config PNUT_LIB_RUNDIR
+	string "Where services' sockets are"
+	default "/var/run"
+
+config PNUT_LIB_CONNS
+	int "Connections a service accepts at once"
+	default 8
+	range 1 255
+	---help---
+		Each takes a receive buffer of one message (4096 bytes) and a send
+		buffer (PNUT_LIB_SENDBUF): 96 KB for 8 connections with the
+		defaults.  A client takes as much for its own connection.
+
+config PNUT_LIB_INFLIGHT
+	int "Calls a client has in flight at once"
+	default 8
+	range 1 255
+	---help---
+		And the requests a service's connection may have waiting for
+		their answers: one more is answered busy.
+
+config PNUT_LIB_CALL_TIMEOUT
+	int "A call's timeout, in milliseconds"
+	default 5000
+
+config PNUT_LIB_RECONNECT_MIN
+	int "A client's first wait before reconnecting, in milliseconds"
+	default 100
+
+config PNUT_LIB_RECONNECT_MAX
+	int "A client's longest wait before reconnecting, in milliseconds"
+	default 5000
+
+config PNUT_LIB_SENDBUF
+	int "A connection's send buffer, in bytes"
+	default 8192
+	---help---
+		At least one message (4096 bytes).  A local socket takes
+		CONFIG_DEV_FIFO_SIZE bytes at a time; the rest waits here.  A
+		service's connection takes a request only with room for its
+		answer kept here, as large as its method says: with 8192 bytes,
+		two requests of methods that say nothing (a whole message each)
+		wait for their answers at most, and those after them in the
+		socket.
 
 endif # PNUT_LIB

@@ -10,6 +10,7 @@ include $(APPDIR)/Make.defs
 
 # libpnut, built into nuttx-apps' library with the programs
 
-CSRCS = clock.c log.c loop.c module.c pool.c timer.c worker.c
+CSRCS  = client.c clock.c conn.c log.c loop.c module.c msg.c pool.c
+CSRCS += service.c timer.c worker.c
 
 include $(APPDIR)/Application.mk

@@ -80,6 +80,37 @@ static void timer_insert(FAR struct pnut_loop_s *loop,
 }
 
 /****************************************************************************
+ * Name: timer_unlink
+ *
+ * Description:
+ *   Take an armed timer out of the list, and set the timer descriptor for
+ *   the next if it was the soonest.
+ *
+ ****************************************************************************/
+
+static void timer_unlink(FAR struct pnut_loop_s *loop,
+                         FAR struct pnut_timer_s *timer)
+{
+  FAR struct pnut_timer_s **link;
+  bool first = loop->armed == timer;
+
+  for (link = &loop->armed; *link != NULL; link = &(*link)->next)
+    {
+      if (*link == timer)
+        {
+          *link = timer->next;
+          timer->next = NULL;
+          break;
+        }
+    }
+
+  if (first)
+    {
+      timer_arm(loop);
+    }
+}
+
+/****************************************************************************
  * Name: timer_expired
  *
  * Description:
@@ -114,9 +145,23 @@ static void timer_expired(FAR struct pnut_loop_s *loop, int fd,
       timer->handler(loop, timer, timer->arg);
       pnut_loop_budget(loop, start, "timer");
 
-      if (timer->state == PNUT_TIMER_CANCELLED || timer->period == 0)
+      if (timer->state == PNUT_TIMER_CANCELLED ||
+          (!timer->kept && timer->period == 0))
         {
           pnut_pool_free(&loop->timers, timer);
+        }
+      else if (timer->kept)
+        {
+          /* Set again by its handler, or idle until it is */
+
+          if (timer->state == PNUT_TIMER_REARMED)
+            {
+              timer_insert(loop, timer);
+            }
+          else
+            {
+              timer->state = PNUT_TIMER_IDLE;
+            }
         }
       else
         {
@@ -195,6 +240,7 @@ int pnut_timer_start(FAR struct pnut_loop_s *loop, uint32_t delay,
 
   timer->deadline = pnut_now() + delay;
   timer->period   = period;
+  timer->kept     = false;
   timer->handler  = handler;
   timer->arg      = arg;
 
@@ -215,9 +261,6 @@ int pnut_timer_start(FAR struct pnut_loop_s *loop, uint32_t delay,
 void pnut_timer_cancel(FAR struct pnut_loop_s *loop,
                        FAR struct pnut_timer_s *timer)
 {
-  FAR struct pnut_timer_s **link;
-  bool first;
-
   if (timer == NULL)
     {
       return;
@@ -231,20 +274,111 @@ void pnut_timer_cancel(FAR struct pnut_loop_s *loop,
       return;
     }
 
-  first = loop->armed == timer;
+  timer_unlink(loop, timer);
+  pnut_pool_free(&loop->timers, timer);
+}
 
-  for (link = &loop->armed; *link != NULL; link = &(*link)->next)
+int pnut_timer_keep(FAR struct pnut_loop_s *loop,
+                    pnut_timer_handler_t handler, FAR void *arg,
+                    FAR struct pnut_timer_s **timerp)
+{
+  FAR struct pnut_timer_s *timer;
+
+  timer = pnut_pool_alloc(&loop->timers);
+  if (timer == NULL)
     {
-      if (*link == timer)
-        {
-          *link = timer->next;
-          pnut_pool_free(&loop->timers, timer);
-          break;
-        }
+      return -EBUSY;
     }
 
-  if (first)
+  timer->next     = NULL;
+  timer->deadline = 0;
+  timer->period   = 0;
+  timer->state    = PNUT_TIMER_IDLE;
+  timer->kept     = true;
+  timer->handler  = handler;
+  timer->arg      = arg;
+
+  *timerp = timer;
+  return OK;
+}
+
+void pnut_timer_set(FAR struct pnut_loop_s *loop,
+                    FAR struct pnut_timer_s *timer, uint32_t delay)
+{
+  timer->deadline = pnut_now() + delay;
+
+  switch (timer->state)
+    {
+      case PNUT_TIMER_FIRING:
+      case PNUT_TIMER_REARMED:
+
+        /* From its own handler: put back in the list once it returns */
+
+        timer->state = PNUT_TIMER_REARMED;
+        return;
+
+      case PNUT_TIMER_ARMED:
+        timer_unlink(loop, timer);
+        break;
+
+      default:
+        break;
+    }
+
+  timer_insert(loop, timer);
+  if (loop->armed == timer)
     {
       timer_arm(loop);
     }
+}
+
+void pnut_timer_clear(FAR struct pnut_loop_s *loop,
+                      FAR struct pnut_timer_s *timer)
+{
+  switch (timer->state)
+    {
+      case PNUT_TIMER_ARMED:
+        timer_unlink(loop, timer);
+        timer->state = PNUT_TIMER_IDLE;
+        break;
+
+      case PNUT_TIMER_REARMED:
+
+        /* From its own handler: idle once it returns */
+
+        timer->state = PNUT_TIMER_FIRING;
+        break;
+
+      default:
+        break;
+    }
+}
+
+void pnut_timer_drop(FAR struct pnut_loop_s *loop,
+                     FAR struct pnut_timer_s *timer)
+{
+  if (timer == NULL)
+    {
+      return;
+    }
+
+  switch (timer->state)
+    {
+      case PNUT_TIMER_FIRING:
+      case PNUT_TIMER_REARMED:
+
+        /* From its own handler: freed once it returns */
+
+        timer->state = PNUT_TIMER_CANCELLED;
+        return;
+
+      case PNUT_TIMER_ARMED:
+        timer_unlink(loop, timer);
+        break;
+
+      default:
+        break;
+    }
+
+  pnut_pool_free(&loop->timers, timer);
 }
