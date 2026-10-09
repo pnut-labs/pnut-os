@@ -592,7 +592,7 @@ def source(path, svc, fdesc):
     return "\n".join(w)
 
 
-def reference(svc, fdesc, notes):
+def reference(svc, fdesc):
     w = [f"# {svc.full}", ""]
     if svc.doc:
         w += [svc.doc, ""]
@@ -643,7 +643,7 @@ def generate(request):
 
             for suffix, text in ((".pnut.h", header(path, svc, fdesc)),
                                  (".pnut.c", source(path, svc, fdesc)),
-                                 (".md", reference(svc, fdesc, notes))):
+                                 (".md", reference(svc, fdesc))):
                 out = response.file.add()
                 out.name = path + suffix
                 out.content = text
