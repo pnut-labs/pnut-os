@@ -95,6 +95,7 @@ static const char * const g_settings_errors[] =
   "bad schema",
   "not registering",
   "bad name",
+  "registering",
 };
 
 /****************************************************************************
@@ -144,6 +145,16 @@ static int settings_path(FAR struct settings_s *settings,
   return ret < 0 || ret >= SETTINGS_PATH_MAX ? -ENAMETOOLONG : OK;
 }
 
+/* A file read as it is decoded, and whether reading it failed, which a
+ * file that does not decode is told from
+ */
+
+struct settings_input_s
+{
+  int fd;
+  int error;                      /* Zero, or the errno of a failed read */
+};
+
 /****************************************************************************
  * Name: settings_read
  *
@@ -155,12 +166,12 @@ static int settings_path(FAR struct settings_s *settings,
 static bool settings_read(FAR pb_istream_t *stream, FAR pb_byte_t *buf,
                           size_t count)
 {
-  int fd = (int)(intptr_t)stream->state;
+  FAR struct settings_input_s *input = stream->state;
   ssize_t n;
 
   while (count > 0)
     {
-      n = read(fd, buf, count);
+      n = read(input->fd, buf, count);
       if (n < 0 && errno == EINTR)
         {
           continue;
@@ -168,6 +179,7 @@ static bool settings_read(FAR pb_istream_t *stream, FAR pb_byte_t *buf,
 
       if (n <= 0)
         {
+          input->error = n < 0 ? errno : EIO;
           return false;
         }
 
@@ -176,6 +188,22 @@ static bool settings_read(FAR pb_istream_t *stream, FAR pb_byte_t *buf,
     }
 
   return true;
+}
+
+/****************************************************************************
+ * Name: settings_replaceable
+ *
+ * Description:
+ *   Whether a file may be renamed over: absent, or a regular file.  NuttX
+ *   moves a file into a directory found at the name it is renamed to.
+ *
+ ****************************************************************************/
+
+static bool settings_replaceable(FAR const char *path)
+{
+  struct stat st;
+
+  return lstat(path, &st) < 0 ? errno == ENOENT : S_ISREG(st.st_mode);
 }
 
 /****************************************************************************
@@ -191,21 +219,23 @@ static bool settings_read(FAR pb_istream_t *stream, FAR pb_byte_t *buf,
 static void settings_load(FAR struct settings_s *settings,
                           FAR const char *owner)
 {
+  struct settings_input_s input;
   char path[SETTINGS_PATH_MAX];
   char temp[SETTINGS_PATH_MAX];
   pb_istream_t stream;
   struct stat st;
-  int fd;
 
-  if (settings_path(settings, owner, "", path) < 0)
+  if (settings_path(settings, owner, "", path) < 0 ||
+      settings_path(settings, owner, ".new", temp) < 0)
     {
+      settings_store_hold(&settings->store, owner);
       return;
     }
 
-  fd = open(path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0 && errno == ENOENT &&
-      settings_path(settings, owner, ".new", temp) >= 0 &&
-      stat(temp, &st) == 0 && S_ISREG(st.st_mode) &&
+  input.error = 0;
+  input.fd    = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (input.fd < 0 && errno == ENOENT &&
+      lstat(temp, &st) == 0 && S_ISREG(st.st_mode) &&
       rename(temp, path) == 0)
     {
       /* The device stopped while the file written beside it was being
@@ -213,36 +243,65 @@ static void settings_load(FAR struct settings_s *settings,
        * settings_write_file()): the new one is whole
        */
 
-      fd = open(path, O_RDONLY | O_CLOEXEC);
+      input.fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     }
 
-  if (fd < 0)
+  if (input.fd < 0)
     {
-      if (errno != ENOENT)
+      if (errno == ENOENT)
         {
-          pnut_log(&settings->module, PNUT_LOG_WARNING,
-                   "%s: cannot read: %d", owner, errno);
+          return;
         }
 
-      return;
+      input.error = errno;
     }
-
-  memset(&stream, 0, sizeof(stream));
-  stream.callback = settings_read;
-  stream.state    = (FAR void *)(intptr_t)fd;
-
-  if (fstat(fd, &st) == 0)
+  else if (fstat(input.fd, &st) < 0 || !S_ISREG(st.st_mode))
     {
+      input.error = EISDIR;
+    }
+  else
+    {
+      memset(&stream, 0, sizeof(stream));
+      stream.callback   = settings_read;
+      stream.state      = &input;
       stream.bytes_left = st.st_size;
-      if (!settings_store_decode(&settings->store, owner, &stream))
+
+      if (!settings_store_decode(&settings->store, owner, &stream) &&
+          input.error == 0)
         {
-          pnut_log(&settings->module, PNUT_LOG_WARNING,
-                   "%s: its file does not decode", owner);
-          settings_store_touch(&settings->store, owner);
+          /* Read whole, but not as values: kept aside, for whoever wants
+           * to look, and written again from what could be read
+           */
+
+          if (settings_path(settings, owner, ".bad", temp) == 0 &&
+              settings_replaceable(temp) && rename(path, temp) == 0)
+            {
+              pnut_log(&settings->module, PNUT_LOG_WARNING,
+                       "%s: its file does not decode: kept as %s", owner,
+                       temp);
+              settings_store_touch(&settings->store, owner);
+            }
+          else
+            {
+              input.error = EIO;
+            }
         }
     }
 
-  close(fd);
+  if (input.fd >= 0)
+    {
+      close(input.fd);
+    }
+
+  /* There, but not read: never written over while the program runs */
+
+  if (input.error != 0)
+    {
+      pnut_log(&settings->module, PNUT_LOG_ERROR,
+               "%s: cannot read its file (%d): not written until a restart",
+               owner, input.error);
+      settings_store_hold(&settings->store, owner);
+    }
 }
 
 /****************************************************************************
@@ -263,7 +322,11 @@ static int settings_write_file(FAR const char *path, FAR const char *temp,
   int ret = OK;
   int fd;
 
-  fd = open(temp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  /* Made afresh, never through a link left at its name */
+
+  unlink(temp);
+  fd = open(temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            0600);
   if (fd < 0)
     {
       return -errno;
@@ -295,6 +358,11 @@ static int settings_write_file(FAR const char *path, FAR const char *temp,
     }
 
   close(fd);
+
+  if (ret == OK && !settings_replaceable(path))
+    {
+      ret = -EISDIR;
+    }
 
   if (ret == OK && rename(temp, path) < 0)
     {

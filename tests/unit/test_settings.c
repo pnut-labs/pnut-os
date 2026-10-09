@@ -728,6 +728,38 @@ static void test_settings_turns(void **state)
   assert_int_equal(settings_store_due(&f->store, 3000), -1);
 }
 
+/* Nothing but its schema before the first is whole, and its file read:
+ * a change then would be written over the values in its file.  An owner
+ * held is never written.
+ */
+
+static void test_settings_before_load(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  page(&f->reg, true, false);
+  declare_int(&f->reg, "volume", 0, 10, 5);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+
+  assert_int_equal(set(f, "volume", val_int(7),
+                       PNUT_SETTINGS_ERROR_CODE_REGISTERING),
+                   PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(get(f, "volume", PNUT_SETTINGS_ERROR_CODE_REGISTERING),
+                   PNUT_STATUS_UNAVAILABLE);
+  settings_store_touch(&f->store, OWNER);
+  assert_null(settings_store_dirty(&f->store, 0));
+  assert_int_equal(settings_store_due(&f->store, 0), -1);
+
+  page(&f->reg, false, true);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(set(f, "volume", val_int(7), 0), PNUT_STATUS_OK);
+  assert_string_equal(settings_store_dirty(&f->store, 0), OWNER);
+
+  settings_store_hold(&f->store, OWNER);
+  assert_null(settings_store_dirty(&f->store, UINT64_MAX));
+  assert_int_equal(settings_store_due(&f->store, 0), -1);
+}
+
 /* The service, through a client: a schema, a value set and read back, an
  * error's detail; then the module stops, writing its files, and a new
  * one reads the value back
@@ -985,6 +1017,77 @@ static void test_settings_service_starve(void **state)
   free(s);
 }
 
+/* A file that is there but cannot be read is never written over: here a
+ * directory stands at its name
+ */
+
+static void test_settings_service_unreadable(void **state)
+{
+  FAR struct service_s *s = calloc(1, sizeof(*s));
+  char path[128];
+  struct stat st;
+
+  snprintf(s->dir, sizeof(s->dir), "/tmp/pnut-settings-%d", getpid());
+  mkdir(s->dir, 0700);
+  snprintf(path, sizeof(path), "%s/%s.pb", s->dir, OWNER);
+  assert_int_equal(mkdir(path, 0700), 0);
+
+  /* Set and read back, in memory */
+
+  service_run(s, false);
+  assert_int_equal(s->step, 4);
+  assert_int_equal(s->value.value.integer, 8);
+
+  assert_int_equal(stat(path, &st), 0);
+  assert_true(S_ISDIR(st.st_mode));
+
+  rmdir(path);
+  rmdir(s->dir);
+  free(s);
+}
+
+/* A file that does not decode is kept aside, and written again */
+
+static void test_settings_service_bad_file(void **state)
+{
+  FAR struct service_s *s = calloc(1, sizeof(*s));
+  static const uint8_t junk[] =
+  {
+    0x0a, 0x7f, 'x'               /* An entry 127 bytes long: cut short */
+  };
+
+  char path[128];
+  char bad[160];
+  uint8_t back[sizeof(junk)];
+  struct stat st;
+  FILE *file;
+
+  snprintf(s->dir, sizeof(s->dir), "/tmp/pnut-settings-%d", getpid());
+  mkdir(s->dir, 0700);
+  snprintf(path, sizeof(path), "%s/%s.pb", s->dir, OWNER);
+  snprintf(bad, sizeof(bad), "%s.bad", path);
+
+  file = fopen(path, "wb");
+  assert_non_null(file);
+  assert_int_equal(fwrite(junk, 1, sizeof(junk), file), sizeof(junk));
+  fclose(file);
+
+  service_run(s, true);
+  assert_int_equal(s->value.value.integer, 5);
+
+  file = fopen(bad, "rb");
+  assert_non_null(file);
+  assert_int_equal(fread(back, 1, sizeof(back), file), sizeof(junk));
+  fclose(file);
+  assert_memory_equal(back, junk, sizeof(junk));
+  assert_int_equal(stat(path, &st), 0);
+
+  unlink(bad);
+  unlink(path);
+  rmdir(s->dir);
+  free(s);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -1009,8 +1112,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_settings_cut_file, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_settings_turns, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_settings_before_load, setup,
+                                    teardown),
     cmocka_unit_test(test_settings_service),
     cmocka_unit_test(test_settings_service_starve),
+    cmocka_unit_test(test_settings_service_unreadable),
+    cmocka_unit_test(test_settings_service_bad_file),
   };
 
   return cmocka_run_group_tests_name("settings", tests, NULL, NULL);

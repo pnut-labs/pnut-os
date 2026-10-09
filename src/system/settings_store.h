@@ -190,7 +190,8 @@ int settings_store_describe(FAR struct settings_store_s *store,
  *
  * Description:
  *   An owner whose values have changed since they were last encoded, and
- *   whose file may be tried now, or NULL; its name is the file's.  The
+ *   whose file may be tried now, or NULL; its name is the file's.  An
+ *   owner whose file is yet to be read, or is held, is never one.  The
  *   owners take turns: encoding one moves the turn past it.
  *
  ****************************************************************************/
@@ -237,6 +238,19 @@ unsigned int settings_store_failed(FAR struct settings_store_s *store,
 
 void settings_store_written(FAR struct settings_store_s *store,
                             FAR const char *owner);
+
+/****************************************************************************
+ * Name: settings_store_hold
+ *
+ * Description:
+ *   Never write an owner's file while the program runs: it is there, but
+ *   could not be read, and writing it would lose what it holds.  The
+ *   owner's values still change in memory.
+ *
+ ****************************************************************************/
+
+void settings_store_hold(FAR struct settings_store_s *store,
+                         FAR const char *owner);
 
 /****************************************************************************
  * Name: settings_store_touch

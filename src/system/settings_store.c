@@ -93,6 +93,7 @@ struct settings_owner_s
   bool registering;                      /* Between its first and last */
   bool loaded;                           /* Its file has been read */
   bool dirty;                            /* Changed since encoded */
+  bool held;                             /* Its file is not written */
   uint8_t failures;                      /* Writes failed in a row */
   uint64_t retry;                        /* Not tried before this time */
 };
@@ -700,11 +701,21 @@ static int settings_lookup(FAR struct settings_store_s *store,
                            FAR struct settings_entry_s **entryp,
                            FAR uint32_t *code)
 {
+  /* Not before its first schema is whole, and its file read: a change
+   * then would be written over the values in its file
+   */
+
   *ownerp = settings_owner_find(store, owner);
   if (*ownerp == NULL)
     {
       *code = PNUT_SETTINGS_ERROR_CODE_UNKNOWN_OWNER;
       return PNUT_STATUS_NOTFOUND;
+    }
+
+  if (!(*ownerp)->loaded)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_REGISTERING;
+      return PNUT_STATUS_UNAVAILABLE;
     }
 
   if (key != NULL)
@@ -1231,7 +1242,8 @@ FAR const char *settings_store_dirty(FAR struct settings_store_s *store,
   for (i = 0; i < store->nowners; i++)
     {
       owner = &store->owners[(store->cursor + i) % store->nowners];
-      if (owner->name[0] != '\0' && owner->dirty && owner->retry <= now)
+      if (owner->name[0] != '\0' && owner->dirty && owner->loaded &&
+          !owner->held && owner->retry <= now)
         {
           return owner->name;
         }
@@ -1250,7 +1262,8 @@ int64_t settings_store_due(FAR struct settings_store_s *store, uint64_t now)
   for (i = 0; i < store->nowners; i++)
     {
       owner = &store->owners[i];
-      if (owner->name[0] == '\0' || !owner->dirty)
+      if (owner->name[0] == '\0' || !owner->dirty || !owner->loaded ||
+          owner->held)
         {
           continue;
         }
@@ -1303,6 +1316,17 @@ void settings_store_written(FAR struct settings_store_s *store,
     {
       o->failures = 0;
       o->retry    = 0;
+    }
+}
+
+void settings_store_hold(FAR struct settings_store_s *store,
+                         FAR const char *owner)
+{
+  FAR struct settings_owner_s *o = settings_owner_find(store, owner);
+
+  if (o != NULL)
+    {
+      o->held = true;
     }
 }
 

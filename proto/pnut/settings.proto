@@ -119,6 +119,7 @@ message SettingsError {
     BAD_SCHEMA = 9;               // A schema that does not hold together
     NOT_REGISTERING = 10;         // A page of a schema without its first
     BAD_NAME = 11;                // An owner or key with other characters
+    REGISTERING = 12;             // Its first schema is not whole yet
   }
 }
 
