@@ -18,7 +18,8 @@ UNITDIR = $(realpath $(APPDIR)/external)/../tests/unit
 GENDIR  = $(realpath $(APPDIR)/external)/../build/gen
 
 PROGNAME  = pnut_test_conn pnut_test_gen pnut_test_ipc pnut_test_loop
-PROGNAME += pnut_test_msg pnut_test_pool pnut_test_timer pnut_test_worker
+PROGNAME += pnut_test_msg pnut_test_pool pnut_test_timer pnut_test_topic
+PROGNAME += pnut_test_worker
 PRIORITY  = SCHED_PRIORITY_DEFAULT
 STACKSIZE = 16384
 MODULE    = $(CONFIG_PNUT_TESTS)
@@ -26,7 +27,8 @@ MODULE    = $(CONFIG_PNUT_TESTS)
 MAINSRC   = $(UNITDIR)/test_conn.c $(UNITDIR)/test_gen.c
 MAINSRC  += $(UNITDIR)/test_ipc.c $(UNITDIR)/test_loop.c
 MAINSRC  += $(UNITDIR)/test_msg.c $(UNITDIR)/test_pool.c
-MAINSRC  += $(UNITDIR)/test_timer.c $(UNITDIR)/test_worker.c
+MAINSRC  += $(UNITDIR)/test_timer.c $(UNITDIR)/test_topic.c
+MAINSRC  += $(UNITDIR)/test_worker.c
 
 # Settings' tests, with the system program's modules, which it compiles
 
@@ -37,6 +39,7 @@ CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/system
 endif
 
 CSRCS     = $(GENDIR)/pnut/test/echo.pb.c $(GENDIR)/pnut/test/echo.pnut.c
+CSRCS    += $(GENDIR)/pnut/test/tick.pb.c $(GENDIR)/pnut/test/tick.topics.c
 
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/lib
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)

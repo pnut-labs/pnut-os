@@ -11,7 +11,7 @@ include $(APPDIR)/Make.defs
 # libpnut, built into nuttx-apps' library with the programs
 
 CSRCS  = client.c clock.c conn.c log.c loop.c module.c msg.c pool.c
-CSRCS += service.c timer.c worker.c
+CSRCS += service.c timer.c topic.c worker.c
 
 # The interfaces' generated code (proto/pnut), once for every program that
 # serves or calls them, which needs nanopb; the top-level Makefile

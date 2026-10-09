@@ -21,6 +21,7 @@
 #include <pnut/timer.h>
 
 #include "pnut/settings.pnut.h"
+#include "pnut/settings.topics.h"
 #include "settings_store.h"
 
 /****************************************************************************
@@ -81,6 +82,11 @@ struct settings_s
   char owner[SETTINGS_NAME_MAX + 1];  /* Whose file is being written */
   bool writing;
   bool serving;
+
+  /* The settings topic: its publisher, or NULL without one */
+
+  FAR struct pnut_publisher_s *changes;
+  uint32_t version;               /* The last change's */
 
   /* An answer, too large for the loop's stack */
 

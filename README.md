@@ -74,13 +74,13 @@ One target is configured at a time; building another configures afresh.
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
-| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; the interfaces' generated code |
+| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; the interfaces' generated code |
 | `src/system/` | the system program, `pnut_system` (RFC 0007), with Settings (RFC 0025) |
-| `proto/` | the interfaces (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
+| `proto/` | the interfaces and their topics (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
 | `tests/proto/` | interfaces for the tests |
-| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers and references, run with nanopb's by `generate.sh` |
+| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers, topics and references, run with nanopb's by `generate.sh` |
 
 As the code arrives:
 
