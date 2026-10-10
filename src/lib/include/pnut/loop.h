@@ -44,6 +44,9 @@ struct pnut_loop_config_s
   size_t stacksize;               /* A worker's stack, in bytes */
   uint32_t budget;                /* A handler's budget, in ms */
   FAR const char *rundir;         /* Where services' sockets are */
+  FAR const char *initctl;        /* NxInit's control socket, told when
+                                   * the program is ready (RFC 0006), or
+                                   * NULL */
 };
 
 /* Called on the loop when a watched descriptor is ready.  events are

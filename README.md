@@ -63,7 +63,12 @@ How a build goes:
    with NuttX's `tools/merge_config.py`. Every option in it must reach the
    final configuration: one that is misspelt, or whose dependencies are not
    met, stops the build.
-4. NuttX builds the image.
+4. NuttX builds the image. The board's `/etc` gets pnut-os's `etc/` laid
+   over it (`ETC_OVERLAY`, which the Makefile hands every make of NuttX's):
+   NxInit, NuttX's first task, reads `etc/init.d/pnut.rc`, which runs the
+   board's own `init.rc`, then starts pnut-os's programs (RFC 0006). Built
+   by running NuttX's make directly, the image lacks pnut.rc, and NxInit,
+   which is configured to read it, starts nothing.
 
 One target is configured at a time; building another configures afresh.
 
@@ -73,8 +78,9 @@ One target is configured at a time; building another configures afresh.
 |---|---|
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
+| `etc/` | laid over the board's `/etc` in the image (RFC 0010): `init.d/pnut.rc`, NxInit's configuration (RFC 0006) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
-| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; the interfaces' generated code |
+| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; telling NxInit a program is ready; the interfaces' generated code |
 | `src/system/` | the system program, `pnut_system` (RFC 0007), with Settings (RFC 0025) |
 | `proto/` | the interfaces and their topics (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |

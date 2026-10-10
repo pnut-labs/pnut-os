@@ -101,10 +101,14 @@
 #endif
 
 /* The loop watches three descriptors of its own: signals, timers and the
- * workers' results.
+ * workers' results.  Telling NxInit that the program is ready takes one
+ * descriptor and one timer more, while it lasts, when the loop names
+ * NxInit's socket: they are added to the configuration's, not taken from
+ * them.
  */
 
 #define PNUT_LOOP_OWN_FDS  3
+#define PNUT_LOOP_READY(loop) ((loop)->config.initctl != NULL ? 1 : 0)
 
 /****************************************************************************
  * Public Types
@@ -157,6 +161,26 @@ struct pnut_job_s
   FAR void *arg;
 };
 
+/* Telling NxInit that the program is ready (RFC 0006), while the loop
+ * runs: a connection to its control socket, tried again after a growing
+ * delay until NxInit answers.
+ */
+
+#define PNUT_READY_LINE  80             /* NxInit's lines are shorter */
+
+struct pnut_ready_s
+{
+  FAR struct pnut_timer_s *timer; /* Kept: the next try, or the answer's
+                                   * deadline */
+  int fd;                         /* The connection, or -1 */
+  uint32_t backoff;               /* The wait before the next try, in ms */
+  bool telling;
+  bool version;                   /* NxInit's version line has come */
+  bool warned;                    /* A failure was logged */
+  uint8_t len;
+  char in[PNUT_READY_LINE];
+};
+
 struct pnut_loop_s
 {
   struct pnut_loop_config_s config;
@@ -186,6 +210,7 @@ struct pnut_loop_s
   FAR struct pnut_module_s *first;
   FAR struct pnut_module_s *last;
   bool ready;
+  struct pnut_ready_s nxinit;
 
   /* Workers.  The jobs' pool is used on the loop only; the queues are
    * shared with the workers, under lock.
@@ -310,5 +335,22 @@ void pnut_conn_recheck(FAR struct pnut_conn_s *conn);
 
 int pnut_module_startall(FAR struct pnut_loop_s *loop);
 void pnut_module_stopall(FAR struct pnut_loop_s *loop);
+
+/* loop.c: watch the descriptor that tells NxInit, in the slot kept for
+ * it
+ */
+
+int pnut_loop_watch_ready(FAR struct pnut_loop_s *loop, int fd,
+                          uint32_t events, pnut_fd_handler_t handler,
+                          FAR void *arg);
+
+/* ready.c: keep the timer that telling NxInit needs, as the loop is made
+ * (-ENAMETOOLONG for a socket's path too long); tell NxInit the program
+ * is ready, if the loop names its socket; stop telling, as the loop stops
+ */
+
+int pnut_ready_init(FAR struct pnut_loop_s *loop);
+void pnut_ready_tell(FAR struct pnut_loop_s *loop);
+void pnut_ready_stop(FAR struct pnut_loop_s *loop);
 
 #endif /* __PNUT_OS_SRC_LIB_PNUT_INTERNAL_H */

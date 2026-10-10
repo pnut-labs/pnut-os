@@ -18,8 +18,8 @@ UNITDIR = $(realpath $(APPDIR)/external)/../tests/unit
 GENDIR  = $(realpath $(APPDIR)/external)/../build/gen
 
 PROGNAME  = pnut_test_conn pnut_test_gen pnut_test_ipc pnut_test_loop
-PROGNAME += pnut_test_msg pnut_test_pool pnut_test_timer pnut_test_topic
-PROGNAME += pnut_test_worker
+PROGNAME += pnut_test_msg pnut_test_pool pnut_test_ready pnut_test_timer
+PROGNAME += pnut_test_topic pnut_test_worker
 PRIORITY  = SCHED_PRIORITY_DEFAULT
 STACKSIZE = 16384
 MODULE    = $(CONFIG_PNUT_TESTS)
@@ -27,8 +27,8 @@ MODULE    = $(CONFIG_PNUT_TESTS)
 MAINSRC   = $(UNITDIR)/test_conn.c $(UNITDIR)/test_gen.c
 MAINSRC  += $(UNITDIR)/test_ipc.c $(UNITDIR)/test_loop.c
 MAINSRC  += $(UNITDIR)/test_msg.c $(UNITDIR)/test_pool.c
-MAINSRC  += $(UNITDIR)/test_timer.c $(UNITDIR)/test_topic.c
-MAINSRC  += $(UNITDIR)/test_worker.c
+MAINSRC  += $(UNITDIR)/test_ready.c $(UNITDIR)/test_timer.c
+MAINSRC  += $(UNITDIR)/test_topic.c $(UNITDIR)/test_worker.c
 
 # Settings' tests, with the system program's modules, which it compiles
 

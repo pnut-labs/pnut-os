@@ -38,6 +38,12 @@ NANOPB_LINK    := $(APPS)/netutils/nanopb/nanopb
 GEN            := $(BUILD)/gen
 PROTOS         := $(shell find proto tests/proto -name '*.proto' 2> /dev/null)
 
+# pnut-os's files in /etc, laid over the board's (RFC 0010): NuttX's
+# boards/Board.mk reads ETC_OVERLAY, from the environment here, so that
+# every make of NuttX sees it, the build's and the flash's
+
+export ETC_OVERLAY := $(ROOT)/etc
+
 # NuttX builds with -j$(JOBS), unless make was given its own -j; decided
 # in the recipe, since make 4.3 sets MAKEFLAGS only after parsing
 

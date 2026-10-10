@@ -192,7 +192,7 @@ int pnut_timer_init(FAR struct pnut_loop_s *loop)
   int ret;
 
   ret = pnut_pool_init(&loop->timers, sizeof(struct pnut_timer_s),
-                       loop->config.timers);
+                       loop->config.timers + PNUT_LOOP_READY(loop));
   if (ret < 0)
     {
       return ret;
