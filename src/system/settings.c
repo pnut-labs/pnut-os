@@ -96,6 +96,18 @@ static const char * const g_settings_errors[] =
   "not registering",
   "bad name",
   "registering",
+  "not the caller's",
+  "who calls is not known yet",
+};
+
+/* What a caller may do with an owner's settings (RFC 0025) */
+
+enum settings_access_e
+{
+  SETTINGS_UNKNOWN = -1,          /* Who calls cannot be told now */
+  SETTINGS_PUBLIC = 0,            /* Read those marked public */
+  SETTINGS_OWNER,                 /* All, and register their schema */
+  SETTINGS_ALL,                   /* All, as the system UI */
 };
 
 /****************************************************************************
@@ -124,6 +136,77 @@ static void settings_fail(FAR struct settings_s *settings,
            code < sizeof(g_settings_errors) / sizeof(g_settings_errors[0]) ?
            g_settings_errors[code] : "error");
   pnut_settings_fail(&settings->server, req, status, code, text);
+}
+
+/****************************************************************************
+ * Name: settings_access
+ *
+ * Description:
+ *   What the caller may do with the owner's settings: a program those of
+ *   the services it runs, the system UI every owner's, and anyone those
+ *   marked public (RFC 0025).  The runtime will mark an app's calls with
+ *   its identity (RFC 0008); until then a caller is a program.  A request
+ *   whose caller cannot be told now is answered unavailable, to be tried
+ *   again: neither denied nor allowed.
+ *
+ ****************************************************************************/
+
+static int settings_access(FAR struct settings_s *settings,
+                           FAR const struct pnut_request_s *req,
+                           FAR const char *owner)
+{
+  FAR const struct settings_config_s *config = &settings->config;
+  FAR const char *program;
+  int ret;
+
+  if (config->who == NULL)
+    {
+      return SETTINGS_ALL;
+    }
+
+  ret = config->who(config->identity, req->pid, &program);
+  if (ret == -ESRCH)
+    {
+      return SETTINGS_PUBLIC;
+    }
+  else if (ret < 0)
+    {
+      return SETTINGS_UNKNOWN;
+    }
+
+  /* Owner first: the system UI owns settings of its own too */
+
+  if (config->runs != NULL &&
+      config->runs(config->identity, program, owner))
+    {
+      return SETTINGS_OWNER;
+    }
+
+  return strcmp(program, "ui") == 0 ? SETTINGS_ALL : SETTINGS_PUBLIC;
+}
+
+/****************************************************************************
+ * Name: settings_allowed
+ *
+ * Description:
+ *   The caller's access, or an answer for a caller who cannot be told now,
+ *   and -1.
+ *
+ ****************************************************************************/
+
+static int settings_allowed(FAR struct settings_s *settings,
+                            FAR const struct pnut_request_s *req,
+                            FAR const char *owner)
+{
+  int access = settings_access(settings, req, owner);
+
+  if (access == SETTINGS_UNKNOWN)
+    {
+      settings_fail(settings, req, PNUT_STATUS_UNAVAILABLE,
+                    PNUT_SETTINGS_ERROR_CODE_CALLER_UNKNOWN, owner, NULL);
+    }
+
+  return access;
 }
 
 /****************************************************************************
@@ -723,12 +806,28 @@ settings_register_schema(FAR struct pnut_settings_server_s *server,
                          FAR void *arg)
 {
   FAR struct settings_s *settings = arg;
-  FAR const char *key;
-  uint32_t code;
+  FAR const char *key = NULL;
+  uint32_t code = PNUT_SETTINGS_ERROR_CODE_DENIED;
   bool load;
-  int ret;
+  int ret = PNUT_STATUS_DENIED;
+  int access;
 
-  ret = settings_store_register(&settings->store, in, &load, &key, &code);
+  /* Only a program that runs the service registers its schema; without
+   * an identity, anyone
+   */
+
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
+  if (settings->config.who == NULL || access == SETTINGS_OWNER)
+    {
+      ret = settings_store_register(&settings->store, in, &load, &key,
+                                    &code);
+    }
+
   if (ret != PNUT_STATUS_OK)
     {
       settings_fail(settings, req, ret, code, in->owner, key);
@@ -770,10 +869,18 @@ static void settings_get(FAR struct pnut_settings_server_s *server,
 {
   FAR struct settings_s *settings = arg;
   uint32_t code;
+  int access;
   int ret;
 
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
   ret = settings_store_get(&settings->store, in->owner, in->key,
-                           &settings->out.value, &code);
+                           access != SETTINGS_PUBLIC, &settings->out.value,
+                           &code);
   if (ret != PNUT_STATUS_OK)
     {
       settings_fail(settings, req, ret, code, in->owner, in->key);
@@ -797,8 +904,20 @@ static void settings_set(FAR struct pnut_settings_server_s *server,
   uint32_t code = PNUT_SETTINGS_ERROR_CODE_WRONG_TYPE;
   bool changed;
   int ret = PNUT_STATUS_INVALID;
+  int access;
 
-  if (in->has_value)
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
+  if (access == SETTINGS_PUBLIC)
+    {
+      code = PNUT_SETTINGS_ERROR_CODE_DENIED;
+      ret  = PNUT_STATUS_DENIED;
+    }
+  else if (in->has_value)
     {
       ret = settings_store_set(&settings->store, in->owner, in->key,
                                &in->value, &changed, &code);
@@ -829,12 +948,23 @@ static void settings_reset(FAR struct pnut_settings_server_s *server,
                            FAR void *arg)
 {
   FAR struct settings_s *settings = arg;
-  uint32_t code;
+  uint32_t code = PNUT_SETTINGS_ERROR_CODE_DENIED;
   bool changed;
-  int ret;
+  int ret = PNUT_STATUS_DENIED;
+  int access;
 
-  ret = settings_store_reset(&settings->store, in->owner, in->key,
-                             &changed, &code);
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
+  if (access != SETTINGS_PUBLIC)
+    {
+      ret = settings_store_reset(&settings->store, in->owner, in->key,
+                                 &changed, &code);
+    }
+
   if (ret != PNUT_STATUS_OK)
     {
       settings_fail(settings, req, ret, code, in->owner, in->key);
@@ -861,9 +991,17 @@ static void settings_list(FAR struct pnut_settings_server_s *server,
 {
   FAR struct settings_s *settings = arg;
   uint32_t code;
+  int access;
   int ret;
 
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
   ret = settings_store_list(&settings->store, in->owner, in->after,
+                            access != SETTINGS_PUBLIC,
                             &settings->out.values, &code);
   if (ret != PNUT_STATUS_OK)
     {
@@ -886,9 +1024,17 @@ static void settings_describe(FAR struct pnut_settings_server_s *server,
 {
   FAR struct settings_s *settings = arg;
   uint32_t code;
+  int access;
   int ret;
 
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
   ret = settings_store_describe(&settings->store, in->owner, in->after,
+                                access != SETTINGS_PUBLIC,
                                 &settings->out.schema, &code);
   if (ret != PNUT_STATUS_OK)
     {

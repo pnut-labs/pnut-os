@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Service states (RFC 0006, RFC 0007): the services NxInit starts, which
+// are pnut-os's programs and NuttX's own (the console, pppd, adbd), their
+// states, and which task is which.  The system program keeps one watch
+// on NxInit's control socket and answers from it, so that no other
+// program speaks NxInit's protocol; each says it is ready itself, through
+// libpnut, since NxInit checks that on the caller's own connection.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Services {
+  option (pnut.iface) = 2;
+
+  // A page of the services, in the order of their names
+  rpc List (ServicesPageRequest) returns (ServicesPage) {
+    option (pnut.method) = 1;
+  }
+
+  // One service's state
+  rpc Get (ServicesNameRequest) returns (ServiceState) {
+    option (pnut.method) = 2;
+  }
+
+  // Start a service; done when NxInit has started its task, not when it
+  // is ready (the services topic says that).  Only the system UI and the
+  // system program may.
+  rpc Start (ServicesNameRequest) returns (ServicesReply) {
+    option (pnut.method) = 3;
+  }
+
+  // Stop a service; done when NxInit has signalled it.  Only the system
+  // UI and the system program may.
+  rpc Stop (ServicesNameRequest) returns (ServicesReply) {
+    option (pnut.method) = 4;
+  }
+
+  // Which service a task is: for a program, its name (RFC 0007), the
+  // caller identity other services check (RFC 0006)
+  rpc Who (ServicesWhoRequest) returns (ServicesWhoReply) {
+    option (pnut.method) = 5;
+  }
+}
+
+// A service, as NxInit reports it
+message ServiceState {
+  enum State {
+    STOPPED = 0;
+    STARTING = 1;                 // Running, not ready yet ("notify")
+    READY = 2;
+    STOPPING = 3;                 // Signalled, not exited yet
+    RESTARTING = 4;               // Exited, to be started again
+  }
+
+  string name = 1 [(nanopb).max_size = 32];
+  State state = 2;
+  int32 pid = 3;                  // 0 when it is not running
+}
+
+// The detail of an error answer (pnut.Error's code)
+message ServicesError {
+  enum Code {
+    NONE = 0;
+    UNKNOWN_SERVICE = 1;          // NxInit has no such service
+    REFUSED = 2;                  // NxInit refused; its reason is the text
+  }
+}
+
+message ServicesReply {
+}
+
+// A page after the name last given; an empty one for the first page
+message ServicesPageRequest {
+  string after = 1 [(nanopb).max_size = 32];
+}
+
+message ServicesPage {
+  repeated ServiceState services = 1 [(nanopb).max_count = 8];
+  bool more = 2;
+}
+
+message ServicesNameRequest {
+  string name = 1 [(nanopb).max_size = 32];
+}
+
+message ServicesWhoRequest {
+  int32 pid = 1;
+}
+
+message ServicesWhoReply {
+  string name = 1 [(nanopb).max_size = 32];
+}
+
+// A change of a service's state, on the services topic.  seq counts the
+// messages, from 1 when the system program starts: a reader who sees a
+// gap, or a smaller one, has missed changes and lists the services again.
+message ServiceChange {
+  option (pnut.topic) = "services";
+  option (pnut.depth) = 8;
+
+  string name = 1 [(nanopb).max_size = 32];
+  ServiceState.State state = 2;
+  int32 pid = 3;
+  uint32 seq = 4;
+}

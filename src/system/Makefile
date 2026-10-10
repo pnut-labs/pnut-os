@@ -16,7 +16,7 @@ STACKSIZE = $(CONFIG_PNUT_SYSTEM_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_SYSTEM)
 
 MAINSRC   = main.c
-CSRCS     = settings.c settings_store.c
+CSRCS     = programs.c settings.c settings_store.c states.c
 
 # The interfaces' code, which libpnut compiles
 

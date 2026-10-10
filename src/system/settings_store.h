@@ -131,10 +131,15 @@ int settings_store_register(FAR struct settings_store_s *store,
 
 /****************************************************************************
  * Name: settings_store_get
+ *
+ * Input Parameters:
+ *   all - Any setting; otherwise only one marked public (RFC 0025), and
+ *         another is denied.
+ *
  ****************************************************************************/
 
 int settings_store_get(FAR struct settings_store_s *store,
-                       FAR const char *owner, FAR const char *key,
+                       FAR const char *owner, FAR const char *key, bool all,
                        FAR pnut_setting_value_t *out, FAR uint32_t *code);
 
 /****************************************************************************
@@ -168,17 +173,18 @@ int settings_store_reset(FAR struct settings_store_s *store,
  *
  * Description:
  *   A page of an owner's values, or of its schema, in the order of the
- *   keys, after the key given (none: from the first).
+ *   keys, after the key given (none: from the first): of every setting
+ *   with all, otherwise of those marked public (RFC 0025).
  *
  ****************************************************************************/
 
 int settings_store_list(FAR struct settings_store_s *store,
                         FAR const char *owner, FAR const char *after,
-                        FAR pnut_settings_values_t *out,
+                        bool all, FAR pnut_settings_values_t *out,
                         FAR uint32_t *code);
 int settings_store_describe(FAR struct settings_store_s *store,
                             FAR const char *owner, FAR const char *after,
-                            FAR pnut_settings_schema_t *out,
+                            bool all, FAR pnut_settings_schema_t *out,
                             FAR uint32_t *code);
 
 /* Writing the owners' files.  The time is the caller's, in milliseconds
