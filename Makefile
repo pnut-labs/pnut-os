@@ -107,6 +107,13 @@ ifneq ($(shell cat $(BUILD)/target 2> /dev/null),$(TARGET))
   RECONFIGURE := force
 endif
 
+# The board's own configuration, <board>:<config>, which a move of the
+# nuttx submodule may change: configured afresh then too
+
+BOARD_DEFCONFIG := $(wildcard $(NUTTX)/boards/*/*/$(firstword \
+                     $(subst :, ,$(BOARD_CONFIG)))/configs/$(lastword \
+                     $(subst :, ,$(BOARD_CONFIG)))/defconfig)
+
 # Configuring runs nuttx-apps' distclean, which removes the nanopb link:
 # it is made again here, after configuring, before building
 
@@ -116,7 +123,7 @@ $(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
 
 .PRECIOUS: $(NUTTX)/.config
 
-$(NUTTX)/.config: configs/$(TARGET)/target.mk configs/$(TARGET)/fragment.config $(RECONFIGURE) | submodules external nanopb
+$(NUTTX)/.config: configs/$(TARGET)/target.mk configs/$(TARGET)/fragment.config $(BOARD_DEFCONFIG) $(RECONFIGURE) | submodules external nanopb
 	rm -f $(BUILD)/target
 	PYTHON=$(PYTHON) $(ROOT)/tools/configure-target.sh \
 	  $(NUTTX) $(BOARD_CONFIG) $(ROOT)/configs/$(TARGET)/fragment.config
