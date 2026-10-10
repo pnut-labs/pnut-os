@@ -149,7 +149,7 @@ static void fixture_run(FAR struct fixture_s *f)
 }
 
 /* A loop told NxInit's socket is at `path`, with the stand-in listening
- * there when `listen` is set
+ * there when `listening` is set
  */
 
 static void fixture_setup(FAR struct fixture_s *f, bool listening,
