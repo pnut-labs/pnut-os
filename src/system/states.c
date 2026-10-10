@@ -85,11 +85,11 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
 
 static const struct pnut_services_handlers_s g_states_handlers =
 {
-  states_list,
-  states_get,
-  states_start_service,
-  states_stop_service,
-  states_who_is,
+  .list  = states_list,
+  .get   = states_get,
+  .start = states_start_service,
+  .stop  = states_stop_service,
+  .who   = states_who_is,
 };
 
 /* NxInit's names of the states, in pnut.ServiceState.State's order */
