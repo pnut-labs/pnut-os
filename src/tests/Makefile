@@ -30,11 +30,11 @@ MAINSRC  += $(UNITDIR)/test_msg.c $(UNITDIR)/test_pool.c
 MAINSRC  += $(UNITDIR)/test_ready.c $(UNITDIR)/test_timer.c
 MAINSRC  += $(UNITDIR)/test_topic.c $(UNITDIR)/test_worker.c
 
-# Settings' tests, with the system program's modules, which it compiles
+# The system program's tests, with its modules, which it compiles
 
 ifneq ($(CONFIG_PNUT_SYSTEM),)
-PROGNAME += pnut_test_settings
-MAINSRC  += $(UNITDIR)/test_settings.c
+PROGNAME += pnut_test_settings pnut_test_states
+MAINSRC  += $(UNITDIR)/test_settings.c $(UNITDIR)/test_states.c
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/system
 endif
 

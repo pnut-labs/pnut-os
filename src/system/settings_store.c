@@ -1071,7 +1071,7 @@ int settings_store_register(FAR struct settings_store_s *store,
 }
 
 int settings_store_get(FAR struct settings_store_s *store,
-                       FAR const char *owner, FAR const char *key,
+                       FAR const char *owner, FAR const char *key, bool all,
                        FAR pnut_setting_value_t *out, FAR uint32_t *code)
 {
   FAR struct settings_owner_s *o;
@@ -1082,6 +1082,12 @@ int settings_store_get(FAR struct settings_store_s *store,
   if (ret != PNUT_STATUS_OK)
     {
       return ret;
+    }
+
+  if (!all && !entry->is_public)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_DENIED;
+      return PNUT_STATUS_DENIED;
     }
 
   if (entry->type == PNUT_SETTING_TYPE_SECRET)
@@ -1156,7 +1162,7 @@ int settings_store_reset(FAR struct settings_store_s *store,
 
 int settings_store_list(FAR struct settings_store_s *store,
                         FAR const char *owner, FAR const char *after,
-                        FAR pnut_settings_values_t *out,
+                        bool all, FAR pnut_settings_values_t *out,
                         FAR uint32_t *code)
 {
   FAR struct settings_owner_s *o;
@@ -1174,7 +1180,8 @@ int settings_store_list(FAR struct settings_store_s *store,
 
   for (entry = o->entries; entry != NULL; entry = entry->next)
     {
-      if (after[0] != '\0' && strcmp(entry->key, after) <= 0)
+      if ((after[0] != '\0' && strcmp(entry->key, after) <= 0) ||
+          (!all && !entry->is_public))
         {
           continue;
         }
@@ -1199,7 +1206,7 @@ int settings_store_list(FAR struct settings_store_s *store,
 
 int settings_store_describe(FAR struct settings_store_s *store,
                             FAR const char *owner, FAR const char *after,
-                            FAR pnut_settings_schema_t *out,
+                            bool all, FAR pnut_settings_schema_t *out,
                             FAR uint32_t *code)
 {
   FAR struct settings_owner_s *o;
@@ -1216,7 +1223,8 @@ int settings_store_describe(FAR struct settings_store_s *store,
 
   for (entry = o->entries; entry != NULL; entry = entry->next)
     {
-      if (after[0] != '\0' && strcmp(entry->key, after) <= 0)
+      if ((after[0] != '\0' && strcmp(entry->key, after) <= 0) ||
+          (!all && !entry->is_public))
         {
           continue;
         }

@@ -220,7 +220,7 @@ static int get(FAR struct fixture_s *f, FAR const char *key,
   uint32_t code = 0;
   int ret;
 
-  ret = settings_store_get(&f->store, OWNER, key, &f->value, &code);
+  ret = settings_store_get(&f->store, OWNER, key, true, &f->value, &code);
   assert_int_equal(code, expect);
   return ret;
 }
@@ -311,7 +311,7 @@ static void test_settings_checks(void **state)
   assert_int_equal(set(f, "nothing", val_int(1),
                        PNUT_SETTINGS_ERROR_CODE_UNKNOWN_KEY),
                    PNUT_STATUS_NOTFOUND);
-  assert_int_equal(settings_store_get(&f->store, "nobody", "volume",
+  assert_int_equal(settings_store_get(&f->store, "nobody", "volume", true,
                                       &f->value, &code),
                    PNUT_STATUS_NOTFOUND);
   assert_int_equal(code, PNUT_SETTINGS_ERROR_CODE_UNKNOWN_OWNER);
@@ -496,28 +496,28 @@ static void test_settings_pages(void **state)
   f->reg.last = true;
   assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
 
-  assert_int_equal(settings_store_list(&f->store, OWNER, "", &f->values,
-                                       &code), PNUT_STATUS_OK);
+  assert_int_equal(settings_store_list(&f->store, OWNER, "", true,
+                                       &f->values, &code), PNUT_STATUS_OK);
   assert_int_equal(f->values.entries_count, 8);
   assert_true(f->values.more);
   assert_string_equal(f->values.entries[0].key, "k0");
   assert_string_equal(f->values.entries[7].key, "k7");
 
-  assert_int_equal(settings_store_list(&f->store, OWNER, "k7", &f->values,
-                                       &code), PNUT_STATUS_OK);
+  assert_int_equal(settings_store_list(&f->store, OWNER, "k7", true,
+                                       &f->values, &code), PNUT_STATUS_OK);
   assert_int_equal(f->values.entries_count, 2);
   assert_false(f->values.more);
   assert_string_equal(f->values.entries[1].key, "k9");
   assert_int_equal(f->values.entries[1].value.value.integer, 0);
 
-  assert_int_equal(settings_store_describe(&f->store, OWNER, "",
+  assert_int_equal(settings_store_describe(&f->store, OWNER, "", true,
                                            &f->schema, &code),
                    PNUT_STATUS_OK);
   assert_int_equal(f->schema.settings_count, 3);
   assert_true(f->schema.more);
   assert_string_equal(f->schema.settings[2].key, "k2");
 
-  assert_int_equal(settings_store_describe(&f->store, OWNER, "k8",
+  assert_int_equal(settings_store_describe(&f->store, OWNER, "k8", true,
                                            &f->schema, &code),
                    PNUT_STATUS_OK);
   assert_int_equal(f->schema.settings_count, 1);
@@ -591,11 +591,11 @@ static void test_settings_file(void **state)
   in = pb_istream_from_buffer(f->file, out.bytes_written);
   assert_true(settings_store_decode(&other, OWNER, &in));
 
-  assert_int_equal(settings_store_get(&other, OWNER, "volume", &f->value,
-                                      &code), PNUT_STATUS_OK);
+  assert_int_equal(settings_store_get(&other, OWNER, "volume", true,
+                                      &f->value, &code), PNUT_STATUS_OK);
   assert_int_equal(f->value.value.integer, 7);
-  assert_int_equal(settings_store_get(&other, OWNER, "colour", &f->value,
-                                      &code), PNUT_STATUS_OK);
+  assert_int_equal(settings_store_get(&other, OWNER, "colour", true,
+                                      &f->value, &code), PNUT_STATUS_OK);
   assert_string_equal(f->value.value.text, "blue");
 
   /* Its file holds a value no longer declared: written again */
@@ -943,6 +943,7 @@ static void service_run(FAR struct service_s *s, bool reread)
   config.rundir = s->dir;
   assert_int_equal(pnut_loop_create(&config, &s->loop), 0);
 
+  memset(&sconfig, 0, sizeof(sconfig));
   sconfig.dir    = s->dir;
   sconfig.limits = g_limits;
   sconfig.delay  = 20;
@@ -1135,6 +1136,320 @@ static void test_settings_service_bad_file(void **state)
   free(s);
 }
 
+/* What a caller who is neither the owner nor the system UI sees: the
+ * settings marked public, and no other
+ */
+
+static void test_settings_public(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  uint32_t code;
+
+  page(&f->reg, true, true);
+  declare_int(&f->reg, "region", 0, 10, 1);
+  f->reg.settings[0].is_public = true;
+  declare_int(&f->reg, "secret", 0, 10, 2);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+
+  assert_int_equal(settings_store_get(&f->store, OWNER, "region", false,
+                                      &f->value, &code), PNUT_STATUS_OK);
+  assert_int_equal(f->value.value.integer, 1);
+  assert_int_equal(settings_store_get(&f->store, OWNER, "secret", false,
+                                      &f->value, &code),
+                   PNUT_STATUS_DENIED);
+  assert_int_equal(code, PNUT_SETTINGS_ERROR_CODE_DENIED);
+
+  assert_int_equal(settings_store_list(&f->store, OWNER, "", false,
+                                       &f->values, &code), PNUT_STATUS_OK);
+  assert_int_equal(f->values.entries_count, 1);
+  assert_string_equal(f->values.entries[0].key, "region");
+
+  assert_int_equal(settings_store_describe(&f->store, OWNER, "", false,
+                                           &f->schema, &code),
+                   PNUT_STATUS_OK);
+  assert_int_equal(f->schema.settings_count, 1);
+  assert_string_equal(f->schema.settings[0].key, "region");
+}
+
+/* Who may do what, through a client (RFC 0025): the program that runs
+ * wifi, a caller Settings does not know, the system UI, and a caller who
+ * cannot be told now
+ */
+
+struct access_s
+{
+  FAR struct pnut_loop_s *loop;
+  struct settings_s settings;
+  struct pnut_settings_client_s client;
+  pnut_settings_register_request_t reg;
+  char dir[64];
+  FAR const char *me;             /* Who calls: NULL for a stranger */
+  bool unknown;                   /* Who calls cannot be told */
+  int step;
+  int status[16];
+  uint32_t code[16];
+  int64_t value;
+  int listed;
+};
+
+static int access_who(FAR void *arg, pid_t pid, FAR const char **programp)
+{
+  FAR struct access_s *a = arg;
+
+  assert_int_equal(pid, getpid());
+  *programp = a->me;
+  return a->unknown ? -EAGAIN : a->me != NULL ? OK : -ESRCH;
+}
+
+static bool access_runs(FAR void *arg, FAR const char *program,
+                        FAR const char *service)
+{
+  return (strcmp(program, "radios") == 0 && strcmp(service, "wifi") == 0) ||
+         (strcmp(program, "ui") == 0 && strcmp(service, "ui") == 0);
+}
+
+static void access_next(FAR struct access_s *a);
+
+static void access_record(FAR struct access_s *a, int status,
+                          FAR const pnut_error_t *err)
+{
+  a->status[a->step] = status;
+  a->code[a->step]   = err != NULL ? err->code : 0;
+  a->step++;
+  access_next(a);
+}
+
+static void access_replied(FAR struct pnut_settings_client_s *client,
+                           int status, FAR const pnut_settings_reply_t *out,
+                           FAR const pnut_error_t *err, FAR void *arg)
+{
+  access_record(arg, status, err);
+}
+
+static void access_got(FAR struct pnut_settings_client_s *client,
+                       int status, FAR const pnut_setting_value_t *out,
+                       FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct access_s *a = arg;
+
+  if (out != NULL)
+    {
+      a->value = out->value.integer;
+    }
+
+  access_record(a, status, err);
+}
+
+static void access_listed(FAR struct pnut_settings_client_s *client,
+                          int status, FAR const pnut_settings_values_t *out,
+                          FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct access_s *a = arg;
+
+  a->listed = out != NULL ? out->entries_count : -1;
+  access_record(a, status, err);
+}
+
+static void access_register(FAR struct access_s *a, FAR const char *owner)
+{
+  page(&a->reg, true, true);
+  strcpy(a->reg.owner, owner);
+  declare_int(&a->reg, "power", 0, 20, 10);
+  declare_int(&a->reg, "region", 0, 10, 1);
+  a->reg.settings[1].is_public = true;
+  assert_int_equal(pnut_settings_register_schema(&a->client, &a->reg, 0,
+                                                 access_replied, a), 0);
+}
+
+static void access_set(FAR struct access_s *a, FAR const char *key,
+                       int64_t value)
+{
+  pnut_settings_set_request_t set;
+
+  memset(&set, 0, sizeof(set));
+  strcpy(set.owner, "wifi");
+  strcpy(set.key, key);
+  set.has_value = true;
+  set.value     = val_int(value);
+  assert_int_equal(pnut_settings_set(&a->client, &set, 0, access_replied,
+                                     a), 0);
+}
+
+static void access_get(FAR struct access_s *a, FAR const char *key)
+{
+  pnut_settings_get_request_t get;
+
+  memset(&get, 0, sizeof(get));
+  strcpy(get.owner, "wifi");
+  strcpy(get.key, key);
+  assert_int_equal(pnut_settings_get(&a->client, &get, 0, access_got, a),
+                   0);
+}
+
+static void access_next(FAR struct access_s *a)
+{
+  pnut_settings_page_request_t list;
+
+  switch (a->step)
+    {
+      case 0:
+        a->me = "radios";
+        access_register(a, "wifi");
+        break;
+
+      case 1:
+        access_register(a, "telephony");
+        break;
+
+      case 2:
+        access_set(a, "power", 7);
+        break;
+
+      case 3:
+        a->me = NULL;
+        access_get(a, "power");
+        break;
+
+      case 4:
+        access_get(a, "region");
+        break;
+
+      case 5:
+        access_set(a, "region", 2);
+        break;
+
+      case 6:
+        memset(&list, 0, sizeof(list));
+        strcpy(list.owner, "wifi");
+        assert_int_equal(pnut_settings_list(&a->client, &list, 0,
+                                            access_listed, a), 0);
+        break;
+
+      case 7:
+        a->me = "ui";
+        access_set(a, "power", 9);
+        break;
+
+      case 8:
+        access_register(a, "wifi");
+        break;
+
+      case 9:
+        access_get(a, "power");
+        break;
+
+      case 10:
+        access_register(a, "ui");
+        break;
+
+      case 11:
+        a->unknown = true;
+        access_get(a, "region");
+        break;
+
+      case 12:
+        access_set(a, "power", 3);
+        break;
+
+      case 13:
+        access_register(a, "wifi");
+        break;
+
+      default:
+        pnut_loop_stop(a->loop, 0);
+        break;
+    }
+}
+
+static void access_state(FAR struct pnut_settings_client_s *client,
+                         bool up, FAR void *arg)
+{
+  if (up)
+    {
+      access_next(arg);
+    }
+}
+
+static void test_settings_access(void **state)
+{
+  FAR struct access_s *a = calloc(1, sizeof(*a));
+  struct pnut_loop_config_s config;
+  struct settings_config_s sconfig;
+  char path[160];
+
+  snprintf(a->dir, sizeof(a->dir), "/tmp/pnut-access-%d", getpid());
+  mkdir(a->dir, 0700);
+
+  pnut_loop_defaults(&config);
+  config.rundir  = a->dir;
+  config.initctl = NULL;
+  assert_int_equal(pnut_loop_create(&config, &a->loop), 0);
+
+  memset(&sconfig, 0, sizeof(sconfig));
+  sconfig.dir      = a->dir;
+  sconfig.limits   = g_limits;
+  sconfig.delay    = 20;
+  sconfig.who      = access_who;
+  sconfig.runs     = access_runs;
+  sconfig.identity = a;
+  settings_init(&a->settings, &sconfig);
+  assert_int_equal(pnut_module_add(a->loop, &a->settings.module), 0);
+  assert_int_equal(pnut_settings_connect(a->loop, SETTINGS_SERVICE,
+                                         access_state, a, &a->client), 0);
+  pnut_timer_start(a->loop, 2000, 0, service_stop, NULL, NULL);
+  assert_int_equal(pnut_loop_run(a->loop), 0);
+
+  pnut_settings_disconnect(&a->client);
+  pnut_loop_destroy(a->loop);
+  settings_deinit(&a->settings);
+
+  assert_int_equal(a->step, 14);
+
+  /* The program that runs wifi: its schema and values, no other's */
+
+  assert_int_equal(a->status[0], PNUT_STATUS_OK);
+  assert_int_equal(a->status[1], PNUT_STATUS_DENIED);
+  assert_int_equal(a->code[1], PNUT_SETTINGS_ERROR_CODE_DENIED);
+  assert_int_equal(a->status[2], PNUT_STATUS_OK);
+
+  /* A stranger: the public setting, read only */
+
+  assert_int_equal(a->status[3], PNUT_STATUS_DENIED);
+  assert_int_equal(a->status[4], PNUT_STATUS_OK);
+  assert_int_equal(a->status[5], PNUT_STATUS_DENIED);
+  assert_int_equal(a->status[6], PNUT_STATUS_OK);
+  assert_int_equal(a->listed, 1);
+
+  /* The system UI: every value, but no schema of its own making */
+
+  assert_int_equal(a->status[7], PNUT_STATUS_OK);
+  assert_int_equal(a->status[8], PNUT_STATUS_DENIED);
+  assert_int_equal(a->status[9], PNUT_STATUS_OK);
+  assert_int_equal(a->value, 9);
+
+  /* Its own settings it owns, as any program its services' */
+
+  assert_int_equal(a->status[10], PNUT_STATUS_OK);
+
+  /* A caller who cannot be told now: to be tried again */
+
+  assert_int_equal(a->status[11], PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(a->code[11], PNUT_SETTINGS_ERROR_CODE_CALLER_UNKNOWN);
+  assert_int_equal(a->status[12], PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(a->status[13], PNUT_STATUS_UNAVAILABLE);
+
+  snprintf(path, sizeof(path), "%s/wifi.pb", a->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/ui.pb", a->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.settings/last", a->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.settings", a->dir);
+  rmdir(path);
+  rmdir(a->dir);
+  free(a);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -1152,6 +1467,7 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_settings_full, setup, teardown),
     cmocka_unit_test_setup_teardown(test_settings_pages, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_settings_public, setup, teardown),
     cmocka_unit_test_setup_teardown(test_settings_reset, setup, teardown),
     cmocka_unit_test_setup_teardown(test_settings_file, setup, teardown),
     cmocka_unit_test_setup_teardown(test_settings_choice_kept, setup,
@@ -1162,6 +1478,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_settings_before_load, setup,
                                     teardown),
     cmocka_unit_test(test_settings_service),
+    cmocka_unit_test(test_settings_access),
     cmocka_unit_test(test_settings_service_starve),
     cmocka_unit_test(test_settings_service_unreadable),
     cmocka_unit_test(test_settings_service_bad_file),

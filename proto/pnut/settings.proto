@@ -4,8 +4,9 @@
 // Settings (RFC 0025): every setting, named by its owner and its key.
 // An owner registers its schema before using its settings; Settings
 // refuses a key it does not know.  The owner is named in each request,
-// and the caller is not checked yet: that comes with Service states
-// (RFC 0006).
+// and the caller checked: a program reaches the settings of the services
+// it runs (RFC 0007), the system UI every setting, and any other caller
+// reads those marked public only (RFC 0025).
 
 syntax = "proto3";
 
@@ -120,6 +121,8 @@ message SettingsError {
     NOT_REGISTERING = 10;         // A page of a schema without its first
     BAD_NAME = 11;                // An owner or key with other characters
     REGISTERING = 12;             // Its first schema is not whole yet
+    DENIED = 13;                  // Not the caller's to read or change
+    CALLER_UNKNOWN = 14;          // Who calls cannot be told now; try again
   }
 }
 

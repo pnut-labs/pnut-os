@@ -1,0 +1,16 @@
+# Which services each program runs (RFC 0007).  A program is a service of
+# NxInit's (etc/init.d/pnut.rc), named as there; its services name the
+# settings it owns (RFC 0025), so Settings lets a program reach its own
+# services' settings only.  A program not running yet is harmless here.
+#
+# program     services
+
+system        states settings power time notifications log board
+telephony     telephony
+radios        radio wifi bluetooth nfc network
+sensors       location motion sensors health
+data          messages contacts packages storage
+media         audio camera haptics
+security      security
+ui            ui
+runtime       runtime

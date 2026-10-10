@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include <pnut/module.h>
 #include <pnut/timer.h>
@@ -40,11 +41,26 @@
  * Public Types
  ****************************************************************************/
 
+/* Who calls (RFC 0006): which program a task is: zero (OK) with the
+ * program's name, -ESRCH for a task that is none, another negated errno
+ * when it cannot be told now; and whether a program runs a service, whose
+ * settings it owns.  Without who, every caller may do everything.
+ */
+
+typedef CODE int (*settings_who_t)(FAR void *arg, pid_t pid,
+                                   FAR const char **programp);
+typedef CODE bool (*settings_runs_t)(FAR void *arg,
+                                     FAR const char *program,
+                                     FAR const char *service);
+
 struct settings_config_s
 {
   FAR const char *dir;            /* Where the owners' files are; kept */
   struct settings_limits_s limits;
   uint32_t delay;                 /* Milliseconds from a change to its write */
+  settings_who_t who;
+  settings_runs_t runs;
+  FAR void *identity;             /* Passed to who and runs */
 };
 
 /* A write of an owner's file, on a worker.  The module does not touch it,

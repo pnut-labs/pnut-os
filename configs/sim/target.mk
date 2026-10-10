@@ -18,4 +18,4 @@ TEST         = $(PYTHON) $(ROOT)/tools/sim-test.py $(NUTTX)/nuttx \
                pnut_test_loop pnut_test_msg pnut_test_pool \
                pnut_test_ready pnut_test_timer pnut_test_topic \
                pnut_test_worker \
-               pnut_test_settings
+               pnut_test_settings pnut_test_states
