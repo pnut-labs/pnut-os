@@ -78,10 +78,10 @@ One target is configured at a time; building another configures afresh.
 |---|---|
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
 | `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
-| `etc/` | laid over the board's `/etc` in the image (RFC 0010): `init.d/pnut.rc`, NxInit's configuration (RFC 0006) |
+| `etc/` | laid over the board's `/etc` in the image (RFC 0010): `init.d/pnut.rc`, NxInit's configuration (RFC 0006); `pnut/programs`, which services each program runs (RFC 0007) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
 | `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; telling NxInit a program is ready; the interfaces' generated code |
-| `src/system/` | the system program, `pnut_system` (RFC 0007), with Settings (RFC 0025) |
+| `src/system/` | the system program, `pnut_system` (RFC 0007), with Service states (RFC 0006: the services' states, which task is which program) and Settings (RFC 0025), which checks who calls |
 | `proto/` | the interfaces and their topics (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
