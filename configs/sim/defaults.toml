@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The sim target's settings' defaults, overriding their schemas' (RFC
+# 0025): the build checks them against the schemas and compiles them into
+# /etc/pnut/defaults.pb.  A table is an owner, a key a setting's key; a
+# dotted owner or key is quoted.
+#
+# The simulator runs the tests, so this exercises the build step with the
+# tests' owner (tests/proto/pnut/test/prefs.proto).
+
+["test.prefs"]
+level = 12
+"big.number" = 7
+colour = "blue"

@@ -33,13 +33,16 @@ MAINSRC  += $(UNITDIR)/test_topic.c $(UNITDIR)/test_worker.c
 # The system program's tests, with its modules, which it compiles
 
 ifneq ($(CONFIG_PNUT_SYSTEM),)
-PROGNAME += pnut_test_settings pnut_test_states
-MAINSRC  += $(UNITDIR)/test_settings.c $(UNITDIR)/test_states.c
+PROGNAME += pnut_test_settings pnut_test_settings_cache pnut_test_states
+MAINSRC  += $(UNITDIR)/test_settings.c $(UNITDIR)/test_settings_cache.c
+MAINSRC  += $(UNITDIR)/test_states.c
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/system
 endif
 
 CSRCS     = $(GENDIR)/pnut/test/echo.pb.c $(GENDIR)/pnut/test/echo.pnut.c
 CSRCS    += $(GENDIR)/pnut/test/tick.pb.c $(GENDIR)/pnut/test/tick.topics.c
+CSRCS    += $(GENDIR)/pnut/test/prefs.pb.c
+CSRCS    += $(GENDIR)/pnut/test/prefs.settings.c
 
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/lib
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)

@@ -27,7 +27,7 @@ warns when they differ from the commits pnut-os records.
 
 | For | Tools |
 |---|---|
-| every target | GNU make; kconfig-frontends; Python 3 with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc`. protoc and Python's protobuf module, for the interfaces' code (`apt install protobuf-compiler python3-protobuf`); curl, which fetches nanopb, checked against its pinned checksum |
+| every target | GNU make; kconfig-frontends; Python 3.11 or later (for its TOML reader) with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc`. protoc and Python's protobuf module, for the interfaces' code (`apt install protobuf-compiler python3-protobuf`); curl, which fetches nanopb, checked against its pinned checksum |
 | `sim` | gcc, zlib's headers |
 | `qemu`, `tdeck-max` | Espressif's toolchain `xtensa-esp-elf` 14.2 (GCC 15 does not build the ESP HAL); esptool; Espressif's QEMU, which has the `esp32s3` machine |
 | `make test` | cmocka (`apt install libcmocka-dev`), or `CMOCKA_CFLAGS` and `CMOCKA_LIBS` naming it |
@@ -63,8 +63,11 @@ How a build goes:
    with NuttX's `tools/merge_config.py`. Every option in it must reach the
    final configuration: one that is misspelt, or whose dependencies are not
    met, stops the build.
-4. NuttX builds the image. The board's `/etc` gets pnut-os's `etc/` laid
-   over it (`ETC_OVERLAY`, which the Makefile hands every make of NuttX's):
+4. pnut-os's `/etc` is staged in `build/etc`: `etc/`, and the target's
+   settings' defaults, `configs/<target>/defaults.toml`, checked against
+   the settings' schemas and compiled into `pnut/defaults.pb` (RFC 0025).
+5. NuttX builds the image. The board's `/etc` gets `build/etc` laid over
+   it (`ETC_OVERLAY`, which the Makefile hands every make of NuttX's):
    NxInit, NuttX's first task, reads `etc/init.d/pnut.rc`, which runs the
    board's own `init.rc`, then starts pnut-os's programs (RFC 0006). Built
    by running NuttX's make directly, the image lacks pnut.rc, and NxInit,
@@ -77,16 +80,16 @@ One target is configured at a time; building another configures afresh.
 | Path | What |
 |---|---|
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
-| `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it) and `fragment.config` (pnut-os's options) |
+| `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it), `fragment.config` (pnut-os's options), and `defaults.toml` (its settings' defaults, if it changes any) |
 | `etc/` | laid over the board's `/etc` in the image (RFC 0010): `init.d/pnut.rc`, NxInit's configuration (RFC 0006); `pnut/programs`, which services each program runs (RFC 0007) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
-| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; telling NxInit a program is ready; the interfaces' generated code |
+| `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; telling NxInit a program is ready; typed settings, kept in a struct and up to date (RFC 0025); the interfaces' generated code |
 | `src/system/` | the system program, `pnut_system` (RFC 0007), with Service states (RFC 0006: the services' states, which task is which program) and Settings (RFC 0025), which checks who calls |
-| `proto/` | the interfaces and their topics (RFC 0023): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
+| `proto/` | the interfaces, their topics and their settings (RFC 0023, RFC 0025): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
 | `tests/proto/` | interfaces for the tests |
-| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers, topics and references, run with nanopb's by `generate.sh` |
+| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers, topics, settings and references, run with nanopb's by `generate.sh`; `stage-etc.sh` stages `/etc`, with `settings-defaults`, which compiles a target's `defaults.toml` |
 
 As the code arrives:
 

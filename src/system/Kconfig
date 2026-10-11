@@ -43,6 +43,14 @@ config PNUT_SETTINGS_DIR
 		file system in flash (RFC 0010); in /tmp, settings are lost at a
 		restart.
 
+config PNUT_SETTINGS_DEFAULTS
+	string "The target's defaults"
+	default "/etc/pnut/defaults.pb"
+	---help---
+		The settings' defaults for this target, overriding their schemas'
+		(RFC 0025): the build writes it from configs/<target>/defaults.toml.
+		Empty for none.
+
 config PNUT_SETTINGS_OWNERS
 	int "Owners of settings"
 	default 16

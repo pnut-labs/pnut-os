@@ -88,6 +88,8 @@ int main(int argc, FAR char *argv[])
 
   memset(&sconfig, 0, sizeof(sconfig));
   sconfig.dir             = CONFIG_PNUT_SETTINGS_DIR;
+  sconfig.defaults        = CONFIG_PNUT_SETTINGS_DEFAULTS[0] != '\0' ?
+                            CONFIG_PNUT_SETTINGS_DEFAULTS : NULL;
   sconfig.limits.owners   = CONFIG_PNUT_SETTINGS_OWNERS;
   sconfig.limits.settings = CONFIG_PNUT_SETTINGS_MAX;
   sconfig.limits.texts    = CONFIG_PNUT_SETTINGS_TEXTS;

@@ -55,7 +55,9 @@ touch "$out/py/pnut/__init__.py"
 
 # Every interface in one run, so that protoc-gen-pnut sees them all and
 # refuses an interface number used twice.  pnut's options are read by the
-# generator, not compiled: nanopb leaves their import out (-x).
+# generator, not compiled: nanopb leaves their import out (-x).  The
+# descriptor set is for tools/settings-defaults, which checks a target's
+# settings' defaults against the schemas.
 
 cd "$root"
 protos=$(find proto tests/proto -name '*.proto' \
@@ -67,4 +69,5 @@ protoc -I proto -I tests/proto -I "$nanopb/generator/proto" \
   --nanopb_out="$out" \
   --plugin=protoc-gen-pnut="$out/bin/protoc-gen-pnut" \
   --pnut_out="$out" \
+  --descriptor_set_out="$out/descriptors.pb" --include_imports \
   $protos

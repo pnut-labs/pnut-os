@@ -33,6 +33,10 @@
 
 #define SETTINGS_SERVICE      "settings"
 
+/* The largest defaults file read, in bytes */
+
+#define SETTINGS_DEFAULTS_MAX 16384
+
 /* An owner's file and the one written beside it: <dir>/<owner>.pb */
 
 #define SETTINGS_PATH_MAX     192
@@ -56,6 +60,7 @@ typedef CODE bool (*settings_runs_t)(FAR void *arg,
 struct settings_config_s
 {
   FAR const char *dir;            /* Where the owners' files are; kept */
+  FAR const char *defaults;       /* The target's defaults, or NULL; kept */
   struct settings_limits_s limits;
   uint32_t delay;                 /* Milliseconds from a change to its write */
   settings_who_t who;
@@ -93,6 +98,14 @@ struct settings_s
   FAR struct pnut_timer_s *timer; /* Until the next write */
   uint64_t timer_at;              /* When it expires */
   FAR uint8_t *buffer;            /* An owner's file, encoded */
+
+  /* The target's defaults file, read whole as Settings starts, or NULL;
+   * and one of its entries, as it is decoded (on the loop)
+   */
+
+  FAR uint8_t *defaults;
+  size_t ndefaults;
+  pnut_settings_default_t entry;
   size_t size;
   struct settings_write_s write;
   char owner[SETTINGS_NAME_MAX + 1];  /* Whose file is being written */

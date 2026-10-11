@@ -75,6 +75,15 @@ struct settings_owner_s;
  * settings_store_encode() and settings_store_decode().
  */
 
+/* The target's default for a setting, overriding its schema's (RFC 0025):
+ * true and *value when the target has one
+ */
+
+typedef CODE bool (*settings_default_t)(FAR void *arg,
+                                        FAR const char *owner,
+                                        FAR const char *key,
+                                        FAR pnut_setting_value_t *value);
+
 struct settings_store_s
 {
   FAR struct settings_owner_s *owners;
@@ -83,6 +92,13 @@ struct settings_store_s
   struct pnut_pool_s entries;
   struct pnut_pool_s texts;
   struct pnut_pool_s choices;
+
+  /* Set after settings_store_init(), or left NULL: a default that does
+   * not fit its declaration is not taken
+   */
+
+  settings_default_t defaults;
+  FAR void *defaults_arg;
 };
 
 /****************************************************************************
