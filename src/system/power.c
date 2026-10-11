@@ -1,0 +1,186 @@
+/****************************************************************************
+ * pnut-os/src/system/power.c
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Mateusz Pianka
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <errno.h>
+#include <string.h>
+
+#include <pnut/log.h>
+#include <pnut/loop.h>
+
+#include "power.h"
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: power_read
+ *
+ * Description:
+ *   One reading.  A voltage at or under the cutoff on battery power counts
+ *   towards powering off; anything else starts the count again, so that a
+ *   dip under a burst of current, a radio sending, does not.
+ *
+ ****************************************************************************/
+
+static void power_read(FAR struct pnut_loop_s *loop,
+                       FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct power_s *power = arg;
+  bool external = false;
+  int mv = 0;
+  int ret;
+
+  ret = power->config.measure(power->config.arg, &mv, &external);
+  if (ret == -ENODEV)
+    {
+      pnut_log(&power->module, PNUT_LOG_WARNING,
+               "The battery is gone: no more readings");
+      pnut_timer_cancel(loop, power->timer);
+      power->timer = NULL;
+      return;
+    }
+
+  if (ret < 0)
+    {
+      if (!power->failing)
+        {
+          pnut_log(&power->module, PNUT_LOG_WARNING,
+                   "Cannot read the battery: %d", ret);
+          power->failing = true;
+        }
+
+      return;
+    }
+
+  power->failing = false;
+
+  if (external || mv > power->config.cutoff)
+    {
+      power->low = 0;
+      return;
+    }
+
+  power->low++;
+  if (power->low < power->config.reads)
+    {
+      pnut_log(&power->module, PNUT_LOG_WARNING,
+               "Battery at %d mV, at or under %d mV: %u of %u readings", mv,
+               power->config.cutoff, power->low, power->config.reads);
+      return;
+    }
+
+  pnut_log(&power->module, PNUT_LOG_ERROR,
+           "Battery at %d mV, at or under %d mV: powering off", mv,
+           power->config.cutoff);
+
+  pnut_timer_cancel(loop, power->timer);
+  power->timer = NULL;
+  power->off   = true;
+  pnut_loop_stop(loop, 0);
+}
+
+/****************************************************************************
+ * Name: power_start
+ ****************************************************************************/
+
+static int power_start(FAR struct pnut_module_s *module,
+                       FAR struct pnut_loop_s *loop)
+{
+  FAR struct power_s *power = (FAR struct power_s *)module;
+  bool external;
+  int mv;
+  int ret;
+
+  /* Nothing more to do here yet: Power serves nothing so far */
+
+  pnut_module_ready(module);
+
+  if (power->config.cutoff <= 0 || power->config.measure == NULL)
+    {
+      return OK;
+    }
+
+  ret = power->config.measure(power->config.arg, &mv, &external);
+  if (ret == -ENODEV)
+    {
+      pnut_log(module, PNUT_LOG_INFO,
+               "No battery: no power-off at a low battery");
+      return OK;
+    }
+
+  ret = pnut_timer_start(loop, power->config.interval,
+                         power->config.interval, power_read, power,
+                         &power->timer);
+  if (ret < 0)
+    {
+      /* The program serves the others all the same */
+
+      pnut_log(module, PNUT_LOG_ERROR,
+               "No timer for the battery: %d; no power-off at a low "
+               "battery", ret);
+      power->timer = NULL;
+    }
+
+  return OK;
+}
+
+/****************************************************************************
+ * Name: power_stop
+ ****************************************************************************/
+
+static void power_stop(FAR struct pnut_module_s *module,
+                       FAR struct pnut_loop_s *loop)
+{
+  FAR struct power_s *power = (FAR struct power_s *)module;
+
+  if (power->timer != NULL)
+    {
+      pnut_timer_cancel(loop, power->timer);
+      power->timer = NULL;
+    }
+
+  power->low     = 0;
+  power->failing = false;
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: power_init
+ ****************************************************************************/
+
+void power_init(FAR struct power_s *power,
+                FAR const struct power_config_s *config)
+{
+  memset(power, 0, sizeof(*power));
+  power->config        = *config;
+  power->module.name   = "power";
+  power->module.start  = power_start;
+  power->module.stop   = power_stop;
+
+  if (power->config.reads == 0)
+    {
+      power->config.reads = 1;
+    }
+}
+
+/****************************************************************************
+ * Name: power_wants_off
+ ****************************************************************************/
+
+bool power_wants_off(FAR const struct power_s *power)
+{
+  return power->off;
+}

@@ -9,7 +9,9 @@ what the system does and why.
 The work has just started. The tree builds NuttX's configurations for the
 simulator, QEMU and the LilyGo T-Deck Max, and the first pieces of
 pnut-os: the service library, `libpnut`, and the system program with its
-first service, Settings, tested on the computer and in the simulator.
+first services, Service states and Settings, tested on the computer and in
+the simulator. On the T-Deck Max, the system program also powers the
+device off when the battery runs low.
 
 ## Getting the tree
 
@@ -84,7 +86,7 @@ One target is configured at a time; building another configures afresh.
 | `etc/` | laid over the board's `/etc` in the image (RFC 0010): `init.d/pnut.rc`, NxInit's configuration (RFC 0006); `pnut/programs`, which services each program runs (RFC 0007) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
 | `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; telling NxInit a program is ready; typed settings, kept in a struct and up to date (RFC 0025); the interfaces' generated code |
-| `src/system/` | the system program, `pnut_system` (RFC 0007), with Service states (RFC 0006: the services' states, which task is which program) and Settings (RFC 0025), which checks who calls |
+| `src/system/` | the system program, `pnut_system` (RFC 0007), with Service states (RFC 0006: the services' states, which task is which program), Settings (RFC 0025), which checks who calls, and Power, so far only its power-off at a low battery |
 | `proto/` | the interfaces, their topics and their settings (RFC 0023, RFC 0025): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |

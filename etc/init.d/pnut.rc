@@ -18,9 +18,9 @@ import /etc/init.d/init.rc
 
 #ifdef CONFIG_PNUT_SYSTEM
 
-/* The system program: Settings and Service states (RFC 0007).  It says
- * when it is ready, through NxInit's control socket, and the others wait
- * for it:
+/* The system program: Service states, Settings and Power (RFC 0007).  It
+ * says when it is ready, through NxInit's control socket, and the others
+ * wait for it:
  *
  *   on property:svc.system.state=ready
  *

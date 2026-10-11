@@ -1,0 +1,85 @@
+/****************************************************************************
+ * pnut-os/src/system/power.h
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Mateusz Pianka
+ *
+ ****************************************************************************/
+
+#ifndef __PNUT_OS_SYSTEM_POWER_H
+#define __PNUT_OS_SYSTEM_POWER_H
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <pnut/compiler.h>
+#include <pnut/module.h>
+#include <pnut/timer.h>
+
+/****************************************************************************
+ * Public Types
+ ****************************************************************************/
+
+/* Power (RFC 0007), so far only its guard of the battery: a module of the
+ * system program that reads the battery's voltage every interval and, on
+ * battery power, once reads in a row have been at or under the cutoff,
+ * stops the program to power the device off.  The settings are written as
+ * the program stops; the program's main powers off after.
+ */
+
+struct power_config_s
+{
+  uint32_t interval;              /* Between readings, in milliseconds */
+  int cutoff;                     /* In mV; zero never powers off */
+  uint8_t reads;                  /* In a row, at or under the cutoff */
+
+  /* Read the battery's voltage, in mV, and whether the device runs on
+   * external power.  A negated errno value; -ENODEV when the device has no
+   * battery to read, which ends the readings.
+   */
+
+  CODE int (*measure)(FAR void *arg, FAR int *mv, FAR bool *external);
+  FAR void *arg;
+};
+
+struct power_s
+{
+  struct pnut_module_s module;    /* First: the module is the power */
+  struct power_config_s config;
+
+  FAR struct pnut_timer_s *timer; /* The readings, periodic */
+  uint8_t low;                    /* Readings in a row under the cutoff */
+  bool failing;                   /* The last reading failed, logged */
+  bool off;                       /* The program stopped to power off */
+};
+
+/****************************************************************************
+ * Public Function Prototypes
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: power_init
+ *
+ * Description:
+ *   Set up the module, to be added to the program's loop.
+ *
+ ****************************************************************************/
+
+void power_init(FAR struct power_s *power,
+                FAR const struct power_config_s *config);
+
+/****************************************************************************
+ * Name: power_wants_off
+ *
+ * Description:
+ *   Whether the module stopped the program to power the device off.
+ *
+ ****************************************************************************/
+
+bool power_wants_off(FAR const struct power_s *power);
+
+#endif /* __PNUT_OS_SYSTEM_POWER_H */
