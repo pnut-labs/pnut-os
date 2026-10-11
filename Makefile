@@ -38,11 +38,14 @@ NANOPB_LINK    := $(APPS)/netutils/nanopb/nanopb
 GEN            := $(BUILD)/gen
 PROTOS         := $(shell find proto tests/proto -name '*.proto' 2> /dev/null)
 
-# pnut-os's files in /etc, laid over the board's (RFC 0010): NuttX's
-# boards/Board.mk reads ETC_OVERLAY, from the environment here, so that
-# every make of NuttX sees it, the build's and the flash's
+# pnut-os's files in /etc, laid over the board's (RFC 0010): etc/, with
+# the target's settings' defaults compiled in (RFC 0025), staged in
+# build/etc before each build.  NuttX's boards/Board.mk reads ETC_OVERLAY,
+# from the environment here, so that every make of NuttX sees it, the
+# build's and the flash's.
 
-export ETC_OVERLAY := $(ROOT)/etc
+ETC                := $(BUILD)/etc
+export ETC_OVERLAY := $(ETC)
 
 # NuttX builds with -j$(JOBS), unless make was given its own -j; decided
 # in the recipe, since make 4.3 sets MAKEFLAGS only after parsing
@@ -119,12 +122,14 @@ BOARD_DEFCONFIG := $(wildcard $(NUTTX)/boards/*/*/$(firstword \
 
 $(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
 	$(nanopb_link)
+	$(ROOT)/tools/stage-etc.sh $(ROOT) $(ETC) $(TARGET) $(PYTHON) $(GEN)
 	$(MAKE) -C $(NUTTX) $(NUTTXJOBS)
 
 .PRECIOUS: $(NUTTX)/.config
 
 $(NUTTX)/.config: configs/$(TARGET)/target.mk configs/$(TARGET)/fragment.config $(BOARD_DEFCONFIG) $(RECONFIGURE) | submodules external nanopb
 	rm -f $(BUILD)/target
+	mkdir -p $(ETC)
 	PYTHON=$(PYTHON) $(ROOT)/tools/configure-target.sh \
 	  $(NUTTX) $(BOARD_CONFIG) $(ROOT)/configs/$(TARGET)/fragment.config
 	mkdir -p $(BUILD)

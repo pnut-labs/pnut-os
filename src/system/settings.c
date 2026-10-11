@@ -238,6 +238,17 @@ struct settings_input_s
   int error;                      /* Zero, or the errno of a failed read */
 };
 
+/* A default looked for in the defaults file */
+
+struct settings_lookup_s
+{
+  FAR struct settings_s *settings;
+  FAR const char *owner;
+  FAR const char *key;
+  FAR pnut_setting_value_t *value;
+  bool found;
+};
+
 /****************************************************************************
  * Name: settings_read
  *
@@ -287,6 +298,160 @@ static bool settings_replaceable(FAR const char *path)
   struct stat st;
 
   return lstat(path, &st) < 0 ? errno == ENOENT : S_ISREG(st.st_mode);
+}
+
+/****************************************************************************
+ * Name: settings_defaults_load
+ *
+ * Description:
+ *   Read the target's defaults file (RFC 0025) whole, once, as Settings
+ *   starts: it is small, and looked up as each schema registers.
+ *
+ ****************************************************************************/
+
+static void settings_defaults_load(FAR struct settings_s *settings)
+{
+  FAR const char *path = settings->config.defaults;
+  struct stat st;
+  size_t done = 0;
+  ssize_t n;
+  int fd;
+
+  if (path == NULL)
+    {
+      return;
+    }
+
+  fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    {
+      if (errno != ENOENT)
+        {
+          pnut_log(&settings->module, PNUT_LOG_WARNING,
+                   "Cannot open %s: %d", path, -errno);
+        }
+
+      return;
+    }
+
+  if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) || st.st_size == 0 ||
+      st.st_size > SETTINGS_DEFAULTS_MAX)
+    {
+      pnut_log(&settings->module, PNUT_LOG_WARNING,
+               "%s: not a file of 1 to %d bytes", path,
+               SETTINGS_DEFAULTS_MAX);
+      close(fd);
+      return;
+    }
+
+  settings->defaults = malloc(st.st_size);
+  if (settings->defaults == NULL)
+    {
+      pnut_log(&settings->module, PNUT_LOG_WARNING,
+               "No memory for %s", path);
+      close(fd);
+      return;
+    }
+
+  while (done < (size_t)st.st_size)
+    {
+      n = read(fd, settings->defaults + done, st.st_size - done);
+      if (n < 0 && errno == EINTR)
+        {
+          continue;
+        }
+
+      if (n <= 0)
+        {
+          pnut_log(&settings->module, PNUT_LOG_WARNING,
+                   "Cannot read %s: %d", path, n < 0 ? -errno : -EIO);
+          free(settings->defaults);
+          settings->defaults = NULL;
+          close(fd);
+          return;
+        }
+
+      done += n;
+    }
+
+  close(fd);
+  settings->ndefaults = done;
+}
+
+/****************************************************************************
+ * Name: settings_default_entry
+ *
+ * Description:
+ *   One of the defaults file's entries: the one looked for is kept.
+ *
+ ****************************************************************************/
+
+static bool settings_default_entry(FAR pb_istream_t *stream,
+                                   FAR const pb_field_t *field,
+                                   FAR void **arg)
+{
+  FAR struct settings_lookup_s *lookup = *arg;
+  FAR pnut_settings_default_t *in = &lookup->settings->entry;
+
+  memset(in, 0, sizeof(*in));
+  if (!pb_decode(stream, PNUT_SETTINGS_DEFAULT_FIELDS, in))
+    {
+      return false;
+    }
+
+  if (!lookup->found && in->has_value &&
+      strcmp(in->owner, lookup->owner) == 0 &&
+      strcmp(in->key, lookup->key) == 0)
+    {
+      *lookup->value = in->value;
+      lookup->found  = true;
+    }
+
+  return true;
+}
+
+/****************************************************************************
+ * Name: settings_default
+ *
+ * Description:
+ *   The target's default for a setting, from its defaults file.
+ *
+ ****************************************************************************/
+
+static bool settings_default(FAR void *arg, FAR const char *owner,
+                             FAR const char *key,
+                             FAR pnut_setting_value_t *value)
+{
+  FAR struct settings_s *settings = arg;
+  struct settings_lookup_s lookup;
+  pnut_settings_defaults_t msg;
+  pb_istream_t stream;
+
+  if (settings->defaults == NULL)
+    {
+      return false;
+    }
+
+  lookup.settings = settings;
+  lookup.owner    = owner;
+  lookup.key      = key;
+  lookup.value    = value;
+  lookup.found    = false;
+
+  memset(&msg, 0, sizeof(msg));
+  msg.defaults.funcs.decode = settings_default_entry;
+  msg.defaults.arg          = &lookup;
+
+  stream = pb_istream_from_buffer(settings->defaults, settings->ndefaults);
+  if (!pb_decode(&stream, PNUT_SETTINGS_DEFAULTS_FIELDS, &msg))
+    {
+      pnut_log(&settings->module, PNUT_LOG_WARNING,
+               "Cannot decode %s: %s", settings->config.defaults,
+               PB_GET_ERROR(&stream));
+      return false;
+    }
+
+  return lookup.found;
 }
 
 /****************************************************************************
@@ -1063,6 +1228,10 @@ static int settings_start(FAR struct pnut_module_s *module,
       return ret;
     }
 
+  settings->store.defaults     = settings_default;
+  settings->store.defaults_arg = settings;
+  settings_defaults_load(settings);
+
   settings->size   = SETTINGS_FILE_MAX(limits->settings, limits->texts);
   settings->buffer = malloc(settings->size);
   if (settings->buffer == NULL)
@@ -1106,6 +1275,8 @@ errout:
   settings->changes = NULL;
   free(settings->buffer);
   settings->buffer = NULL;
+  free(settings->defaults);
+  settings->defaults = NULL;
   settings_store_deinit(&settings->store);
   return ret;
 }
@@ -1155,5 +1326,7 @@ void settings_deinit(FAR struct settings_s *settings)
 {
   free(settings->buffer);
   settings->buffer = NULL;
+  free(settings->defaults);
+  settings->defaults = NULL;
   settings_store_deinit(&settings->store);
 }

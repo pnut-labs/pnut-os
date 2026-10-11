@@ -34,6 +34,7 @@ import re
 import sys
 
 try:
+    from google.protobuf import descriptor_pb2
     from google.protobuf.compiler import plugin_pb2
 except ImportError:
     sys.exit("protoc-gen-pnut: Python's protobuf module is missing "
@@ -370,6 +371,435 @@ def topics_source(path, topics, fdesc):
         w.append("}")
         w.append("")
     return "\n".join(w)
+
+
+# A settings message's fields, by protobuf type: how a setting is kept in
+# the message's struct, and its integers' range
+
+FD = descriptor_pb2.FieldDescriptorProto
+
+INT_KINDS = {
+    FD.TYPE_INT32: ("INT32", -2**31, 2**31 - 1),
+    FD.TYPE_SINT32: ("INT32", -2**31, 2**31 - 1),
+    FD.TYPE_SFIXED32: ("INT32", -2**31, 2**31 - 1),
+    FD.TYPE_UINT32: ("UINT32", 0, 2**32 - 1),
+    FD.TYPE_FIXED32: ("UINT32", 0, 2**32 - 1),
+    FD.TYPE_INT64: ("INT64", -2**63, 2**63 - 1),
+    FD.TYPE_SINT64: ("INT64", -2**63, 2**63 - 1),
+    FD.TYPE_SFIXED64: ("INT64", -2**63, 2**63 - 1),
+}
+
+# pnut.Setting's limits (proto/pnut/settings.proto), without their NULs
+
+SETTING_LIMITS = {"key": 64, "label": 48, "group": 48, "unit": 16,
+                  "choice": 31, "choices": 16}
+
+SETTING_NAME = re.compile(r"[a-z0-9_][a-z0-9._]*")
+OWNER_NAME = re.compile(r"[a-z0-9_-][a-z0-9._-]*")
+
+
+def c_string(text):
+    """A C string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def c_int64(value):
+    """An int64_t constant, INT64_MIN included."""
+    if value == -2**63:
+        return "INT64_MIN"
+    return f"INT64_C({value})"
+
+
+class Setting:
+    """A field of a settings message."""
+
+    def __init__(self, owner, fdesc_msg, field):
+        where = f"{owner.full}.{field.name}"
+        if not field.options.HasExtension(options_pb2.setting):
+            raise GenError(f"{where}: no (pnut.setting)")
+        if field.label == FD.LABEL_REPEATED:
+            raise GenError(f"{where}: a setting is not repeated")
+        if field.HasField("oneof_index") or field.proto3_optional:
+            raise GenError(f"{where}: a setting is not optional, nor in a "
+                           "oneof")
+        opts = field.options.Extensions[options_pb2.setting]
+
+        # nanopb's C style names the struct's member, as the index
+
+        self.field = underscore(field.name)
+        self.upper = self.field.upper()
+        self.key = opts.key if opts.HasField("key") else self.field
+        self.label = opts.label
+        self.group = opts.group
+        self.unit = opts.unit
+        self.public = opts.public
+        self.choices = list(opts.choices)
+        self.has_default = opts.HasField("default")
+        self.default = opts.default
+        self.min = 0
+        self.max = 0
+        self.integer = 0
+
+        if not SETTING_NAME.fullmatch(self.key) or \
+                len(self.key) > SETTING_LIMITS["key"]:
+            raise GenError(f"{where}: key {self.key!r}: lowercase letters, "
+                           "digits, dots and underscores, at most 64")
+        for name in ("label", "group", "unit"):
+            if len(getattr(self, name)) > SETTING_LIMITS[name]:
+                raise GenError(f"{where}: {name} longer than "
+                               f"{SETTING_LIMITS[name]}")
+
+        if field.type == FD.TYPE_BOOL:
+            self.type, self.kind = "BOOLEAN", "BOOL"
+            if self.has_default and self.default not in ("true", "false"):
+                raise GenError(f"{where}: default {self.default!r}: true "
+                               "or false")
+            self.integer = 1 if self.default == "true" else 0
+        elif field.type in INT_KINDS:
+            self.type = "INTEGER"
+            self.kind, lo, hi = INT_KINDS[field.type]
+            self.min = opts.min if opts.HasField("min") else lo
+            self.max = opts.max if opts.HasField("max") else hi
+            if not lo <= self.min <= self.max <= hi:
+                raise GenError(f"{where}: range {self.min} to {self.max} "
+                               "does not fit the field")
+            if self.has_default:
+                try:
+                    self.integer = int(self.default, 10)
+                except ValueError:
+                    raise GenError(f"{where}: default {self.default!r}: "
+                                   "not an integer") from None
+            if not self.min <= self.integer <= self.max:
+                raise GenError(f"{where}: default {self.integer} out of "
+                               "its range" if self.has_default else
+                               f"{where}: a range that leaves out 0 needs "
+                               "a default")
+        elif field.type == FD.TYPE_STRING:
+            self.kind = "TEXT"
+            if opts.secret:
+                # Settings never lists a secret's value, nor sets one yet
+                # (RFC 0025), so the cache could neither read nor write it
+
+                raise GenError(f"{where}: secrets come later: the typed "
+                               "settings cannot hold one yet")
+            elif self.choices:
+                self.type = "CHOICE"
+                if len(self.choices) > SETTING_LIMITS["choices"]:
+                    raise GenError(f"{where}: more than 16 choices")
+                for c in self.choices:
+                    if not c or len(c) > SETTING_LIMITS["choice"]:
+                        raise GenError(f"{where}: choice {c!r}: 1 to 31 "
+                                       "characters")
+                if len(set(self.choices)) != len(self.choices):
+                    raise GenError(f"{where}: a choice given twice")
+                if self.has_default and self.default not in self.choices:
+                    raise GenError(f"{where}: default {self.default!r} is "
+                                   "not a choice")
+            else:
+                self.type = "STRING"
+        else:
+            raise GenError(f"{where}: a setting is a bool, an integer or a "
+                           "string")
+
+        if self.type != "INTEGER" and (opts.HasField("min") or
+                                       opts.HasField("max")):
+            raise GenError(f"{where}: a range is an integer's")
+        if self.type != "CHOICE" and self.choices:
+            raise GenError(f"{where}: choices are a string's")
+
+
+class Settings:
+    """A message whose fields are an owner's settings."""
+
+    def __init__(self, fdesc, desc):
+        self.msg = Msg(f".{fdesc.package}.{desc.name}" if fdesc.package
+                       else f".{desc.name}")
+        self.full = self.msg.proto
+        self.owner = desc.options.Extensions[options_pb2.settings]
+        self.prefix = c_name(self.full)
+        self.upper = self.prefix.upper()
+        self.doc = ""
+
+        if not OWNER_NAME.fullmatch(self.owner) or len(self.owner) > 64:
+            raise GenError(f"{self.full}: owner {self.owner!r}: lowercase "
+                           "letters, digits, dots, dashes and underscores, "
+                           "at most 64")
+        if desc.options.HasExtension(options_pb2.topic):
+            raise GenError(f"{self.full}: settings, or a topic, not both")
+        if desc.nested_type or desc.enum_type:
+            raise GenError(f"{self.full}: a settings message nests nothing")
+
+        self.settings = [Setting(self, desc, f) for f in desc.field]
+        if not self.settings:
+            raise GenError(f"{self.full}: no settings")
+        if len(self.settings) > 64:
+            raise GenError(f"{self.full}: more than 64 settings")
+        keys = [s.key for s in self.settings]
+        if len(set(keys)) != len(keys):
+            raise GenError(f"{self.full}: a key used twice")
+        # The index enum is {P}_{FIELD}: it must not be one of nanopb's
+        # macros for the message ({P}_SIZE, {P}_{FIELD}_TAG...) nor ours
+
+        taken = {"OWNER", "NSETTINGS", "SIZE", "FIELDS", "INIT_ZERO",
+                 "INIT_DEFAULT", "CALLBACK", "DEFAULT", "FIELDLIST"}
+        taken |= {s.upper + "_TAG" for s in self.settings}
+        for s in self.settings:
+            if s.upper in taken:
+                raise GenError(f"{self.full}.{s.field}: its index "
+                               f"{self.upper}_{s.upper} clashes with "
+                               "nanopb's or the generated code's names")
+
+
+def settings_names(st):
+    """The C names a settings message's code takes."""
+    p = st.prefix
+    names = {f"{p}_open", f"{p}_close", f"{p}_s", f"g_{p}_desc",
+             f"g_{p}_decls", f"{st.upper}_OWNER", f"{st.upper}_NSETTINGS"}
+    for s in st.settings:
+        names |= {f"{p}_set_{s.field}", f"{st.upper}_{s.upper}"}
+    return names
+
+
+def settings_header(path, all_settings, fdesc):
+    guard = "__PNUT_GEN_" + re.sub(r"\W", "_", path).upper() + "_SETTINGS_H"
+    w = []
+    w.append(f"/* Generated by tools/protoc-gen-pnut from {fdesc.name}: "
+             "do not edit */")
+    w.append("")
+    w.append(f"#ifndef {guard}")
+    w.append(f"#define {guard}")
+    w.append("")
+    w.append("#ifdef __NuttX__")
+    w.append("#  include <nuttx/config.h>")
+    w.append("#endif")
+    w.append("")
+    w.append("#include <stdbool.h>")
+    w.append("#include <stdint.h>")
+    w.append("")
+    w.append("#include <pnut/module.h>")
+    w.append("#include <pnut/settings_cache.h>")
+    w.append("")
+    w.append(f'#include "{path}.pb.h"')
+    w.append("")
+    for st in all_settings:
+        p = st.prefix
+        lines = [f"{st.owner}'s settings (RFC 0025), from {st.full}:",
+                 f"{st.msg.type} holds their values, which the cache keeps",
+                 "(pnut/settings_cache.h)."]
+        lines += st.doc.splitlines() if st.doc else []
+        w.append(f"/* {lines[0]}")
+        w += [f" * {line}".rstrip() for line in lines[1:]]
+        w.append(" */")
+        w.append("")
+        w.append(f"#define {st.upper}_OWNER {c_string(st.owner)}")
+        w.append("")
+        w.append("/* Each setting's index */")
+        w.append("")
+        w.append("enum")
+        w.append("{")
+        for i, s in enumerate(st.settings):
+            w.append(f"  {st.upper}_{s.upper} = {i},")
+        w.append(f"  {st.upper}_NSETTINGS")
+        w.append("};")
+        w.append("")
+        w.append(f"extern const struct pnut_settings_desc_s g_{p}_desc;")
+        w.append("")
+        w.append(f"struct {p}_s")
+        w.append("{")
+        w.append("  /* The values, read on the loop */")
+        w.append("")
+        w.append(f"  {st.msg.type} values;")
+        w.append("")
+        w.append("  /* The library's */")
+        w.append("")
+        w.append("  struct pnut_settings_cache_s cache;")
+        w.append("};")
+        w.append("")
+    w.append("#ifdef __cplusplus")
+    w.append('extern "C"')
+    w.append("{")
+    w.append("#endif")
+    w.append("")
+    for st in all_settings:
+        p = st.prefix
+        w.append(f"int {p}_open(FAR struct pnut_module_s *module,")
+        w.append("    pnut_settings_changed_t changed, FAR void *arg,")
+        w.append(f"    FAR struct {p}_s *settings);")
+        w.append(f"void {p}_close(FAR struct {p}_s *settings);")
+        for s in st.settings:
+            ctype = {"BOOL": "bool", "INT32": "int32_t",
+                     "UINT32": "uint32_t", "INT64": "int64_t",
+                     "TEXT": "FAR const char *"}[s.kind]
+            sep = "" if ctype.endswith("*") else " "
+            w.append(f"int {p}_set_{s.field}(FAR struct {p}_s *settings,")
+            w.append(f"    {ctype}{sep}value, pnut_settings_done_t done, "
+                     "FAR void *arg);")
+        w.append("")
+    w.append("#ifdef __cplusplus")
+    w.append("}")
+    w.append("#endif")
+    w.append("")
+    w.append(f"#endif /* {guard} */")
+    return "\n".join(w) + "\n"
+
+
+def settings_source(path, all_settings, fdesc):
+    w = []
+    w.append(f"/* Generated by tools/protoc-gen-pnut from {fdesc.name}: "
+             "do not edit */")
+    w.append("")
+    w.append("#include <stddef.h>")
+    w.append("#include <stdint.h>")
+    w.append("#include <string.h>")
+    w.append("")
+    w.append(f'#include "{path}.settings.h"')
+    w.append("")
+    for st in all_settings:
+        p = st.prefix
+        t = st.msg.type
+        for s in st.settings:
+            if s.kind != "TEXT":
+                continue
+
+            # A string field nanopb gave no max_size is a callback, not an
+            # array: this fails to compile for it.  A default or a choice
+            # longer than the field does too.
+
+            w.append(f"typedef char {p}_{s.field}_is_text"
+                     f"[sizeof((({t} *)0)->{s.field}[0]) == 1 ? 1 : -1];")
+
+            # Settings takes 1 to 256 bytes
+
+            w.append(f"typedef char {p}_{s.field}_size"
+                     f"[sizeof((({t} *)0)->{s.field}) >= 2 && "
+                     f"sizeof((({t} *)0)->{s.field}) <= "
+                     "sizeof(((pnut_setting_value_t *)0)->value.text) ? "
+                     "1 : -1];")
+            for i, text in enumerate(([s.default] if s.has_default else []) +
+                                     s.choices):
+                w.append(f"typedef char {p}_{s.field}_fits_{i}"
+                         f"[sizeof({c_string(text)}) <= "
+                         f"sizeof((({t} *)0)->{s.field}) ? 1 : -1];")
+            if s.choices:
+                w.append("")
+                w.append(f"static const char * const g_{p}_{s.field}"
+                         "_choices[] =")
+                w.append("{")
+                w.append("  " + ", ".join(c_string(c) for c in s.choices))
+                w.append("};")
+            w.append("")
+        w.append(f"static const struct pnut_setting_decl_s g_{p}_decls[] =")
+        w.append("{")
+        for s in st.settings:
+            size = f"sizeof((({t} *)0)->{s.field})"
+            w.append("  {")
+            w.append(f"    .key         = {c_string(s.key)},")
+            for name in ("label", "group", "unit"):
+                if getattr(s, name):
+                    w.append(f"    .{name:<11} = "
+                             f"{c_string(getattr(s, name))},")
+            if s.choices:
+                w.append(f"    .choices     = g_{p}_{s.field}_choices,")
+                w.append(f"    .nchoices    = {len(s.choices)},")
+            if s.has_default and s.kind == "TEXT":
+                w.append(f"    .text        = {c_string(s.default)},")
+            if s.integer:
+                w.append(f"    .integer     = {c_int64(s.integer)},")
+            if s.type == "INTEGER":
+                w.append(f"    .min         = {c_int64(s.min)},")
+                w.append(f"    .max         = {c_int64(s.max)},")
+            if s.type in ("STRING", "SECRET"):
+                w.append(f"    .max_length  = {size} - 1,")
+            w.append(f"    .offset      = offsetof({t}, {s.field}),")
+            w.append(f"    .size        = {size},")
+            w.append(f"    .type        = PNUT_SETTING_TYPE_{s.type},")
+            w.append(f"    .kind        = PNUT_SETTING_KIND_{s.kind},")
+            if s.has_default:
+                w.append("    .has_default = true,")
+            if s.public:
+                w.append("    .is_public   = true,")
+            w.append("  },")
+        w.append("};")
+        w.append("")
+        w.append(f"const struct pnut_settings_desc_s g_{p}_desc =")
+        w.append("{")
+        w.append(f"  {st.upper}_OWNER, g_{p}_decls, {st.upper}_NSETTINGS")
+        w.append("};")
+        w.append("")
+        w.append(f"int {p}_open(FAR struct pnut_module_s *module,")
+        w.append("    pnut_settings_changed_t changed, FAR void *arg,")
+        w.append(f"    FAR struct {p}_s *settings)")
+        w.append("{")
+        w.append(f"  return pnut_settings_cache_open(module, &g_{p}_desc,")
+        w.append("                                  &settings->values, "
+                 "changed, arg,")
+        w.append("                                  &settings->cache);")
+        w.append("}")
+        w.append("")
+        w.append(f"void {p}_close(FAR struct {p}_s *settings)")
+        w.append("{")
+        w.append("  pnut_settings_cache_close(&settings->cache);")
+        w.append("}")
+        w.append("")
+        for s in st.settings:
+            ctype = {"BOOL": "bool", "INT32": "int32_t",
+                     "UINT32": "uint32_t", "INT64": "int64_t",
+                     "TEXT": "FAR const char *"}[s.kind]
+            sep = "" if ctype.endswith("*") else " "
+            w.append(f"int {p}_set_{s.field}(FAR struct {p}_s *settings,")
+            w.append(f"    {ctype}{sep}value, pnut_settings_done_t done, "
+                     "FAR void *arg)")
+            w.append("{")
+            w.append("  pnut_setting_value_t v;")
+            w.append("")
+            w.append("  memset(&v, 0, sizeof(v));")
+            if s.kind == "BOOL":
+                w.append("  v.which_value   = PNUT_SETTING_VALUE_BOOLEAN_TAG;")
+                w.append("  v.value.boolean = value;")
+            elif s.kind == "TEXT":
+                w.append("  v.which_value = PNUT_SETTING_VALUE_TEXT_TAG;")
+                w.append("  strlcpy(v.value.text, value, "
+                         "sizeof(v.value.text));")
+            else:
+                w.append("  v.which_value   = PNUT_SETTING_VALUE_INTEGER_TAG;")
+                w.append("  v.value.integer = value;")
+            w.append(f"  return pnut_settings_cache_set(&settings->cache, "
+                     f"{st.upper}_{s.upper},")
+            w.append("                                 &v, done, arg);")
+            w.append("}")
+            w.append("")
+    return "\n".join(w)
+
+
+def settings_reference(all_settings):
+    """The settings' part of a file's reference."""
+    w = []
+    for st in all_settings:
+        w += [f"## Settings of `{st.owner}`", "",
+              f"From `{st.full}`; C prefix `{st.prefix}_`.", ""]
+        if st.doc:
+            w += [st.doc, ""]
+        w += ["| Key | Type | Default | Range or choices | Public |",
+              "|---|---|---|---|---|"]
+        for s in st.settings:
+            if s.type == "INTEGER":
+                limits = f"{s.min} to {s.max}" + (f" {s.unit}" if s.unit
+                                                   else "")
+            elif s.type == "CHOICE":
+                limits = ", ".join(f"`{c}`" for c in s.choices)
+            else:
+                limits = "—"
+            if s.has_default:
+                default = f"`{s.default}`"
+            else:
+                default = {"BOOLEAN": "`false`", "INTEGER": "`0`",
+                           "CHOICE": f"`{s.choices[0]}`" if s.choices
+                           else "—", "STRING": "empty",
+                           "SECRET": "—"}[s.type]
+            w.append(f"| `{s.key}` | {s.type.lower()} | {default} | "
+                     f"{limits} | {'yes' if s.public else 'no'} |")
+        w.append("")
+    return w
 
 
 def comments(fdesc):
@@ -966,6 +1396,7 @@ def generate(request):
     files = {f.name: f for f in request.proto_file}
     ifaces = {}
     names = {}
+    owners = {}
 
     for name in request.file_to_generate:
         fdesc = files[name]
@@ -993,15 +1424,55 @@ def generate(request):
                 names[t.name] = t.full
                 topics.append(t)
 
+        # Settings: top-level messages with (pnut.settings), each owner
+        # once in the whole system
+
+        settings = []
+        for mi, mdesc in enumerate(fdesc.message_type):
+            for n in mdesc.nested_type:
+                if n.options.HasExtension(options_pb2.settings):
+                    raise GenError(f"{fdesc.package}.{mdesc.name}.{n.name}: "
+                                   "a settings message is a top-level one")
+            if mdesc.options.HasExtension(options_pb2.settings):
+                st = Settings(fdesc, mdesc)
+                st.doc = notes.get((4, mi), "")
+                if st.owner in owners:
+                    raise GenError(f"{st.full}: owner {st.owner} is "
+                                   f"{owners[st.owner]}'s too")
+                owners[st.owner] = st.full
+                for t in topics:
+                    if settings_names(st) & topic_names(t):
+                        raise GenError(f"{st.full}: its code's names clash "
+                                       f"with topic {t.name}'s")
+                settings.append(st)
+
+        if settings:
+            for suffix, text in ((".settings.h",
+                                  settings_header(path, settings, fdesc)),
+                                 (".settings.c",
+                                  settings_source(path, settings, fdesc))):
+                out = response.file.add()
+                out.name = path + suffix
+                out.content = text
+
         if topics:
             outputs = [(".topics.h", topics_header(path, topics, fdesc)),
                        (".topics.c", topics_source(path, topics, fdesc))]
             if not fdesc.service:
-                outputs.append((".md", topics_reference(fdesc, topics)))
+                outputs.append((".md", topics_reference(fdesc, topics) +
+                                "\n".join([""] +
+                                           settings_reference(settings))))
             for suffix, text in outputs:
                 out = response.file.add()
                 out.name = path + suffix
                 out.content = text
+        elif settings and not fdesc.service:
+            out = response.file.add()
+            out.name = path + ".md"
+            out.content = "\n".join([f"# {fdesc.package or fdesc.name}: "
+                                     "settings", "",
+                                     f"From `{fdesc.name}`.", ""] +
+                                    settings_reference(settings))
 
         for si, sdesc in enumerate(fdesc.service):
             svc = Service(fdesc, sdesc)
@@ -1014,6 +1485,11 @@ def generate(request):
                 if clash:
                     raise GenError(f"{t.full}: its code's names clash with "
                                    f"{svc.full}'s: {sorted(clash)[0]}")
+            for st in settings:
+                clash = service_names(svc) & settings_names(st)
+                if clash:
+                    raise GenError(f"{st.full}: its code's names clash with "
+                                   f"{svc.full}'s: {sorted(clash)[0]}")
 
             if svc.iface in ifaces:
                 raise GenError(f"{svc.full}: interface {svc.iface} is "
@@ -1022,7 +1498,9 @@ def generate(request):
 
             for suffix, text in ((".pnut.h", header(path, svc, fdesc)),
                                  (".pnut.c", source(path, svc, fdesc)),
-                                 (".md", reference(svc, fdesc, topics))):
+                                 (".md", reference(svc, fdesc, topics) +
+                                  "\n".join([""] +
+                                             settings_reference(settings)))):
                 out = response.file.add()
                 out.name = path + suffix
                 out.content = text

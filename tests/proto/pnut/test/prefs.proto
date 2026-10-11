@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Settings for libpnut's tests: one of each kind
+
+syntax = "proto3";
+
+package pnut.test;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+// The settings of the tests' owner
+message Prefs {
+  option (pnut.settings) = "test.prefs";
+
+  bool loud = 1 [(pnut.setting) = { default: "true", label: "Loud" }];
+  sint32 level = 2 [(pnut.setting) = { min: -5, max: 20, default: "10",
+                                       unit: "dB", group: "Sound" }];
+  uint32 count = 3 [(pnut.setting) = { }];
+  int64 big = 4 [(pnut.setting) = { key: "big.number", min: 0,
+                                    max: 10000000000, default: "5000000000" }];
+  string name = 5 [(pnut.setting) = { default: "pnut", public: true },
+                   (nanopb).max_size = 17];
+  string colour = 6 [(pnut.setting) = { choices: ["red", "green", "blue"],
+                                        default: "green" },
+                     (nanopb).max_size = 8];
+}

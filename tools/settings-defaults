@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+############################################################################
+# pnut-os/tools/settings-defaults
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+"""A target's settings' defaults, from TOML to /etc/pnut/defaults.pb.
+
+    tools/settings-defaults <descriptors> <defaults.toml> <out>
+
+descriptors is the interfaces' descriptor set, which tools/generate.sh
+writes (build/gen/descriptors.pb); the module made from pnut's options
+(options_pb2) must be on the Python path.  Each table of the TOML file is
+an owner, each key in it a setting's key; a dotted owner or key is quoted:
+
+    ["test.prefs"]
+    level = 12
+    "big.number" = 7
+
+Every default is checked against its owner's schema, as protoc-gen-pnut
+reads it from the settings message: the owner and key must exist, and the
+value must have the setting's type and fit it.  The output is a
+pnut.SettingsDefaults message (proto/pnut/settings.proto), which Settings
+reads as schemas register (RFC 0025).
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import sys
+import tomllib
+
+from google.protobuf import descriptor_pb2
+
+# protoc-gen-pnut reads the settings messages; its checks are the ones the
+# generated schemas passed
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_loader = importlib.machinery.SourceFileLoader(
+    "protoc_gen_pnut", os.path.join(_here, "protoc-gen-pnut"))
+_spec = importlib.util.spec_from_loader("protoc_gen_pnut", _loader)
+gen = importlib.util.module_from_spec(_spec)
+_loader.exec_module(gen)
+
+# nanopb's field options, extension 1010 of FieldOptions; its max_size is
+# field 1, and max_length, one less, field 14.  Read from the wire:
+# nanopb's own Python module is made at run time, and is not needed for
+# these numbers.
+
+NANOPB_OPTIONS = 1010
+NANOPB_MAX_SIZE = 1
+NANOPB_MAX_LENGTH = 14
+
+
+class DefaultsError(Exception):
+    """A defaults file that does not fit the schemas."""
+
+
+def varint(data, pos):
+    value = 0
+    shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7f) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def fields(data):
+    """A message's fields on the wire: (number, wire type, value)."""
+    pos = 0
+    while pos < len(data):
+        key, pos = varint(data, pos)
+        number, wire = key >> 3, key & 7
+        if wire == 0:
+            value, pos = varint(data, pos)
+        elif wire == 1:
+            value, pos = data[pos:pos + 8], pos + 8
+        elif wire == 2:
+            size, pos = varint(data, pos)
+            value, pos = data[pos:pos + size], pos + size
+        elif wire == 5:
+            value, pos = data[pos:pos + 4], pos + 4
+        else:
+            raise DefaultsError(f"wire type {wire} in a field's options")
+        yield number, wire, value
+
+
+def max_size(field):
+    """A string field's nanopb max_size, or None."""
+    for number, wire, value in fields(field.options.SerializeToString()):
+        if number == NANOPB_OPTIONS and wire == 2:
+            for n, w, v in fields(value):
+                if n == NANOPB_MAX_SIZE and w == 0:
+                    return v
+                if n == NANOPB_MAX_LENGTH and w == 0:
+                    return v + 1
+    return None
+
+
+def schemas(path):
+    """Every owner's settings, by key, from the descriptor set."""
+    with open(path, "rb") as f:
+        fds = descriptor_pb2.FileDescriptorSet.FromString(f.read())
+    owners = {}
+    for fdesc in fds.file:
+        for mdesc in fdesc.message_type:
+            if not mdesc.options.HasExtension(gen.options_pb2.settings):
+                continue
+            st = gen.Settings(fdesc, mdesc)
+            sizes = {gen.underscore(f.name): max_size(f)
+                     for f in mdesc.field}
+            owners[st.owner] = {s.key: (s, sizes[s.field])
+                                for s in st.settings}
+    return owners
+
+
+def flatten(table, prefix=""):
+    """A TOML table's keys, nested tables joined with dots."""
+    out = {}
+    for key, value in table.items():
+        name = prefix + key
+        if isinstance(value, dict):
+            out.update(flatten(value, name + "."))
+        else:
+            out[name] = value
+    return out
+
+
+def checked(owner, key, value, setting, size):
+    """A default as pnut.SettingValue's field and value."""
+    where = f"[{owner}] {key}"
+    if setting.type == "BOOLEAN":
+        if not isinstance(value, bool):
+            raise DefaultsError(f"{where}: true or false")
+        return "boolean", value
+    if setting.type == "INTEGER":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DefaultsError(f"{where}: an integer")
+        if not setting.min <= value <= setting.max:
+            raise DefaultsError(f"{where}: {value} is outside "
+                                f"{setting.min} to {setting.max}")
+        return "integer", value
+    if setting.type == "SECRET":
+        raise DefaultsError(f"{where}: a secret has no default")
+    if not isinstance(value, str):
+        raise DefaultsError(f"{where}: a string")
+    if setting.type == "CHOICE" and value not in setting.choices:
+        raise DefaultsError(f"{where}: {value!r} is not one of "
+                            f"{', '.join(setting.choices)}")
+    if size is not None and len(value.encode()) > size - 1:
+        raise DefaultsError(f"{where}: longer than {size - 1} bytes")
+    return "text", value
+
+
+def encode_varint(value):
+    out = bytearray()
+    while True:
+        byte = value & 0x7f
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def encode_field(number, wire, payload):
+    key = encode_varint(number << 3 | wire)
+    if wire == 0:
+        return key + encode_varint(payload)
+    return key + encode_varint(len(payload)) + payload
+
+
+def encode_default(owner, key, kind, value):
+    """A pnut.SettingsDefault on the wire."""
+    if kind == "boolean":
+        val = encode_field(1, 0, 1 if value else 0)
+    elif kind == "integer":
+        # sint64: zigzag
+
+        val = encode_field(2, 0, (value << 1) ^ (value >> 63))
+    else:
+        val = encode_field(3, 2, value.encode())
+    return (encode_field(1, 2, owner.encode()) +
+            encode_field(2, 2, key.encode()) +
+            encode_field(3, 2, val))
+
+
+def main(argv):
+    if len(argv) != 4:
+        sys.exit(f"usage: {argv[0]} <descriptors> <defaults.toml> <out>")
+    descriptors, source, out = argv[1:]
+
+    try:
+        owners = schemas(descriptors)
+        with open(source, "rb") as f:
+            toml = tomllib.load(f)
+        message = b""
+        for owner, table in toml.items():
+            if owner not in owners:
+                raise DefaultsError(f"[{owner}]: no such owner; a dotted "
+                                    "owner is quoted")
+            if not isinstance(table, dict):
+                raise DefaultsError(f"{owner}: a table of settings")
+            for key, value in flatten(table).items():
+                if key not in owners[owner]:
+                    raise DefaultsError(f"[{owner}] {key}: no such "
+                                        "setting")
+                setting, size = owners[owner][key]
+                kind, value = checked(owner, key, value, setting, size)
+                message += encode_field(1, 2, encode_default(owner, key,
+                                                             kind, value))
+    except (DefaultsError, gen.GenError, tomllib.TOMLDecodeError,
+            OSError) as e:
+        sys.exit(f"{source}: {e}")
+
+    with open(out + ".tmp", "wb") as f:
+        f.write(message)
+    os.replace(out + ".tmp", out)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

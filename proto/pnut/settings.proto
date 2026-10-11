@@ -198,3 +198,18 @@ message SettingsChange {
 message SettingsFile {
   repeated SettingsEntry entries = 1;
 }
+
+// A target's default for a setting, overriding its schema's: written as
+// configs/<target>/defaults.toml and compiled into /etc/pnut/defaults.pb
+// at the build, checked against the schemas there (RFC 0025).  Settings
+// takes it when the owner registers its schema, if it fits.
+message SettingsDefault {
+  string owner = 1 [(nanopb).max_size = 65];
+  string key = 2 [(nanopb).max_size = 65];
+  SettingValue value = 3;
+}
+
+// The defaults file
+message SettingsDefaults {
+  repeated SettingsDefault defaults = 1;
+}

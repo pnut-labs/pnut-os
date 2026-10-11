@@ -23,6 +23,10 @@ GENDIR  = $(realpath $(APPDIR)/external)/../build/gen
 
 CSRCS  += $(wildcard $(GENDIR)/pnut/*.c)
 
+# Typed settings (RFC 0025), on the Settings interface's code
+
+CSRCS  += settings_cache.c
+
 CFLAGS += ${INCDIR_PREFIX}$(GENDIR)
 CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/netutils/nanopb/nanopb
 endif

@@ -39,3 +39,60 @@ extend google.protobuf.MethodOptions {
   // The permission a caller needs (RFC 0009); none when empty
   optional string permission = 51002;
 }
+
+// A service's settings (RFC 0025): a message whose fields are the settings
+// of one owner, declared with the setting option below.  The generator
+// writes the schema the service registers, and typed access to the values
+// (<file>.settings.h): the message's own struct holds them.
+//
+//   message WifiSettings {
+//     option (pnut.settings) = "wifi";
+//     sint32 power = 1 [(pnut.setting) = { min: 0, max: 20, default: "10",
+//                                          unit: "dBm", label: "Power",
+//                                          group: "Radio" }];
+//     string region = 2 [(pnut.setting) = { choices: ["eu", "us"],
+//                                           default: "eu", public: true },
+//                        (nanopb).max_size = 3];
+//   }
+//
+// A bool field is a boolean; an integer field an integer, its range the
+// field type's unless given; a string field a string, as long as its
+// nanopb max_size allows (up to 256 bytes), or a choice when it has
+// choices.  At most 64 settings to an owner; secrets come later.
+extend google.protobuf.MessageOptions {
+  // The owner: the service's name
+  optional string settings = 51002;
+}
+
+message SettingOptions {
+  // The key, when it is not the field's name: lowercase letters, digits,
+  // dots and underscores
+  optional string key = 1;
+
+  // The default, written as text: "true", "10", "eu"; the type's zero
+  // (false, 0, empty, the first choice) when left out
+  optional string default = 2;
+
+  // An integer's range
+  optional sint64 min = 3;
+  optional sint64 max = 4;
+
+  // A choice's values
+  repeated string choices = 5;
+
+  // For the screens: string ids the system UI translates (RFC 0017)
+  optional string label = 6;
+  optional string group = 7;
+  optional string unit = 8;
+
+  // Anyone may read it (RFC 0025)
+  optional bool public = 9;
+
+  // Stored encrypted; a string field.  Not taken yet: Settings neither
+  // lists a secret's value nor sets one (RFC 0025)
+  optional bool secret = 10;
+}
+
+extend google.protobuf.FieldOptions {
+  optional SettingOptions setting = 51000;
+}

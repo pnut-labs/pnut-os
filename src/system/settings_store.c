@@ -871,6 +871,7 @@ int settings_store_register(FAR struct settings_store_s *store,
   FAR struct settings_entry_s *entry = NULL;
   FAR struct settings_owner_s *owner;
   pnut_setting_value_t olds[SETTINGS_PAGE_MAX];
+  pnut_setting_value_t over;
   bool kept[SETTINGS_PAGE_MAX];
   int nentries = 0;
   int ntexts = 0;
@@ -1025,6 +1026,18 @@ int settings_store_register(FAR struct settings_store_s *store,
         }
 
       settings_schema_put(store, entry, &in->settings[i]);
+
+      /* The target's default instead of the schema's, if it fits */
+
+      if (store->defaults != NULL &&
+          entry->type != PNUT_SETTING_TYPE_SECRET &&
+          store->defaults(store->defaults_arg, owner->name, entry->key,
+                          &over) &&
+          settings_value_check(entry, &over, &unused) == PNUT_STATUS_OK)
+        {
+          settings_value_put(entry, &entry->def, &over);
+          settings_reset_one(entry);
+        }
 
       /* A value the new declaration still allows is kept */
 
