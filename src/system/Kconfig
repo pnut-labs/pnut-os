@@ -12,7 +12,8 @@ config PNUT_SYSTEM
 	---help---
 		pnut_system, the program of the services every other program waits
 		on (RFC 0007).  So far it serves Service states (RFC 0006) and
-		Settings (RFC 0025).
+		Settings (RFC 0025), and Power powers the device off when the
+		battery runs low.
 
 if PNUT_SYSTEM
 
@@ -85,5 +86,45 @@ config PNUT_SETTINGS_DELAY
 	range 1 60000
 	---help---
 		A burst of changes makes one write (RFC 0025).
+
+config PNUT_POWER_GAUGE
+	string "The battery's fuel gauge"
+	default "/dev/batt0"
+	---help---
+		Power reads the battery's voltage from it.  Without it, the device
+		is taken to have no battery.
+
+config PNUT_POWER_CHARGER
+	string "The battery's charger"
+	default "/dev/charger0"
+	---help---
+		Power learns from it whether there is external power; without it,
+		from the gauge.
+
+config PNUT_POWER_CUTOFF
+	int "Power off at a battery voltage, in mV"
+	default 3300
+	range 0 5000
+	depends on BOARDCTL_POWEROFF
+	---help---
+		On battery power, at or under this voltage the system program
+		writes the settings and powers the device off (BOARDIOC_POWEROFF),
+		before the cell runs down to its protection circuit.  0 never
+		powers off; neither does a board without BOARDCTL_POWEROFF.
+
+config PNUT_POWER_INTERVAL
+	int "Between readings of the battery, in milliseconds"
+	default 10000
+	range 1000 600000
+	depends on BOARDCTL_POWEROFF
+
+config PNUT_POWER_READS
+	int "Readings in a row at or under the cutoff"
+	default 3
+	range 1 255
+	depends on BOARDCTL_POWEROFF
+	---help---
+		So that a dip under a burst of current, a radio sending, does not
+		power the device off.
 
 endif # PNUT_SYSTEM
