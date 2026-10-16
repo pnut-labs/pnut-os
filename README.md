@@ -32,6 +32,7 @@ warns when they differ from the commits pnut-os records.
 | every target | GNU make; kconfig-frontends; Python 3.11 or later (for its TOML reader) with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc`. protoc and Python's protobuf module, for the interfaces' code (`apt install protobuf-compiler python3-protobuf`); curl, which fetches nanopb, checked against its pinned checksum |
 | `sim` | gcc, zlib's headers |
 | `qemu`, `tdeck-max` | Espressif's toolchain `xtensa-esp-elf` 14.2 (GCC 15 does not build the ESP HAL); esptool; Espressif's QEMU, which has the `esp32s3` machine |
+| `tdeck-max` | the network while it builds: NuttX downloads the IMU's firmware image, Bosch's `BHI260AP.fw` (BSD-3-Clause), at a pinned commit and checks its SHA-256. It is kept in the NuttX tree until `make clean` or a build for another target removes it. |
 | `make test` | cmocka (`apt install libcmocka-dev`), or `CMOCKA_CFLAGS` and `CMOCKA_LIBS` naming it |
 
 ## Building
