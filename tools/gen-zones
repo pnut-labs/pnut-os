@@ -73,8 +73,8 @@ def main(argv):
                    for name in names)
     rules = sorted({rule for _, rule in zones})
     index = {rule: i for i, rule in enumerate(rules)}
-    if len(rules) > 255:
-        sys.exit("more than 255 rules: struct pnut_tz_zone_s's rule is a "
+    if len(rules) > 256:
+        sys.exit("more than 256 rules: struct pnut_tz_zone_s's rule is a "
                  "uint8_t")
 
     banner = "/" + "*" * 76
