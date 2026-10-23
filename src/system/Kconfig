@@ -40,9 +40,9 @@ config PNUT_SETTINGS_DIR
 	string "Where the settings' files are"
 	default "/tmp/settings"
 	---help---
-		One file for each owner.  /var/lib/settings once the device has a
-		file system in flash (RFC 0010); in /tmp, settings are lost at a
-		restart.
+		One file for each owner: /var/lib/settings on a device with a
+		file system in flash there (RFC 0010).  In /tmp, settings are
+		lost at a restart.
 
 config PNUT_SETTINGS_DEFAULTS
 	string "The target's defaults"
