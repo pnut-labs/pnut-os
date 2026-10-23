@@ -127,4 +127,21 @@ config PNUT_POWER_READS
 		So that a dip under a burst of current, a radio sending, does not
 		power the device off.
 
+config PNUT_TIME_STATE
+	string "Time's state file"
+	default "/tmp/time"
+	---help---
+		Where Time keeps the clock's last good time and where it came from
+		(RFC 0028), so that after a power loss the clock starts near it:
+		on persistent storage, /var/lib/time.  Empty keeps none.
+
+config PNUT_TIME_TOLERANCE
+	int "How far a reading may be from the clock, in seconds"
+	default 120
+	range 1 86400
+	---help---
+		Once the clock has been set from a source, a reading further from
+		it than this, plus the drift since the last reading allows, is
+		held until a reading from another source agrees with it.
+
 endif # PNUT_SYSTEM
