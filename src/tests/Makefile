@@ -35,10 +35,10 @@ MAINSRC  += $(UNITDIR)/test_worker.c
 
 ifneq ($(CONFIG_PNUT_SYSTEM),)
 PROGNAME += pnut_test_power pnut_test_settings pnut_test_settings_cache
-PROGNAME += pnut_test_states
+PROGNAME += pnut_test_states pnut_test_wallclock
 MAINSRC  += $(UNITDIR)/test_power.c $(UNITDIR)/test_settings.c
 MAINSRC  += $(UNITDIR)/test_settings_cache.c
-MAINSRC  += $(UNITDIR)/test_states.c
+MAINSRC  += $(UNITDIR)/test_states.c $(UNITDIR)/test_wallclock.c
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/external/system
 endif
 

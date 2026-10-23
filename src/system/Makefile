@@ -17,6 +17,7 @@ MODULE    = $(CONFIG_PNUT_SYSTEM)
 
 MAINSRC   = main.c
 CSRCS     = power.c programs.c settings.c settings_store.c states.c
+CSRCS    += wallclock.c
 
 # The interfaces' code, which libpnut compiles
 

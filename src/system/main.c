@@ -8,8 +8,9 @@
 
 /* The system program (RFC 0007): the services every other program waits
  * on.  Service states comes first, since the others ask it who calls;
- * then Settings, then Power, which may stop the program to power the
- * device off: Settings, stopping, writes what it has not written yet.
+ * then Settings, then Time, which keeps its settings there, then Power,
+ * which may stop the program to power the device off: Settings and Time,
+ * stopping, write what they have not written yet.
  */
 
 /****************************************************************************
@@ -36,6 +37,7 @@
 #include "power.h"
 #include "settings.h"
 #include "states.h"
+#include "wallclock.h"
 
 /****************************************************************************
  * Private Types
@@ -138,10 +140,12 @@ int main(int argc, FAR char *argv[])
   struct settings_config_s sconfig;
   struct states_config_s tconfig;
   struct power_config_s pconfig;
+  struct wallclock_config_s wconfig;
   struct system_battery_s battery;
   FAR struct settings_s *settings;
   FAR struct states_s *states;
   FAR struct power_s *power;
+  FAR struct wallclock_s *wall;
   FAR struct pnut_loop_s *loop;
   bool off;
   int ret;
@@ -149,12 +153,14 @@ int main(int argc, FAR char *argv[])
   settings = calloc(1, sizeof(*settings));
   states   = calloc(1, sizeof(*states));
   power    = calloc(1, sizeof(*power));
-  if (settings == NULL || states == NULL || power == NULL)
+  wall     = calloc(1, sizeof(*wall));
+  if (settings == NULL || states == NULL || power == NULL || wall == NULL)
     {
       fprintf(stderr, "pnut_system: no memory\n");
       free(settings);
       free(states);
       free(power);
+      free(wall);
       return EXIT_FAILURE;
     }
 
@@ -168,6 +174,7 @@ int main(int argc, FAR char *argv[])
       free(settings);
       free(states);
       free(power);
+      free(wall);
       return EXIT_FAILURE;
     }
 
@@ -189,6 +196,14 @@ int main(int argc, FAR char *argv[])
   sconfig.runs            = system_runs;
   sconfig.identity        = states;
   settings_init(settings, &sconfig);
+
+  memset(&wconfig, 0, sizeof(wconfig));
+  wconfig.state     = CONFIG_PNUT_TIME_STATE[0] != '\0' ?
+                      CONFIG_PNUT_TIME_STATE : NULL;
+  wconfig.tolerance = CONFIG_PNUT_TIME_TOLERANCE;
+  wconfig.who       = system_who;
+  wconfig.identity  = states;
+  wallclock_init(wall, &wconfig);
 
   battery.gauge   = open(CONFIG_PNUT_POWER_GAUGE, O_RDONLY | O_CLOEXEC);
   battery.charger = open(CONFIG_PNUT_POWER_CHARGER, O_RDONLY | O_CLOEXEC);
@@ -215,6 +230,11 @@ int main(int argc, FAR char *argv[])
 
   if (ret >= 0)
     {
+      ret = pnut_module_add(loop, &wall->module);
+    }
+
+  if (ret >= 0)
+    {
       ret = pnut_module_add(loop, &power->module);
     }
 
@@ -232,6 +252,7 @@ int main(int argc, FAR char *argv[])
   free(settings);
   free(states);
   free(power);
+  free(wall);
 
   if (battery.gauge >= 0)
     {

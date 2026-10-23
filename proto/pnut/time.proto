@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Time (RFC 0028): the wall clock and the time zone, kept by a module of
+// the system program.  Sources of the time publish their readings on the
+// network_time and gnss_time topics, which Time reads; Time announces a
+// change of the zone, and a step of the clock, on the time topic.
+//
+// A reading says when it was taken, by CLOCK_MONOTONIC, since a topic
+// gives a new reader its last message, however old: Time adds a
+// reading's age to it, and leaves one older than a minute, or from
+// another boot, aside.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Time {
+  option (pnut.iface) = 3;
+
+  // The time, the zone, and where the time came from
+  rpc Get (TimeGetRequest) returns (TimeInfo) {
+    option (pnut.method) = 1;
+  }
+
+  // Set the owner's own time, a fallback until a source gives one.  Only
+  // the system UI may.
+  rpc Set (TimeSetRequest) returns (TimeReply) {
+    option (pnut.method) = 2;
+  }
+}
+
+// The detail of an error answer (pnut.Error's code)
+message TimeError {
+  enum Code {
+    NONE = 0;
+    REFUSED = 1;                  // The kernel would not set the clock
+  }
+}
+
+message TimeGetRequest {
+}
+
+message TimeInfo {
+  // Where the clock's time came from.  The numbers are no order of
+  // preference: from NETWORK on, the clock has been set from a source.
+  enum Source {
+    NONE = 0;                     // The kernel's start date: not set
+    SAVED = 1;                    // Time's last, after a power loss
+    OWNER = 2;                    // The system UI's clock setting
+    NETWORK = 3;                  // The modem's network
+    NTP = 4;
+    GNSS = 5;
+  }
+
+  int64 utc = 1;                  // Seconds since 1970, UTC
+  string zone = 2 [(nanopb).max_size = 40];  // The named zone in use
+  string rule = 3 [(nanopb).max_size = 64];  // The rule in use
+  sint32 offset = 4;              // Seconds east of UTC now
+  bool dst = 5;                   // The rule's second offset is in force:
+                                  // summer time, except for Ireland's
+  bool from_network = 6;          // The offset is the network's
+  Source source = 7;
+  int64 since = 8;                // When it was read or set; 0 never
+}
+
+message TimeSetRequest {
+  int64 utc = 1;
+}
+
+message TimeReply {
+}
+
+// Time's settings (RFC 0028)
+message TimeSettings {
+  option (pnut.settings) = "time";
+
+  // An IANA zone name, picked from the zones' table
+  string zone = 1 [(pnut.setting) = { default: "UTC", label: "time.zone",
+                                      public: true },
+                   (nanopb).max_size = 40];
+
+  // Follow the offset the network gives
+  bool zone_auto = 2 [(pnut.setting) = { key: "zone.auto",
+                                         default: "true",
+                                         label: "time.zone.auto",
+                                         public: true }];
+
+  string ntp_server = 3 [(pnut.setting) = { default: "pool.ntp.org",
+                                            label: "time.ntp_server" },
+                         (nanopb).max_size = 64];
+}
+
+// A change of the zone in use, or a step of the clock, on the time topic.
+// seq counts the messages, from 1 when Time starts.
+message TimeChange {
+  option (pnut.topic) = "time";
+  option (pnut.depth) = 4;
+
+  string zone = 1 [(nanopb).max_size = 40];
+  string rule = 2 [(nanopb).max_size = 64];  // The zone's POSIX TZ rule
+  sint32 offset = 3;              // Seconds east of UTC now
+  bool dst = 4;
+  bool from_network = 5;
+  sint64 step = 6;                // Seconds the clock moved; 0 for none
+  TimeInfo.Source source = 7;
+  uint32 seq = 8;
+}
+
+// A reading of the network's time, from Telephony
+message NetworkTime {
+  option (pnut.topic) = "network_time";
+
+  int64 utc = 1;                  // Seconds since 1970, UTC; 0 none
+  uint32 uncertainty = 2;         // In milliseconds
+  bool has_offset = 3;            // The network gave its offset
+  sint32 offset = 4;              // Seconds east of UTC, summer time in
+  bool dst = 5;
+  uint64 taken = 6;               // CLOCK_MONOTONIC, in milliseconds
+}
+
+// A reading of the satellites' time, from Location
+message GnssTime {
+  option (pnut.topic) = "gnss_time";
+
+  int64 utc = 1;
+  uint32 uncertainty = 2;         // In milliseconds
+  uint64 taken = 3;               // CLOCK_MONOTONIC, in milliseconds
+}

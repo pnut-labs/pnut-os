@@ -19,4 +19,5 @@ TEST         = $(PYTHON) $(ROOT)/tools/sim-test.py $(NUTTX)/nuttx \
                pnut_test_ready pnut_test_timer pnut_test_topic \
                pnut_test_tz pnut_test_worker \
                pnut_test_power pnut_test_settings \
-               pnut_test_settings_cache pnut_test_states
+               pnut_test_settings_cache pnut_test_states \
+               pnut_test_wallclock
