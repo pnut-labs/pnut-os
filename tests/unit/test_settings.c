@@ -11,6 +11,7 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <limits.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -387,6 +388,34 @@ static void test_settings_reregister(void **state)
   /* The texts are back in the pool: 8, two each for a and c */
 
   assert_int_equal(f->store.texts.avail, g_limits.texts - 4);
+}
+
+/* An owner names its file: the longest one whose file's name, while it is
+ * written (<owner>.pb.new), fits the file system's names registers, and
+ * one longer does not
+ */
+
+static void test_settings_long_owner(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  size_t longest = NAME_MAX - 7 < SETTINGS_NAME_MAX ? NAME_MAX - 7 :
+                   SETTINGS_NAME_MAX;
+
+  page(&f->reg, true, true);
+  memset(f->reg.owner, 'o', longest);
+  f->reg.owner[longest] = '\0';
+  declare_int(&f->reg, "volume", 0, 10, 5);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+
+  if (longest < SETTINGS_NAME_MAX)
+    {
+      page(&f->reg, true, true);
+      memset(f->reg.owner, 'o', longest + 1);
+      f->reg.owner[longest + 1] = '\0';
+      declare_int(&f->reg, "volume", 0, 10, 5);
+      assert_int_equal(reg(f, PNUT_SETTINGS_ERROR_CODE_BAD_NAME),
+                       PNUT_STATUS_INVALID);
+    }
 }
 
 /* Schemas that do not hold together, and pages out of order */
@@ -1546,6 +1575,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_settings_cut_file, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_settings_turns, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_settings_long_owner, setup,
+                                    teardown),
     cmocka_unit_test_setup_teardown(test_settings_before_load, setup,
                                     teardown),
     cmocka_unit_test(test_settings_service),
