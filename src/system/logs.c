@@ -563,8 +563,8 @@ static int logs_name_cmp(FAR const void *a, FAR const void *b)
  * Name: logs_crash_trim
  *
  * Description:
- *   Keep the last crashes reports, the oldest deleted first: their names
- *   sort by their time.
+ *   Keep the newest crash reports, as many as crashes says, the oldest
+ *   deleted first: their names sort by their time.
  *
  ****************************************************************************/
 
