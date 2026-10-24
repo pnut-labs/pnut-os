@@ -52,10 +52,10 @@ typedef CODE int (*wallclock_who_t)(FAR void *arg, pid_t pid,
  * topic.  It keeps the last good time in its state file, written with
  * each change of the clock or its source, at most hourly otherwise, and
  * as it stops, so that the clock starts near the right time after a
- * power loss.  NTP, and correcting the sleep clock's
- * rate between readings, come later; so do the sources' order of
- * preference (RFC 0028) and their uncertainty: for now any reading near
- * the clock is taken, whichever source it comes from.
+ * power loss.  Once the clock is set from a source, a reading near it
+ * gives way to a more preferred source's of the last hour (RFC 0028), and
+ * does not move a clock within its own uncertainty.  NTP, and correcting
+ * the sleep clock's rate between readings, come later.
  */
 
 struct wallclock_config_s
