@@ -10,8 +10,9 @@ The work has just started. The tree builds NuttX's configurations for the
 simulator, QEMU and the LilyGo T-Deck Max, and the first pieces of
 pnut-os: the service library, `libpnut`, and the system program with its
 first services, Service states, Settings and Time, tested on the computer
-and in the simulator. On the T-Deck Max, the system program also powers
-the device off when the battery runs low.
+and in the simulator. On the T-Deck Max, the system program also keeps
+the log's warnings and errors, and crash reports, in `/var/lib/log`, and
+powers the device off when the battery runs low.
 
 ## Getting the tree
 
