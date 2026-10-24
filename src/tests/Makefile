@@ -9,7 +9,9 @@
 include $(APPDIR)/Make.defs
 
 # The unit tests of tests/unit, each file a program.  apps/external links
-# to src/, so tests/ is beside it.
+# to src/, so tests/ is beside it.  test_log.c reads the library's lines
+# from the standard error, as on the computer: here they go to syslog, so
+# it runs on the computer only.
 
 UNITDIR = $(realpath $(APPDIR)/external)/../tests/unit
 

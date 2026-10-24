@@ -68,6 +68,10 @@
 #  define CONFIG_PNUT_LIB_LOG_LINE          160
 #endif
 
+#ifndef CONFIG_PNUT_LIB_LOG_RATE
+#  define CONFIG_PNUT_LIB_LOG_RATE          50
+#endif
+
 #ifndef CONFIG_PNUT_LIB_RUNDIR
 #  define CONFIG_PNUT_LIB_RUNDIR            "/var/run"
 #endif
@@ -209,6 +213,7 @@ struct pnut_loop_s
 
   FAR struct pnut_module_s *first;
   FAR struct pnut_module_s *last;
+  struct pnut_lograte_s rate;     /* Of the loop's own lines */
   bool ready;
   struct pnut_ready_s nxinit;
 
@@ -284,10 +289,15 @@ struct pnut_conn_s
 
 uint64_t pnut_now(void);
 
-/* log.c: a line for the loop itself, marked with the program's name */
+/* log.c: a line for the loop itself, marked with the program's name; the
+ * line saying how many of a module's or the loop's lines were dropped, if
+ * any were
+ */
 
 void pnut_loop_log(FAR struct pnut_loop_s *loop, int level,
                    FAR const char *fmt, ...) printf_like(3, 4);
+void pnut_log_dropped(FAR struct pnut_lograte_s *rate,
+                      FAR const char *name);
 
 /* loop.c: a handler that ran longer than its budget is logged */
 

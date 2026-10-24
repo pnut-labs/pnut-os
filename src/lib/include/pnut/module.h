@@ -23,6 +23,17 @@
  * Public Types
  ****************************************************************************/
 
+/* The library's count of log lines in the second so far, and of those
+ * dropped over the rate (RFC 0026), for a module and for its loop
+ */
+
+struct pnut_lograte_s
+{
+  uint64_t second;                /* When the second began, ms */
+  uint32_t dropped;               /* Lines dropped, not told yet */
+  uint16_t lines;                 /* Lines logged in the second */
+};
+
 /* A part of a program: a service, or a client of one (RFC 0004).  The
  * program fills in the first fields and adds the module to its loop; the
  * library keeps the rest.
@@ -51,6 +62,7 @@ struct pnut_module_s
   FAR struct pnut_module_s *next;
   FAR struct pnut_module_s *prev;
   FAR struct pnut_loop_s *loop;
+  struct pnut_lograte_s rate;
   uint8_t level;                  /* The least important level logged */
   bool started;
   bool ready;
