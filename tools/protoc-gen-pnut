@@ -212,6 +212,26 @@ def service_names(svc):
     return names
 
 
+def message_names(fdesc):
+    """The C type names nanopb gives a file's messages and enums.
+
+    Nested ones included: pnut.TimeInfo is pnut_time_info_t, its enum
+    Source pnut_time_info_source_t.
+    """
+    names = set()
+
+    def walk(prefix, messages, enums):
+        for e in enums:
+            names.add(c_name(f"{prefix}.{e.name}") + "_t")
+        for m in messages:
+            name = f"{prefix}.{m.name}"
+            names.add(c_name(name) + "_t")
+            walk(name, m.nested_type, m.enum_type)
+
+    walk(fdesc.package, fdesc.message_type, fdesc.enum_type)
+    return names
+
+
 def topic_names(t):
     """The C names a topic's code takes."""
     p = t.prefix
@@ -1394,6 +1414,14 @@ def generate(request):
         response.supported_features = \
             plugin_pb2.CodeGeneratorResponse.FEATURE_PROTO3_OPTIONAL
     files = {f.name: f for f in request.proto_file}
+
+    # nanopb's type names, from every file protoc read, imports included:
+    # a <file>.pb.h includes its imports' too, and a program includes
+    # several interfaces'
+
+    types = set()
+    for f in request.proto_file:
+        types |= message_names(f)
     ifaces = {}
     names = {}
     owners = {}
@@ -1421,6 +1449,10 @@ def generate(request):
                 if t.name in names:
                     raise GenError(f"{t.full}: topic {t.name} is "
                                    f"{names[t.name]}'s too")
+                clash = topic_names(t) & types
+                if clash:
+                    raise GenError(f"{t.full}: its code's names clash with "
+                                   f"a message's: {sorted(clash)[0]}")
                 names[t.name] = t.full
                 topics.append(t)
 
@@ -1444,6 +1476,10 @@ def generate(request):
                     if settings_names(st) & topic_names(t):
                         raise GenError(f"{st.full}: its code's names clash "
                                        f"with topic {t.name}'s")
+                clash = settings_names(st) & types
+                if clash:
+                    raise GenError(f"{st.full}: its code's names clash "
+                                   f"with a message's: {sorted(clash)[0]}")
                 settings.append(st)
 
         if settings:
@@ -1479,6 +1515,11 @@ def generate(request):
             svc.doc = notes.get((6, si), "")
             for mi, m in enumerate(svc.methods):
                 m.doc = notes.get((6, si, 2, mi), "")
+
+            clash = service_names(svc) & types
+            if clash:
+                raise GenError(f"{svc.full}: its code's names clash with a "
+                               f"message's: {sorted(clash)[0]}")
 
             for t in topics:
                 clash = service_names(svc) & topic_names(t)
