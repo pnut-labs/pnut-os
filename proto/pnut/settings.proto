@@ -119,7 +119,8 @@ message SettingsError {
     FULL = 8;                     // No room left in Settings' pools
     BAD_SCHEMA = 9;               // A schema that does not hold together
     NOT_REGISTERING = 10;         // A page of a schema without its first
-    BAD_NAME = 11;                // An owner or key with other characters
+    BAD_NAME = 11;                // An owner or key with other characters,
+                                  // or an owner too long for its file
     REGISTERING = 12;             // Its first schema is not whole yet
     DENIED = 13;                  // Not the caller's to read or change
     CALLER_UNKNOWN = 14;          // Who calls cannot be told now; try again

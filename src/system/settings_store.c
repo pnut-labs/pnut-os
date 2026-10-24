@@ -11,6 +11,7 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -117,7 +118,8 @@ struct settings_decode_s
  * Description:
  *   A key: lowercase letters, digits, dots and underscores.  An owner, a
  *   service's name or an app's id, may have hyphens too; it names a file,
- *   so it never starts with a dot.
+ *   so it never starts with a dot, and its file's name while it is being
+ *   written, <owner>.pb.new, fits the file system's names (NAME_MAX).
  *
  ****************************************************************************/
 
@@ -146,7 +148,7 @@ static bool settings_name_ok(FAR const char *name, bool owner)
         }
     }
 
-  return true;
+  return !owner || i + sizeof(".pb.new") - 1 <= NAME_MAX;
 }
 
 /****************************************************************************
