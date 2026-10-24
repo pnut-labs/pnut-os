@@ -182,10 +182,14 @@ endef
 nanopb: $(NANOPB)/pb.h | submodules
 	$(nanopb_link)
 
+# nanopb's server breaks HTTP/2 transfers off now and then ("stream not
+# closed cleanly"), which failed CI jobs: HTTP/1.1, tried again on any error
+
 $(NANOPB)/pb.h:
 	rm -rf $(NANOPB) $(NANOPB).tmp
 	mkdir -p $(BUILD)/dl $(NANOPB).tmp
-	curl -fsSL -o $(NANOPB_TARBALL) \
+	curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 \
+	  -o $(NANOPB_TARBALL) \
 	  https://jpa.kapsi.fi/nanopb/download/nanopb-$(NANOPB_VERSION).tar.gz
 	echo "$(NANOPB_SHA256)  $(NANOPB_TARBALL)" | sha256sum -c -
 	tar xzf $(NANOPB_TARBALL) -C $(NANOPB).tmp --strip-components=1
