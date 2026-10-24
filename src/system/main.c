@@ -125,7 +125,7 @@ static void system_power_off(void)
   sync();
 
   ret = boardctl(BOARDIOC_POWEROFF, 0);
-  syslog(LOG_ERR, "pnut_system: cannot power off: %d\n",
+  syslog(LOG_ERR, "cannot power off: %d\n",
          ret < 0 ? -errno : ret);
 }
 #endif
