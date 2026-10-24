@@ -274,9 +274,9 @@ static void wall_test_network(FAR struct wall_test_s *t, int64_t utc,
   pnut_network_time_t msg;
 
   memset(&msg, 0, sizeof(msg));
-  msg.utc        = utc;
-  msg.has_offset = has_offset;
-  msg.offset     = offset;
+  msg.utc         = utc;
+  msg.has_offset  = has_offset;
+  msg.offset      = offset;
   msg.dst         = dst;
   msg.taken       = t->mono;
   msg.uncertainty = t->uncertainty;
