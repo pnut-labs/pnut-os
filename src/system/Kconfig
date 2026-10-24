@@ -11,8 +11,9 @@ config PNUT_SYSTEM
 	depends on PNUT_LIB && NETUTILS_NANOPB
 	---help---
 		pnut_system, the program of the services every other program waits
-		on (RFC 0007).  So far it serves Service states (RFC 0006) and
-		Settings (RFC 0025), and Power powers the device off when the
+		on (RFC 0007).  So far it serves Service states (RFC 0006),
+		Settings (RFC 0025) and Time (RFC 0028); Log keeps the log across
+		restarts (RFC 0026), and Power powers the device off when the
 		battery runs low.
 
 if PNUT_SYSTEM
@@ -35,6 +36,61 @@ config PNUT_STATES_SERVICES
 	---help---
 		Service states keeps each one's name, state and task: about 40
 		bytes each.
+
+config PNUT_LOG_SOURCE
+	string "The RAM log"
+	default "/dev/kmsg"
+	---help---
+		Log (RFC 0026) follows it, and keeps its warnings and errors in
+		files.  Empty, or a device without one: Log keeps nothing.
+
+config PNUT_LOG_DIR
+	string "Where Log's files are"
+	default "/tmp/log"
+	---help---
+		system.log, the files it rotates into, and crash reports:
+		/var/lib/log on a device with a file system in flash there
+		(RFC 0010).  In /tmp they are lost at a restart.
+
+config PNUT_LOG_FILE_SIZE
+	int "A file's bytes, at most"
+	default 65536
+	range 512 16777216
+
+config PNUT_LOG_FILES
+	int "Files: system.log and those it rotates into"
+	default 4
+	range 1 9
+
+config PNUT_LOG_CRASHES
+	int "Crash reports kept"
+	default 5
+	range 1 99
+
+config PNUT_LOG_CRASH_SIZE
+	int "A crash report's bytes, at most"
+	default 16384
+	range 1024 1048576
+	---help---
+		A report is the RAM log up to the end of the crash's dump: its
+		last lines, the dump among them, up to this many bytes.  The
+		reports take the number kept times this of Log's directory.
+
+config PNUT_LOG_DELAY
+	int "From a line to its write, in milliseconds"
+	default 5000
+	range 10 3600000
+
+config PNUT_LOG_BATCH
+	int "Bytes waiting that are written at once"
+	default 8192
+	range 256 1048576
+	---help---
+		Log takes four times this from the heap while it runs: what waits,
+		room for more while it is written, and the same again for the
+		write.  As it starts, and for a crash's dump while it runs, it
+		takes a copy of the whole RAM log too, until the crash report is
+		written.
 
 config PNUT_SETTINGS_DIR
 	string "Where the settings' files are"

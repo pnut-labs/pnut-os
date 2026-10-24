@@ -8,8 +8,9 @@
 
 /* The system program (RFC 0007): the services every other program waits
  * on.  Service states comes first, since the others ask it who calls;
- * then Settings, then Time, which keeps its settings there, then Power,
- * which may stop the program to power the device off: Settings and Time,
+ * then Settings, then Time, which keeps its settings there, then Log,
+ * once the clock is near the right time for its marks, then Power, which
+ * may stop the program to power the device off: Settings, Time and Log,
  * stopping, write what they have not written yet.
  */
 
@@ -34,6 +35,7 @@
 #include <pnut/loop.h>
 #include <pnut/module.h>
 
+#include "logs.h"
 #include "power.h"
 #include "settings.h"
 #include "states.h"
@@ -141,11 +143,13 @@ int main(int argc, FAR char *argv[])
   struct states_config_s tconfig;
   struct power_config_s pconfig;
   struct wallclock_config_s wconfig;
+  struct logs_config_s lconfig;
   struct system_battery_s battery;
   FAR struct settings_s *settings;
   FAR struct states_s *states;
   FAR struct power_s *power;
   FAR struct wallclock_s *wall;
+  FAR struct logs_s *logs;
   FAR struct pnut_loop_s *loop;
   bool off;
   int ret;
@@ -154,13 +158,16 @@ int main(int argc, FAR char *argv[])
   states   = calloc(1, sizeof(*states));
   power    = calloc(1, sizeof(*power));
   wall     = calloc(1, sizeof(*wall));
-  if (settings == NULL || states == NULL || power == NULL || wall == NULL)
+  logs     = calloc(1, sizeof(*logs));
+  if (settings == NULL || states == NULL || power == NULL || wall == NULL ||
+      logs == NULL)
     {
       fprintf(stderr, "pnut_system: no memory\n");
       free(settings);
       free(states);
       free(power);
       free(wall);
+      free(logs);
       return EXIT_FAILURE;
     }
 
@@ -175,6 +182,7 @@ int main(int argc, FAR char *argv[])
       free(states);
       free(power);
       free(wall);
+      free(logs);
       return EXIT_FAILURE;
     }
 
@@ -204,6 +212,18 @@ int main(int argc, FAR char *argv[])
   wconfig.who       = system_who;
   wconfig.identity  = states;
   wallclock_init(wall, &wconfig);
+
+  memset(&lconfig, 0, sizeof(lconfig));
+  lconfig.source     = CONFIG_PNUT_LOG_SOURCE[0] != '\0' ?
+                       CONFIG_PNUT_LOG_SOURCE : NULL;
+  lconfig.dir        = CONFIG_PNUT_LOG_DIR;
+  lconfig.file_size  = CONFIG_PNUT_LOG_FILE_SIZE;
+  lconfig.files      = CONFIG_PNUT_LOG_FILES;
+  lconfig.crashes    = CONFIG_PNUT_LOG_CRASHES;
+  lconfig.crash_size = CONFIG_PNUT_LOG_CRASH_SIZE;
+  lconfig.delay      = CONFIG_PNUT_LOG_DELAY;
+  lconfig.batch      = CONFIG_PNUT_LOG_BATCH;
+  logs_init(logs, &lconfig);
 
   battery.gauge   = open(CONFIG_PNUT_POWER_GAUGE, O_RDONLY | O_CLOEXEC);
   battery.charger = open(CONFIG_PNUT_POWER_CHARGER, O_RDONLY | O_CLOEXEC);
@@ -235,6 +255,11 @@ int main(int argc, FAR char *argv[])
 
   if (ret >= 0)
     {
+      ret = pnut_module_add(loop, &logs->module);
+    }
+
+  if (ret >= 0)
+    {
       ret = pnut_module_add(loop, &power->module);
     }
 
@@ -249,10 +274,12 @@ int main(int argc, FAR char *argv[])
   off = power_wants_off(power);
   settings_deinit(settings);
   states_deinit(states);
+  logs_deinit(logs);
   free(settings);
   free(states);
   free(power);
   free(wall);
+  free(logs);
 
   if (battery.gauge >= 0)
     {
