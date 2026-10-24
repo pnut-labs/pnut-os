@@ -57,6 +57,14 @@
 
 #define WALLCLOCK_SAVE_EVERY 3600000
 
+/* How long a source's reading is at hand, in seconds: a less preferred
+ * source does not move the clock meanwhile (RFC 0028).  An hour, as the
+ * sources' readings come when they are free; not tied to the state file's
+ * WALLCLOCK_SAVE_EVERY.
+ */
+
+#define WALLCLOCK_AT_HAND  3600
+
 /* How fast the clock may drift between readings, as a fraction of the
  * time since the last: the sleep clock gains about 0.85 % of the time
  * slept (RFC 0028); 1/64 is about 1.6 %
@@ -594,6 +602,33 @@ static int wallclock_step(FAR struct wallclock_s *wall, int64_t utc,
 }
 
 /****************************************************************************
+ * Name: wallclock_rank
+ *
+ * Description:
+ *   A source's place in the order of preference (RFC 0028): the modem's
+ *   network, NTP, GNSS; lower is better.  The others are no readings.
+ *
+ ****************************************************************************/
+
+static int wallclock_rank(uint8_t source)
+{
+  switch (source)
+    {
+      case PNUT_TIME_INFO_SOURCE_NETWORK:
+        return 0;
+
+      case PNUT_TIME_INFO_SOURCE_NTP:
+        return 1;
+
+      case PNUT_TIME_INFO_SOURCE_GNSS:
+        return 2;
+
+      default:
+        return 3;
+    }
+}
+
+/****************************************************************************
  * Name: wallclock_take
  *
  * Description:
@@ -605,15 +640,22 @@ static int wallclock_step(FAR struct wallclock_s *wall, int64_t utc,
  *   time (RFC 0028), and its own readings agreeing prove nothing.  With
  *   one source only, the owner's own time lets its next reading in.
  *
+ *   Once the clock is set from a source, a reading near it moves it,
+ *   unless the clock is within the reading's own uncertainty, which it then
+ *   confirms, or a more preferred source's reading is at hand (an hour old
+ *   at most), which wins.
+ *
  ****************************************************************************/
 
 static void wallclock_take(FAR struct wallclock_s *wall, int64_t utc,
-                           uint8_t source)
+                           uint32_t uncertainty, uint8_t source)
 {
   struct timespec ts;
   int64_t allowed;
+  int64_t slack;
   int64_t diff;
   bool confirmed;
+  bool beaten;
 
   if (wallclock_now(wall, &ts) < 0)
     {
@@ -644,7 +686,41 @@ static void wallclock_take(FAR struct wallclock_s *wall, int64_t utc,
               wall->held.source = source;
               return;
             }
+
+          /* Another source agrees with the reading held: the clock
+           * moves, preference apart
+           */
+
+          wallclock_step(wall, utc, diff, source);
+          return;
         }
+    }
+
+  /* Near the clock: a more preferred source read within the hour wins,
+   * and a clock within the reading's uncertainty stays as it is
+   */
+
+  beaten = wallclock_rank(source) > wallclock_rank(wall->source) &&
+           (int64_t)ts.tv_sec >= wall->since &&
+           (int64_t)ts.tv_sec - wall->since < WALLCLOCK_AT_HAND;
+  if (beaten)
+    {
+      pnut_log(&wall->module, PNUT_LOG_DEBUG,
+               "A reading %" PRId64 " s off (source %u): source %u is "
+               "preferred", diff, (unsigned int)source,
+               (unsigned int)wall->source);
+      return;
+    }
+
+  slack = (int64_t)(uncertainty / 1000);
+  if (confirmed && diff != 0 && diff <= slack && diff >= -slack)
+    {
+      pnut_log(&wall->module, PNUT_LOG_DEBUG,
+               "A reading %" PRId64 " s off (source %u): within its "
+               "uncertainty, confirms the clock", diff,
+               (unsigned int)source);
+      diff = 0;
+      utc  = (int64_t)ts.tv_sec;
     }
 
   wallclock_step(wall, utc, diff, source);
@@ -660,7 +736,8 @@ static void wallclock_take(FAR struct wallclock_s *wall, int64_t utc,
  ****************************************************************************/
 
 static void wallclock_reading(FAR struct wallclock_s *wall, int64_t utc,
-                              uint64_t age, uint8_t source)
+                              uint32_t uncertainty, uint64_t age,
+                              uint8_t source)
 {
   if (utc == 0)
     {
@@ -683,7 +760,8 @@ static void wallclock_reading(FAR struct wallclock_s *wall, int64_t utc,
       return;
     }
 
-  wallclock_take(wall, utc + (int64_t)((age + 500) / 1000), source);
+  wallclock_take(wall, utc + (int64_t)((age + 500) / 1000), uncertainty,
+                 source);
 }
 
 /****************************************************************************
@@ -742,7 +820,8 @@ static void wallclock_network(FAR struct pnut_network_time_reader_s *reader,
         }
     }
 
-  wallclock_reading(wall, msg->utc, age, PNUT_TIME_INFO_SOURCE_NETWORK);
+  wallclock_reading(wall, msg->utc, msg->uncertainty, age,
+                    PNUT_TIME_INFO_SOURCE_NETWORK);
 }
 
 /****************************************************************************
@@ -762,7 +841,8 @@ static void wallclock_gnss(FAR struct pnut_gnss_time_reader_s *reader,
       return;
     }
 
-  wallclock_reading(wall, msg->utc, age, PNUT_TIME_INFO_SOURCE_GNSS);
+  wallclock_reading(wall, msg->utc, msg->uncertainty, age,
+                    PNUT_TIME_INFO_SOURCE_GNSS);
 }
 
 /****************************************************************************

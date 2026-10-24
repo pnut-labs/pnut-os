@@ -93,6 +93,7 @@ struct wall_test_s
   char state[80];
   int64_t clock;                  /* The fake clock */
   uint64_t mono;                  /* The fake monotonic clock, in ms */
+  uint32_t uncertainty;           /* The readings', in ms */
   int sets;                       /* Times it was set */
   FAR const char *program;        /* Who calls; NULL: nobody known */
   int who_ret;                    /* Or who cannot tell: -EAGAIN */
@@ -273,11 +274,12 @@ static void wall_test_network(FAR struct wall_test_s *t, int64_t utc,
   pnut_network_time_t msg;
 
   memset(&msg, 0, sizeof(msg));
-  msg.utc        = utc;
-  msg.has_offset = has_offset;
-  msg.offset     = offset;
-  msg.dst        = dst;
-  msg.taken      = t->mono;
+  msg.utc         = utc;
+  msg.has_offset  = has_offset;
+  msg.offset      = offset;
+  msg.dst         = dst;
+  msg.taken       = t->mono;
+  msg.uncertainty = t->uncertainty;
   assert_int_equal(pnut_network_time_publish(t->network, &msg), 0);
 }
 
@@ -286,8 +288,9 @@ static void wall_test_gnss(FAR struct wall_test_s *t, int64_t utc)
   pnut_gnss_time_t msg;
 
   memset(&msg, 0, sizeof(msg));
-  msg.utc   = utc;
-  msg.taken = t->mono;
+  msg.utc         = utc;
+  msg.taken       = t->mono;
+  msg.uncertainty = t->uncertainty;
   assert_int_equal(pnut_gnss_time_publish(t->gnss, &msg), 0);
 }
 
@@ -550,6 +553,112 @@ static void test_wallclock_readings(void **state)
   wall_test_run(t, wall_test_readings_steps);
   assert_int_equal(t->step, 9);
   assert_int_equal(t->sets, 3);
+  wall_test_free(t);
+}
+
+/* The order of preference: a GNSS reading near the clock gives way to
+ * the network's of the last hour, and moves the clock once that is older;
+ * a reading within its own uncertainty confirms the clock without moving
+ * it
+ */
+
+static bool wall_test_preference_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        wall_test_network(t, T0 + 100, false, 0, false);
+        return true;
+
+      case 1:
+        if (t->sets == 0)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 100);
+        wall_test_gnss(t, t->clock + 30);
+        return true;
+
+      case 2:
+        wall_test_get(t);
+        return true;
+
+      case 3:
+        assert_int_equal(t->sets, 1);
+        assert_int_equal(t->info.source, PNUT_TIME_INFO_SOURCE_NETWORK);
+        assert_true(t->info.since == T0 + 100);
+
+        /* An hour and more on, the network's reading is no longer at
+         * hand
+         */
+
+        t->clock += 3700;
+        wall_test_gnss(t, t->clock + 30);
+        return true;
+
+      case 4:
+        if (t->sets == 1)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 100 + 3700 + 30);
+        wall_test_get(t);
+        return true;
+
+      case 5:
+        assert_int_equal(t->info.source, PNUT_TIME_INFO_SOURCE_GNSS);
+
+        /* The network's reading, a second off but a second and a half
+         * uncertain: preferred, it becomes the source, the clock unmoved
+         */
+
+        t->uncertainty = 1500;
+        wall_test_network(t, t->clock + 1, false, 0, false);
+        return true;
+
+      case 6:
+        wall_test_get(t);
+        return true;
+
+      case 7:
+        if (t->info.source != PNUT_TIME_INFO_SOURCE_NETWORK)
+          {
+            wall_test_get(t);
+            return false;
+          }
+
+        assert_int_equal(t->sets, 2);
+        assert_true(t->clock == T0 + 100 + 3700 + 30);
+        assert_true(t->info.since == t->clock);
+
+        /* Three seconds off is beyond it: the clock moves */
+
+        wall_test_network(t, t->clock + 3, false, 0, false);
+        return true;
+
+      case 8:
+        if (t->sets == 2)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 100 + 3700 + 33);
+        pnut_loop_stop(t->loop, 0);
+        return true;
+
+      default:
+        return false;
+    }
+}
+
+static void test_wallclock_preference(void **state)
+{
+  FAR struct wall_test_s *t = wall_test_new(false);
+
+  wall_test_run(t, wall_test_preference_steps);
+  assert_int_equal(t->step, 9);
   wall_test_free(t);
 }
 
@@ -867,6 +976,46 @@ static void test_wallclock_state(void **state)
   wall_test_free(t);
 }
 
+/* After a power loss the clock is only the state file's time: the first
+ * reading is taken as it is, however uncertain
+ */
+
+static bool wall_test_uncertain_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        t->uncertainty = 30000;
+        wall_test_network(t, T0 + 1020, false, 0, false);
+        return true;
+
+      case 1:
+        if (t->sets < 2)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 1020);
+        pnut_loop_stop(t->loop, 0);
+        return true;
+
+      default:
+        return false;
+    }
+}
+
+static void test_wallclock_uncertain(void **state)
+{
+  FAR struct wall_test_s *t = wall_test_new(false);
+
+  wall_test_write(t->state, "pnut-time 1 1792757800 3 1792757800\n");
+  t->clock = T_START;
+  wall_test_run(t, wall_test_uncertain_steps);
+  assert_int_equal(t->step, 2);
+  assert_int_equal(t->sets, 2);
+  wall_test_free(t);
+}
+
 /* State files that do not parse, or name a time out of range, a source
  * that never set the clock, or a reading after the time saved, are left
  * aside; a new file left under its temporary name is taken
@@ -923,10 +1072,12 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test(test_wallclock_readings),
+    cmocka_unit_test(test_wallclock_preference),
     cmocka_unit_test(test_wallclock_zone),
     cmocka_unit_test(test_wallclock_owner),
     cmocka_unit_test(test_wallclock_state),
     cmocka_unit_test(test_wallclock_bad_state),
+    cmocka_unit_test(test_wallclock_uncertain),
   };
 
   return cmocka_run_group_tests_name("wallclock", tests, NULL, NULL);
