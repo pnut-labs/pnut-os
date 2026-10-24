@@ -35,6 +35,13 @@
 #define SETTINGS_STOP_WAIT_MS  2000
 #define SETTINGS_STOP_STEP_MS  10
 
+/* The largest file read, as a multiple of the largest written: a file
+ * from a configuration with larger limits is still read, and its values
+ * the schema keeps are kept; a larger one is set aside
+ */
+
+#define SETTINGS_READ_MAX      4
+
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
@@ -228,16 +235,6 @@ static int settings_path(FAR struct settings_s *settings,
   return ret < 0 || ret >= SETTINGS_PATH_MAX ? -ENAMETOOLONG : OK;
 }
 
-/* A file read as it is decoded, and whether reading it failed, which a
- * file that does not decode is told from
- */
-
-struct settings_input_s
-{
-  int fd;
-  int error;                      /* Zero, or the errno of a failed read */
-};
-
 /* A default looked for in the defaults file */
 
 struct settings_lookup_s
@@ -248,41 +245,6 @@ struct settings_lookup_s
   FAR pnut_setting_value_t *value;
   bool found;
 };
-
-/****************************************************************************
- * Name: settings_read
- *
- * Description:
- *   nanopb's input from a file.
- *
- ****************************************************************************/
-
-static bool settings_read(FAR pb_istream_t *stream, FAR pb_byte_t *buf,
-                          size_t count)
-{
-  FAR struct settings_input_s *input = stream->state;
-  ssize_t n;
-
-  while (count > 0)
-    {
-      n = read(input->fd, buf, count);
-      if (n < 0 && errno == EINTR)
-        {
-          continue;
-        }
-
-      if (n <= 0)
-        {
-          input->error = n < 0 ? errno : EIO;
-          return false;
-        }
-
-      buf   += n;
-      count -= n;
-    }
-
-  return true;
-}
 
 /****************************************************************************
  * Name: settings_replaceable
@@ -455,101 +417,249 @@ static bool settings_default(FAR void *arg, FAR const char *owner,
 }
 
 /****************************************************************************
- * Name: settings_load
+ * Name: settings_read_file
  *
  * Description:
- *   Read an owner's values from its file, once its schema is registered.
- *   It runs on the loop, once for each owner, as the service it belongs
- *   to starts: the file is small, and read as it is decoded.
+ *   Read an owner's file whole, into memory: on a worker, or on the loop
+ *   when no worker takes it.  It touches nothing but the load.
  *
  ****************************************************************************/
 
-static void settings_load(FAR struct settings_s *settings,
-                          FAR const char *owner)
+static void settings_read_file(FAR struct settings_load_s *load)
 {
-  struct settings_input_s input;
-  char path[SETTINGS_PATH_MAX];
-  char temp[SETTINGS_PATH_MAX];
-  pb_istream_t stream;
   struct stat st;
+  size_t done = 0;
+  ssize_t n;
+  int fd;
 
-  if (settings_path(settings, owner, "", path) < 0 ||
-      settings_path(settings, owner, ".new", temp) < 0)
-    {
-      settings_store_hold(&settings->store, owner);
-      return;
-    }
-
-  input.error = 0;
-  input.fd    = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (input.fd < 0 && errno == ENOENT &&
-      lstat(temp, &st) == 0 && S_ISREG(st.st_mode) &&
-      rename(temp, path) == 0)
+  fd = open(load->path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0 && errno == ENOENT &&
+      lstat(load->temp, &st) == 0 && S_ISREG(st.st_mode) &&
+      rename(load->temp, load->path) == 0)
     {
       /* The device stopped while the file written beside it was being
        * put in its place, after the old one was removed (see
        * settings_write_file()): the new one is whole
        */
 
-      input.fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+      fd = open(load->path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     }
 
-  if (input.fd < 0)
+  if (fd < 0)
     {
-      if (errno == ENOENT)
-        {
-          return;
-        }
-
-      input.error = errno;
+      load->error = errno == ENOENT ? 0 : errno;
+      return;
     }
-  else if (fstat(input.fd, &st) < 0 || !S_ISREG(st.st_mode))
+
+  if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode))
     {
-      input.error = EISDIR;
+      load->error = EISDIR;
+    }
+  else if ((size_t)st.st_size > load->max)
+    {
+      load->error = EFBIG;
     }
   else
     {
-      memset(&stream, 0, sizeof(stream));
-      stream.callback   = settings_read;
-      stream.state      = &input;
-      stream.bytes_left = st.st_size;
-
-      if (!settings_store_decode(&settings->store, owner, &stream) &&
-          input.error == 0)
+      load->data = malloc(st.st_size > 0 ? st.st_size : 1);
+      if (load->data == NULL)
         {
-          /* Read whole, but not as values: kept aside, for whoever wants
-           * to look, and written again from what could be read
-           */
-
-          if (settings_path(settings, owner, ".bad", temp) == 0 &&
-              settings_replaceable(temp) && rename(path, temp) == 0)
-            {
-              pnut_log(&settings->module, PNUT_LOG_WARNING,
-                       "%s: its file does not decode: kept as %s", owner,
-                       temp);
-              settings_store_touch(&settings->store, owner);
-            }
-          else
-            {
-              input.error = EIO;
-            }
+          load->error = ENOMEM;
         }
+
+      while (load->data != NULL && done < (size_t)st.st_size)
+        {
+          n = read(fd, load->data + done, st.st_size - done);
+          if (n < 0 && errno == EINTR)
+            {
+              continue;
+            }
+
+          if (n <= 0)
+            {
+              load->error = n < 0 ? errno : EIO;
+              break;
+            }
+
+          done += n;
+        }
+
+      load->len = done;
     }
 
-  if (input.fd >= 0)
+  close(fd);
+}
+
+/****************************************************************************
+ * Name: settings_apply
+ *
+ * Description:
+ *   An owner's file, read whole, decoded into its values, on the loop;
+ *   then its values may be read, changed and written.
+ *
+ ****************************************************************************/
+
+static void settings_apply(FAR struct settings_s *settings,
+                           FAR struct settings_load_s *load)
+{
+  FAR const char *why = NULL;
+  char bad[SETTINGS_PATH_MAX];
+  pb_istream_t stream;
+  int error = load->error;
+
+  if (error == 0 && load->data != NULL)
     {
-      close(input.fd);
+      stream = pb_istream_from_buffer(load->data, load->len);
+      if (!settings_store_decode(&settings->store, load->owner, &stream))
+        {
+          why = "does not decode";
+        }
+    }
+  else if (error == EFBIG)
+    {
+      why   = "is too large";
+      error = 0;
+    }
+
+  /* Read whole but not as values, or too large to read: kept aside, for
+   * whoever wants to look, and written again from what could be read
+   */
+
+  if (why != NULL)
+    {
+      if (settings_path(settings, load->owner, ".bad", bad) == 0 &&
+          settings_replaceable(bad) && rename(load->path, bad) == 0)
+        {
+          pnut_log(&settings->module, PNUT_LOG_WARNING,
+                   "%s: its file %s: kept as %s", load->owner, why, bad);
+          settings_store_touch(&settings->store, load->owner);
+        }
+      else
+        {
+          error = EIO;
+        }
     }
 
   /* There, but not read: never written over while the program runs */
 
-  if (input.error != 0)
+  if (error != 0)
     {
       pnut_log(&settings->module, PNUT_LOG_ERROR,
                "%s: cannot read its file (%d): not written until a restart",
-               owner, input.error);
-      settings_store_hold(&settings->store, owner);
+               load->owner, error);
+      settings_store_hold(&settings->store, load->owner);
     }
+
+  settings_store_loaded(&settings->store, load->owner);
+}
+
+/****************************************************************************
+ * Name: settings_load_run
+ *
+ * Description:
+ *   A read, on a worker.
+ *
+ ****************************************************************************/
+
+static void settings_load_run(FAR void *arg)
+{
+  settings_read_file(arg);
+}
+
+static void settings_registered(FAR struct settings_s *settings,
+                                FAR const char *owner,
+                                FAR const struct pnut_request_s *req,
+                                bool last);
+
+/****************************************************************************
+ * Name: settings_load_done
+ *
+ * Description:
+ *   A read has finished, on the loop: the schema's registration is done.
+ *
+ ****************************************************************************/
+
+static void settings_load_done(FAR struct pnut_loop_s *loop, FAR void *arg)
+{
+  FAR struct settings_load_s *load = arg;
+  FAR struct settings_s *settings = load->settings;
+  FAR struct settings_load_s **link;
+
+  for (link = &settings->loads; *link != NULL && *link != load;
+       link = &(*link)->next)
+    {
+    }
+
+  if (*link != NULL)
+    {
+      *link = load->next;
+    }
+
+  settings_apply(settings, load);
+  settings_registered(settings, load->owner, &load->req, true);
+  free(load->data);
+  free(load);
+}
+
+/****************************************************************************
+ * Name: settings_load
+ *
+ * Description:
+ *   Read an owner's values from its file, once its schema is whole and
+ *   before anyone reads or changes them.  The file is read on a worker,
+ *   and the registration answered once it is; when no worker takes it, it
+ *   is read here, on the loop.
+ *
+ * Returned Value:
+ *   true when the answer is left to the read; false when the file has been
+ *   dealt with already, and the registration is to be answered now.
+ *
+ ****************************************************************************/
+
+static bool settings_load(FAR struct settings_s *settings,
+                          FAR const char *owner,
+                          FAR const struct pnut_request_s *req)
+{
+  FAR struct settings_load_s *load;
+
+  load = calloc(1, sizeof(*load));
+  if (load == NULL)
+    {
+      pnut_log(&settings->module, PNUT_LOG_ERROR,
+               "%s: no memory to read its file: not written until a "
+               "restart", owner);
+      settings_store_hold(&settings->store, owner);
+      settings_store_loaded(&settings->store, owner);
+      return false;
+    }
+
+  load->settings = settings;
+  load->req      = *req;
+  load->max      = settings->size * SETTINGS_READ_MAX;
+  strlcpy(load->owner, owner, sizeof(load->owner));
+
+  if (settings_path(settings, owner, "", load->path) < 0 ||
+      settings_path(settings, owner, ".new", load->temp) < 0)
+    {
+      settings_store_hold(&settings->store, owner);
+      settings_store_loaded(&settings->store, owner);
+      free(load);
+      return false;
+    }
+
+  if (pnut_job_submit(settings->module.loop, settings_load_run,
+                      settings_load_done, load) >= 0)
+    {
+      load->next      = settings->loads;
+      settings->loads = load;
+      return true;
+    }
+
+  settings_read_file(load);
+  settings_apply(settings, load);
+  free(load->data);
+  free(load);
+  return false;
 }
 
 /****************************************************************************
@@ -961,6 +1071,34 @@ static void settings_changed(FAR struct settings_s *settings,
 }
 
 /****************************************************************************
+ * Name: settings_registered
+ *
+ * Description:
+ *   A page of a schema taken: the last one's, once the owner's file is
+ *   read, announced.
+ *
+ ****************************************************************************/
+
+static void settings_registered(FAR struct settings_s *settings,
+                                FAR const char *owner,
+                                FAR const struct pnut_request_s *req,
+                                bool last)
+{
+  /* A schema whole: values may have come from the file, gone back to
+   * their defaults, or gone
+   */
+
+  if (last)
+    {
+      settings_changed(settings, owner, "");
+    }
+
+  settings_schedule(settings);
+  pnut_settings_register_schema_reply(&settings->server, req,
+                                      PNUT_STATUS_OK, NULL);
+}
+
+/****************************************************************************
  * Name: settings_register_schema
  ****************************************************************************/
 
@@ -1005,22 +1143,16 @@ settings_register_schema(FAR struct pnut_settings_server_s *server,
                in->owner);
     }
 
-  if (load)
-    {
-      settings_load(settings, in->owner);
-    }
-
-  /* A schema whole: values may have come from the file, gone back to
-   * their defaults, or gone
+  /* The last page answered once the owner's file is read, if it is read
+   * on a worker
    */
 
-  if (in->last)
+  if (load && settings_load(settings, in->owner, req))
     {
-      settings_changed(settings, in->owner, "");
+      return;
     }
 
-  settings_schedule(settings);
-  pnut_settings_register_schema_reply(server, req, PNUT_STATUS_OK, NULL);
+  settings_registered(settings, in->owner, req, in->last);
 }
 
 /****************************************************************************
@@ -1298,6 +1430,11 @@ static void settings_stop(FAR struct pnut_module_s *module,
 
   settings_flush(settings);
 
+  /* The reads still on workers keep their requests past the close: their
+   * done handlers never run once the loop has stopped, and settings_deinit
+   * frees them, after the workers are gone
+   */
+
   if (settings->serving)
     {
       pnut_settings_close(&settings->server);
@@ -1324,6 +1461,19 @@ void settings_init(FAR struct settings_s *settings,
 
 void settings_deinit(FAR struct settings_s *settings)
 {
+  FAR struct settings_load_s *load;
+
+  /* Reads that had not finished as the loop stopped: their registrations
+   * were never answered
+   */
+
+  while ((load = settings->loads) != NULL)
+    {
+      settings->loads = load->next;
+      free(load->data);
+      free(load);
+    }
+
   free(settings->buffer);
   settings->buffer = NULL;
   free(settings->defaults);

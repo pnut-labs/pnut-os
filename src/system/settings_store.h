@@ -133,8 +133,13 @@ void settings_store_deinit(FAR struct settings_store_s *store);
  *   declaration still allows, or adds new ones at their defaults; the last
  *   drops those still undeclared.  A page is taken whole or not at all.
  *
+ *   An owner whose file is being read takes no page until it has been
+ *   (PNUT_STATUS_UNAVAILABLE, with the code REGISTERING).
+ *
  * Input Parameters:
- *   loadp - Set on the last page when the owner's file is yet to be read.
+ *   loadp - Set on the last page when the owner's file is yet to be read:
+ *           until settings_store_loaded(), the owner's values are neither
+ *           read nor changed nor written.
  *   keyp  - Set on an error to the key of the setting at fault, in the
  *           request, or NULL.
  *
@@ -260,6 +265,18 @@ unsigned int settings_store_failed(FAR struct settings_store_s *store,
 
 void settings_store_written(FAR struct settings_store_s *store,
                             FAR const char *owner);
+
+/****************************************************************************
+ * Name: settings_store_loaded
+ *
+ * Description:
+ *   An owner's file has been read, or found absent, or held: its values
+ *   may be read and changed, and written, from now on.
+ *
+ ****************************************************************************/
+
+void settings_store_loaded(FAR struct settings_store_s *store,
+                           FAR const char *owner);
 
 /****************************************************************************
  * Name: settings_store_hold

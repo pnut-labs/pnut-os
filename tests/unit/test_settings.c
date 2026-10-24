@@ -189,7 +189,10 @@ static pnut_setting_value_t val_text(FAR const char *text)
   return v;
 }
 
-/* Register a page; returns its status, and checks the detail's code */
+/* Register a page; returns its status, and checks the detail's code.  A
+ * last page that asks for the owner's file to be read finds none, as the
+ * module would.
+ */
 
 static int reg(FAR struct fixture_s *f, uint32_t expect)
 {
@@ -200,6 +203,11 @@ static int reg(FAR struct fixture_s *f, uint32_t expect)
 
   ret = settings_store_register(&f->store, &f->reg, &load, &key, &code);
   assert_int_equal(code, expect);
+  if (ret == PNUT_STATUS_OK && load)
+    {
+      settings_store_loaded(&f->store, f->reg.owner);
+    }
+
   return ret;
 }
 
@@ -590,6 +598,7 @@ static void test_settings_file(void **state)
 
   in = pb_istream_from_buffer(f->file, out.bytes_written);
   assert_true(settings_store_decode(&other, OWNER, &in));
+  settings_store_loaded(&other, OWNER);
 
   assert_int_equal(settings_store_get(&other, OWNER, "volume", true,
                                       &f->value, &code), PNUT_STATUS_OK);
@@ -740,6 +749,9 @@ static void test_settings_turns(void **state)
 static void test_settings_before_load(void **state)
 {
   FAR struct fixture_s *f = *state;
+  FAR const char *key;
+  uint32_t code;
+  bool load;
 
   page(&f->reg, true, false);
   declare_int(&f->reg, "volume", 0, 10, 5);
@@ -754,8 +766,23 @@ static void test_settings_before_load(void **state)
   assert_null(settings_store_dirty(&f->store, 0));
   assert_int_equal(settings_store_due(&f->store, 0), -1);
 
+  /* The last page: its file is to be read, and until it has been, the
+   * owner waits still, and a registration again with it
+   */
+
   page(&f->reg, false, true);
-  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(settings_store_register(&f->store, &f->reg, &load, &key,
+                                           &code),
+                   PNUT_STATUS_OK);
+  assert_true(load);
+  assert_int_equal(get(f, "volume", PNUT_SETTINGS_ERROR_CODE_REGISTERING),
+                   PNUT_STATUS_UNAVAILABLE);
+  page(&f->reg, true, true);
+  declare_int(&f->reg, "volume", 0, 10, 5);
+  assert_int_equal(reg(f, PNUT_SETTINGS_ERROR_CODE_REGISTERING),
+                   PNUT_STATUS_UNAVAILABLE);
+
+  settings_store_loaded(&f->store, OWNER);
   assert_int_equal(set(f, "volume", val_int(7), 0), PNUT_STATUS_OK);
   assert_string_equal(settings_store_dirty(&f->store, 0), OWNER);
 
@@ -1136,6 +1163,50 @@ static void test_settings_service_bad_file(void **state)
   free(s);
 }
 
+/* A file far larger than any Settings writes is not read: it is kept
+ * aside, and the owner's file written again
+ */
+
+static void test_settings_service_big_file(void **state)
+{
+  FAR struct service_s *s = calloc(1, sizeof(*s));
+  char path[128];
+  char bad[160];
+  struct stat st;
+  FILE *file;
+  size_t i;
+
+  snprintf(s->dir, sizeof(s->dir), "/tmp/pnut-settings-%d", getpid());
+  mkdir(s->dir, 0700);
+  snprintf(path, sizeof(path), "%s/%s.pb", s->dir, OWNER);
+  snprintf(bad, sizeof(bad), "%s.bad", path);
+
+  file = fopen(path, "wb");
+  assert_non_null(file);
+  for (i = 0; i < 262144; i++)
+    {
+      assert_int_equal(fputc(0, file), 0);
+    }
+
+  fclose(file);
+
+  /* Read as the defaults, set, and written again */
+
+  service_run(s, false);
+  assert_int_equal(s->step, 4);
+  assert_int_equal(s->value.value.integer, 8);
+
+  assert_int_equal(stat(bad, &st), 0);
+  assert_int_equal(st.st_size, 262144);
+  assert_int_equal(stat(path, &st), 0);
+  assert_true(st.st_size < 262144);
+
+  unlink(bad);
+  unlink(path);
+  service_clean(s);
+  free(s);
+}
+
 /* What a caller who is neither the owner nor the system UI sees: the
  * settings marked public, and no other
  */
@@ -1482,6 +1553,7 @@ int main(void)
     cmocka_unit_test(test_settings_service_starve),
     cmocka_unit_test(test_settings_service_unreadable),
     cmocka_unit_test(test_settings_service_bad_file),
+    cmocka_unit_test(test_settings_service_big_file),
   };
 
   return cmocka_run_group_tests_name("settings", tests, NULL, NULL);
