@@ -431,10 +431,10 @@ static void wallclock_save(FAR struct wallclock_s *wall)
  *
  * Description:
  *   Read the state file as the module starts.  A clock behind its time
- *   lost power, or the board keeps no time across a reset (the T-Deck
- *   Max's has no RTC driver yet): it is put at that time, not confirmed.
- *   One that kept counting, as when only the system program restarted,
- *   keeps where its time came from.
+ *   lost power, or is on a board that keeps no time across a reset: it is
+ *   put at that time, not confirmed.  One that kept counting, as when only
+ *   the system program restarted or the board's RTC kept the time across
+ *   a reset (the T-Deck Max's does), keeps where its time came from.
  *
  ****************************************************************************/
 
