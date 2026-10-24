@@ -11,6 +11,7 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <string.h>
 
 #include "pnut_internal.h"
 
@@ -63,6 +64,7 @@ int pnut_module_add(FAR struct pnut_loop_s *loop,
 
   module->loop    = loop;
   module->level   = PNUT_LOG_INFO;
+  memset(&module->rate, 0, sizeof(module->rate));
   module->started = false;
   module->ready   = false;
   module->next    = NULL;
@@ -159,8 +161,11 @@ void pnut_module_stopall(FAR struct pnut_loop_s *loop)
             }
         }
 
+      pnut_log_dropped(&module->rate, module->name);
+
       module->ready = false;
     }
 
+  pnut_log_dropped(&loop->rate, loop->config.name);
   loop->ready = false;
 }

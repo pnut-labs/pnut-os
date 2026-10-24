@@ -55,6 +55,15 @@ config PNUT_LIB_LOG_LINE
 	int "The longest log line, in characters"
 	default 160
 
+config PNUT_LIB_LOG_RATE
+	int "Lines a module logs a second, at most"
+	default 50
+	range 0 65535
+	---help---
+		A module's lines past this many in one second are dropped and
+		counted, and one line says how many (RFC 0026), so that no module
+		floods the log; the program's own lines alike.  0 drops none.
+
 config PNUT_LIB_RUNDIR
 	string "Where services' sockets are"
 	default "/var/run"
