@@ -91,6 +91,7 @@ struct settings_owner_s
   char name[SETTINGS_NAME_MAX + 1];      /* Empty: a free place */
   FAR struct settings_entry_s *entries;  /* By key */
   bool registering;                      /* Between its first and last */
+  bool loading;                          /* Its file is being read */
   bool loaded;                           /* Its file has been read */
   bool dirty;                            /* Changed since encoded */
   bool held;                             /* Its file is not written */
@@ -897,6 +898,12 @@ int settings_store_register(FAR struct settings_store_s *store,
    */
 
   owner = settings_owner_find(store, in->owner);
+  if (owner != NULL && owner->loading)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_REGISTERING;
+      return PNUT_STATUS_UNAVAILABLE;
+    }
+
   if (!in->first && (owner == NULL || !owner->registering))
     {
       *code = PNUT_SETTINGS_ERROR_CODE_NOT_REGISTERING;
@@ -1076,8 +1083,8 @@ int settings_store_register(FAR struct settings_store_s *store,
         }
 
       owner->registering = false;
-      *loadp             = !owner->loaded;
-      owner->loaded      = true;
+      owner->loading     = !owner->loaded;
+      *loadp             = owner->loading;
     }
 
   return PNUT_STATUS_OK;
@@ -1337,6 +1344,18 @@ void settings_store_written(FAR struct settings_store_s *store,
     {
       o->failures = 0;
       o->retry    = 0;
+    }
+}
+
+void settings_store_loaded(FAR struct settings_store_s *store,
+                           FAR const char *owner)
+{
+  FAR struct settings_owner_s *o = settings_owner_find(store, owner);
+
+  if (o != NULL)
+    {
+      o->loading = false;
+      o->loaded  = true;
     }
 }
 

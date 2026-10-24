@@ -82,6 +82,30 @@ struct settings_write_s
   bool finished;                  /* Set by the worker, last */
 };
 
+/* A read of an owner's file, on a worker, as its schema registers: the
+ * registration is answered once the file is read.  The module does not
+ * touch it until it has finished, and frees it then.
+ */
+
+struct settings_s;
+
+struct settings_load_s
+{
+  FAR struct settings_load_s *next;
+  FAR struct settings_s *settings;
+  struct pnut_request_s req;      /* The schema's last page */
+  char owner[SETTINGS_NAME_MAX + 1];
+  char path[SETTINGS_PATH_MAX];
+  char temp[SETTINGS_PATH_MAX];
+  size_t max;                     /* The largest file read */
+
+  /* The worker's */
+
+  FAR uint8_t *data;              /* The file, whole; NULL when absent */
+  size_t len;
+  int error;                      /* An errno value; 0 when read or absent */
+};
+
 /* Settings (RFC 0025), a module of the system program.  The program fills
  * nothing in: settings_init() does.
  */
@@ -110,6 +134,7 @@ struct settings_s
   struct settings_write_s write;
   char owner[SETTINGS_NAME_MAX + 1];  /* Whose file is being written */
   bool writing;
+  FAR struct settings_load_s *loads;  /* Files being read */
   bool serving;
 
   /* The settings topic: its publisher, or NULL without one */
@@ -147,8 +172,8 @@ void settings_init(FAR struct settings_s *settings,
  * Name: settings_deinit
  *
  * Description:
- *   Give its pools back, once the loop is destroyed: a write may run on a
- *   worker until then.
+ *   Give its pools back, once the loop is destroyed: a write or a read may
+ *   run on a worker until then.
  *
  ****************************************************************************/
 
