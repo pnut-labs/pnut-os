@@ -90,6 +90,8 @@ static void wallclock_set(FAR struct pnut_time_server_s *server,
                           FAR const struct pnut_request_s *req,
                           FAR const pnut_time_set_request_t *in,
                           FAR void *arg);
+static void wallclock_board(FAR struct pnut_board_client_s *client,
+                            bool connected, FAR void *arg);
 
 /****************************************************************************
  * Private Data
@@ -951,6 +953,119 @@ static void wallclock_set(FAR struct pnut_time_server_s *server,
 }
 
 /****************************************************************************
+ * Name: wallclock_described
+ *
+ * Description:
+ *   Board's description came: announce the sleep clock's rate it gives,
+ *   the device's, for Power to hand the kernel (RFC 0028).  Board is
+ *   asked once: the description does not change while the device runs.
+ *
+ ****************************************************************************/
+
+static void wallclock_described(FAR struct pnut_board_client_s *client,
+                                int status,
+                                FAR const pnut_board_description_t *out,
+                                FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct wallclock_s *wall = arg;
+  FAR const pnut_board_part_t *part = NULL;
+  pnut_sleep_rate_t msg;
+  pb_size_t i;
+  int ret;
+
+  /* No answer: the connection was lost, and the library connects again,
+   * when Board is asked again; or Board did not answer in time
+   */
+
+  if (status == PNUT_STATUS_TIMEOUT ||
+      (status == PNUT_STATUS_UNAVAILABLE && err == NULL))
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING,
+               "No answer from Board: status %d; asking again", status);
+      if (status == PNUT_STATUS_TIMEOUT)
+        {
+          wallclock_board(client, true, wall);
+        }
+
+      return;
+    }
+
+  pnut_board_disconnect(&wall->board);
+  wall->board_open = false;
+
+  if (status != PNUT_STATUS_OK || out == NULL)
+    {
+      /* A target without a description is told so; anything else is
+       * unexpected
+       */
+
+      pnut_log(&wall->module, status == PNUT_STATUS_UNAVAILABLE ?
+               PNUT_LOG_INFO : PNUT_LOG_WARNING,
+               "No description from Board: status %d; the sleep clock "
+               "goes uncorrected", status);
+      return;
+    }
+
+  for (i = 0; i < out->parts_count && part == NULL; i++)
+    {
+      if (out->parts[i].kind == PNUT_BOARD_PART_KIND_SLEEP_CLOCK &&
+          out->parts[i].which_detail == PNUT_BOARD_PART_SLEEP_CLOCK_TAG)
+        {
+          part = &out->parts[i];
+        }
+    }
+
+  if (part == NULL)
+    {
+      pnut_log(&wall->module, PNUT_LOG_INFO,
+               "No sleep clock's rate in the description");
+      return;
+    }
+
+  memset(&msg, 0, sizeof(msg));
+  msg.ppb    = part->detail.sleep_clock.rate_ppb;
+  msg.learnt = false;
+
+  ret = pnut_sleep_rate_publish(wall->rates, &msg);
+  if (ret < 0)
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING,
+               "Cannot announce the sleep clock's rate: %d", ret);
+      return;
+    }
+
+  pnut_log(&wall->module, PNUT_LOG_INFO,
+           "The sleep clock gains %+" PRId32 " ppb, the device's",
+           msg.ppb);
+}
+
+/****************************************************************************
+ * Name: wallclock_board
+ ****************************************************************************/
+
+static void wallclock_board(FAR struct pnut_board_client_s *client,
+                            bool connected, FAR void *arg)
+{
+  FAR struct wallclock_s *wall = arg;
+  pnut_board_describe_request_t req;
+  int ret;
+
+  if (!connected)
+    {
+      return;
+    }
+
+  memset(&req, 0, sizeof(req));
+  ret = pnut_board_describe(client, &req, 0, wallclock_described, wall);
+  if (ret < 0)
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING,
+               "Cannot ask Board: %d; the sleep clock goes uncorrected",
+               ret);
+    }
+}
+
+/****************************************************************************
  * Name: wallclock_start
  ****************************************************************************/
 
@@ -1011,6 +1126,32 @@ static int wallclock_start(FAR struct pnut_module_s *module,
       wall->gnss_open = true;
     }
 
+  /* The sleep clock's rate: the device's, from Board's description */
+
+  if (wall->config.board != NULL)
+    {
+      ret = pnut_sleep_rate_advertise(loop, &wall->rates);
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_WARNING, "No sleep_rate topic: %d",
+                   ret);
+          wall->rates = NULL;
+        }
+      else
+        {
+          ret = pnut_board_connect(loop, wall->config.board,
+                                   wallclock_board, wall, &wall->board);
+          if (ret < 0)
+            {
+              pnut_log(module, PNUT_LOG_WARNING, "No Board: %d", ret);
+            }
+          else
+            {
+              wall->board_open = true;
+            }
+        }
+    }
+
   ret = pnut_time_serve(loop, WALLCLOCK_SERVICE, 0, &g_wallclock_handlers,
                         wall, &wall->server);
   if (ret < 0)
@@ -1060,6 +1201,14 @@ static void wallclock_stop(FAR struct pnut_module_s *module,
       wall->settings_open = false;
     }
 
+  if (wall->board_open)
+    {
+      pnut_board_disconnect(&wall->board);
+      wall->board_open = false;
+    }
+
+  pnut_topic_unadvertise(wall->rates);
+  wall->rates = NULL;
   pnut_topic_unadvertise(wall->changes);
   wall->changes = NULL;
 }

@@ -22,6 +22,7 @@
 #include <pnut/topic.h>
 #include <pnut/tz.h>
 
+#include "pnut/board.pnut.h"
 #include "pnut/time.pnut.h"
 #include "pnut/time.settings.h"
 #include "pnut/time.topics.h"
@@ -54,8 +55,10 @@ typedef CODE int (*wallclock_who_t)(FAR void *arg, pid_t pid,
  * as it stops, so that the clock starts near the right time after a
  * power loss.  Once the clock is set from a source, a reading near it
  * gives way to a more preferred source's of the last hour (RFC 0028), and
- * does not move a clock within its own uncertainty.  NTP, and correcting
- * the sleep clock's rate between readings, come later.
+ * does not move a clock within its own uncertainty.  The sleep clock's
+ * rate is the device's description's, announced on the sleep_rate topic
+ * for Power; NTP, and learning the unit's own rate from the readings,
+ * come later.
  */
 
 struct wallclock_config_s
@@ -68,6 +71,12 @@ struct wallclock_config_s
    */
 
   uint32_t tolerance;
+
+  /* Board's service, whose description gives the sleep clock's rate
+   * until Time learns the unit's own (RFC 0028); NULL: none
+   */
+
+  FAR const char *board;
 
   /* Who calls; without it, every caller may set the time */
 
@@ -102,6 +111,12 @@ struct wallclock_s
   FAR struct pnut_publisher_s *changes;
   struct pnut_network_time_reader_s network;
   struct pnut_gnss_time_reader_s gnss;
+
+  /* The sleep clock's rate, asked of Board once, and announced */
+
+  FAR struct pnut_publisher_s *rates;
+  struct pnut_board_client_s board;
+  bool board_open;
 
   /* The zone in use: the named one's rule, or the network's offset */
 
