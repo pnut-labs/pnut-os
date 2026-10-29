@@ -21,16 +21,19 @@
 #include <pnut/timer.h>
 
 #include "pnut/board.pnut.h"
+#include "pnut/time.topics.h"
 
 /****************************************************************************
  * Public Types
  ****************************************************************************/
 
-/* Power (RFC 0007), so far only its guard of the battery: a module of the
- * system program that reads the battery's voltage every interval and, on
- * battery power, once reads in a row have been at or under the cutoff,
- * stops the program to power the device off.  The settings are written as
- * the program stops; the program's main powers off after.
+/* Power (RFC 0007), so far its guard of the battery and the sleep clock's
+ * rate: a module of the system program that reads the battery's voltage
+ * every interval and, on battery power, once reads in a row have been at
+ * or under the cutoff, stops the program to power the device off.  The
+ * settings are written as the program stops; the program's main powers
+ * off after.  It hands the kernel the sleep clock's rate that Time
+ * announces (RFC 0028).
  */
 
 struct power_config_s
@@ -53,6 +56,13 @@ struct power_config_s
 
   CODE int (*measure)(FAR void *arg, FAR int *mv, FAR bool *external);
   FAR void *arg;
+
+  /* Hand the kernel the sleep clock's rate, parts per billion of the time
+   * slept that it gains: a negated errno value on failure.  NULL where
+   * the kernel takes none.
+   */
+
+  CODE int (*sleep_rate)(FAR void *arg, int32_t ppb);
 };
 
 struct power_s
@@ -63,6 +73,8 @@ struct power_s
   struct pnut_board_client_s board;
   bool board_open;                /* Asking Board for the description */
   FAR struct pnut_timer_s *timer; /* The readings, periodic */
+  struct pnut_sleep_rate_reader_s rates;
+  bool rates_open;
   uint8_t low;                    /* Readings in a row under the cutoff */
   bool failing;                   /* The last reading failed, logged */
   bool off;                       /* The program stopped to power off */

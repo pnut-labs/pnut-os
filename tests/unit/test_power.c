@@ -423,6 +423,90 @@ static void test_power_board_none(void **state)
   assert_int_equal(battery.calls, 0);
 }
 
+/* The kernel's side of the sleep clock's rate */
+
+struct rate_s
+{
+  int32_t ppb;
+  int calls;
+  int error;                      /* What the kernel answers */
+};
+
+static int set_rate(FAR void *arg, int32_t ppb)
+{
+  FAR struct rate_s *rate = arg;
+
+  rate->ppb = ppb;
+  rate->calls++;
+  return rate->error;
+}
+
+/* The sleep clock's rate Time announces goes to the kernel, also when it
+ * was announced before Power started; one the kernel refuses changes
+ * nothing else
+ */
+
+static void rate_run(FAR struct rate_s *rate, int32_t ppb)
+{
+  FAR struct power_s *power = calloc(1, sizeof(*power));
+  struct pnut_loop_config_s lconfig;
+  struct power_config_s config;
+  FAR struct pnut_publisher_s *pub;
+  FAR struct pnut_loop_s *loop;
+  pnut_sleep_rate_t msg;
+  char dir[48];
+  char path[96];
+
+  assert_non_null(power);
+  snprintf(dir, sizeof(dir), "/tmp/pnut-power-%d", (int)getpid());
+  assert_int_equal(mkdir(dir, 0700), 0);
+
+  memset(&config, 0, sizeof(config));
+  config.sleep_rate = set_rate;
+  config.arg        = rate;
+  power_init(power, &config);
+
+  pnut_loop_defaults(&lconfig);
+  lconfig.rundir = dir;
+  assert_int_equal(pnut_loop_create(&lconfig, &loop), 0);
+  assert_int_equal(pnut_sleep_rate_advertise(loop, &pub), 0);
+  memset(&msg, 0, sizeof(msg));
+  msg.ppb = ppb;
+  assert_int_equal(pnut_sleep_rate_publish(pub, &msg), 0);
+
+  assert_int_equal(pnut_module_add(loop, &power->module), 0);
+  assert_int_equal(pnut_timer_start(loop, 200, 0, stop_handler, NULL,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(loop), 0);
+  assert_false(power_wants_off(power));
+
+  pnut_topic_unadvertise(pub);
+  pnut_loop_destroy(loop);
+  free(power);
+
+  snprintf(path, sizeof(path), "%s/topic.sleep_rate/last", dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.sleep_rate", dir);
+  rmdir(path);
+  rmdir(dir);
+}
+
+static void test_power_sleep_rate(void **state)
+{
+  struct rate_s rate =
+  {
+    0, 0, 0
+  };
+
+  rate_run(&rate, 8500000);
+  assert_int_equal(rate.calls, 1);
+  assert_int_equal(rate.ppb, 8500000);
+
+  rate.error = -EINVAL;
+  rate_run(&rate, 200000000);
+  assert_int_equal(rate.calls, 2);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -441,6 +525,7 @@ int main(void)
     cmocka_unit_test(test_power_no_cutoff),
     cmocka_unit_test(test_power_board),
     cmocka_unit_test(test_power_board_none),
+    cmocka_unit_test(test_power_sleep_rate),
   };
 
   return cmocka_run_group_tests_name("power", tests, NULL, NULL);

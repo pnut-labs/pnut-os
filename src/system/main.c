@@ -23,6 +23,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,6 +117,18 @@ static int system_measure(FAR void *arg, FAR int *mv, FAR bool *external)
   return OK;
 }
 
+/* Power's hand-over of the sleep clock's rate to the kernel (RFC 0028) */
+
+#ifdef CONFIG_BOARDCTL_SLEEP_RATE
+static int system_sleep_rate(FAR void *arg, int32_t ppb)
+{
+  int ret;
+
+  ret = boardctl(BOARDIOC_SLEEP_RATE, (uintptr_t)ppb);
+  return ret < 0 ? -errno : ret;
+}
+#endif
+
 /* Called once the program has stopped for Power: the settings are written
  * by now.  Returns only if the device could not be powered off, when the
  * program exits and NxInit starts it again.
@@ -181,6 +194,13 @@ int main(int argc, FAR char *argv[])
   config.name   = "system";
   config.levels = true;
 
+  /* Its services' sockets and connections, the settings link, the topics
+   * it reads, the RAM log, and Time's and Power's questions to Board as
+   * they start: room besides for other programs' connections
+   */
+
+  config.fds    = 32;
+
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)
     {
@@ -221,6 +241,7 @@ int main(int argc, FAR char *argv[])
   wconfig.state     = CONFIG_PNUT_TIME_STATE[0] != '\0' ?
                       CONFIG_PNUT_TIME_STATE : NULL;
   wconfig.tolerance = CONFIG_PNUT_TIME_TOLERANCE;
+  wconfig.board     = BOARD_SERVICE;
   wconfig.who       = system_who;
   wconfig.identity  = states;
   wallclock_init(wall, &wconfig);
@@ -253,6 +274,9 @@ int main(int argc, FAR char *argv[])
 #endif
   pconfig.measure  = system_measure;
   pconfig.arg      = &battery;
+#ifdef CONFIG_BOARDCTL_SLEEP_RATE
+  pconfig.sleep_rate = system_sleep_rate;
+#endif
   power_init(power, &pconfig);
 
   /* Board first: the others read the description (RFC 0024) */
