@@ -45,6 +45,13 @@
 
 #define TEST_FAIL      -1
 
+/* A file every computer has, opened as the gauge or the charger, and one
+ * none has
+ */
+
+#define TEST_DEVICE    "/dev/null"
+#define TEST_MISSING   "/dev/pnut-none"
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -58,6 +65,20 @@ struct battery_s
   int count;
   int calls;
   int error;                      /* What a TEST_FAIL reading returns */
+  int chargers;                   /* Readings given a charger */
+};
+
+/* What the description has besides the battery's power-off voltage */
+
+enum parts_e
+{
+  PARTS_BOTH,                     /* The gauge's and the charger's files */
+  PARTS_NO_CHARGER,               /* No charger */
+  PARTS_MISSING_CHARGER,          /* The charger's file is not there */
+  PARTS_SPARE_BATTERY,            /* A battery part without its detail
+                                   * first */
+  PARTS_NO_GAUGE,                 /* A battery without a device file */
+  PARTS_MISSING_GAUGE             /* The gauge's file is not there */
 };
 
 /****************************************************************************
@@ -74,7 +95,8 @@ static FAR struct power_s *g_power;
  * Private Functions
  ****************************************************************************/
 
-static int measure(FAR void *arg, FAR int *mv, FAR bool *external)
+static int measure(FAR void *arg, int gauge, int charger, FAR int *mv,
+                   FAR bool *external)
 {
   FAR struct battery_s *battery = arg;
   int i = battery->calls < battery->count ? battery->calls :
@@ -83,6 +105,12 @@ static int measure(FAR void *arg, FAR int *mv, FAR bool *external)
   if (g_power != NULL)
     {
       assert_false(g_power->board_open);
+    }
+
+  assert_true(gauge >= 0);
+  if (charger >= 0)
+    {
+      battery->chargers++;
     }
 
   battery->calls++;
@@ -101,11 +129,18 @@ static void stop_handler(FAR struct pnut_loop_s *loop,
 {
   FAR struct power_s *power = arg;
 
-  /* With Board, the answer came and the module let go of it */
+  /* With Board, the answer came and the module let go of it; and the
+   * module holds the gauge and the charger only while it reads
+   */
 
   if (power != NULL)
     {
       assert_false(power->board_open);
+      if (power->timer == NULL)
+        {
+          assert_int_equal(power->gauge, -1);
+          assert_int_equal(power->charger, -1);
+        }
     }
 
   pnut_loop_stop(loop, 0);
@@ -125,15 +160,22 @@ static bool run(FAR struct battery_s *battery, int cutoff, uint32_t ms)
   config.interval = TEST_INTERVAL;
   config.cutoff   = cutoff;
   config.reads    = TEST_READS;
+  config.gauge    = TEST_DEVICE;
+  config.charger  = TEST_DEVICE;
   config.measure  = measure;
   config.arg      = battery;
   power_init(power, &config);
 
   assert_int_equal(pnut_loop_create(NULL, &loop), 0);
   assert_int_equal(pnut_module_add(loop, &power->module), 0);
-  assert_int_equal(pnut_timer_start(loop, ms, 0, stop_handler, NULL, NULL),
-                   0);
+  assert_int_equal(pnut_timer_start(loop, ms, 0, stop_handler, power,
+                                    NULL), 0);
   assert_int_equal(pnut_loop_run(loop), 0);
+
+  /* Stopped, the module let go of the gauge */
+
+  assert_int_equal(power->gauge, -1);
+  assert_int_equal(power->charger, -1);
   off = power_wants_off(power);
   pnut_loop_destroy(loop);
   free(power);
@@ -141,17 +183,18 @@ static bool run(FAR struct battery_s *battery, int cutoff, uint32_t ms)
 }
 
 /* Run the module with Board, whose description has a battery that powers
- * off at empty_mv, or no battery (-1), or is missing (-2); the cutoff given
- * is never used
+ * off at empty_mv, or no battery (-1), or is missing (-2), and the parts
+ * besides; the cutoff given is never used, nor the gauge
  */
 
 static bool run_board(FAR struct battery_s *battery, int empty_mv,
-                      uint32_t ms)
+                      enum parts_e parts, uint32_t ms)
 {
   FAR pnut_board_description_t *d = calloc(1, sizeof(*d));
   FAR uint8_t *buffer = malloc(PNUT_BOARD_DESCRIPTION_SIZE);
   FAR struct board_s *board = calloc(1, sizeof(*board));
   FAR struct power_s *power = calloc(1, sizeof(*power));
+  FAR pnut_board_part_t *p;
   struct pnut_loop_config_s lconfig;
   struct power_config_s config;
   struct board_config_s bconfig;
@@ -170,12 +213,35 @@ static bool run_board(FAR struct battery_s *battery, int empty_mv,
   assert_non_null(buffer);
   assert_non_null(board);
   assert_non_null(power);
+  if (parts == PARTS_SPARE_BATTERY)
+    {
+      d->parts[0].kind = PNUT_BOARD_PART_KIND_BATTERY;
+      strlcpy(d->parts[0].name, "backup", sizeof(d->parts[0].name));
+      d->parts_count = 1;
+    }
+
   if (empty_mv != -1)
     {
-      d->parts[0].kind         = PNUT_BOARD_PART_KIND_BATTERY;
-      d->parts[0].which_detail = PNUT_BOARD_PART_BATTERY_TAG;
-      d->parts[0].detail.battery.empty_mv = empty_mv;
-      d->parts_count = 1;
+      p = &d->parts[d->parts_count++];
+      p->kind         = PNUT_BOARD_PART_KIND_BATTERY;
+      p->which_detail = PNUT_BOARD_PART_BATTERY_TAG;
+      p->detail.battery.empty_mv = empty_mv;
+      if (parts == PARTS_MISSING_GAUGE)
+        {
+          strlcpy(p->device, TEST_MISSING, sizeof(p->device));
+        }
+      else if (parts != PARTS_NO_GAUGE)
+        {
+          strlcpy(p->device, TEST_DEVICE, sizeof(p->device));
+        }
+    }
+
+  if (parts != PARTS_NO_CHARGER)
+    {
+      p = &d->parts[d->parts_count++];
+      p->kind = PNUT_BOARD_PART_KIND_CHARGER;
+      strlcpy(p->device, parts == PARTS_MISSING_CHARGER ? TEST_MISSING :
+              TEST_DEVICE, sizeof(p->device));
     }
 
   if (empty_mv != -2)
@@ -205,6 +271,7 @@ static bool run_board(FAR struct battery_s *battery, int empty_mv,
   config.cutoff   = 5000;
   config.reads    = TEST_READS;
   config.board    = BOARD_SERVICE;
+  config.gauge    = TEST_MISSING;
   config.measure  = measure;
   config.arg      = battery;
   power_init(power, &config);
@@ -215,6 +282,8 @@ static bool run_board(FAR struct battery_s *battery, int empty_mv,
                                     NULL), 0);
   assert_int_equal(pnut_loop_run(loop), 0);
   g_power = NULL;
+  assert_int_equal(power->gauge, -1);
+  assert_int_equal(power->charger, -1);
   off = power_wants_off(power);
   pnut_loop_destroy(loop);
   free(power);
@@ -243,6 +312,7 @@ static void test_power_cutoff(void **state)
 
   assert_true(run(&battery, TEST_CUTOFF, 1000));
   assert_int_equal(battery.calls, 1 + TEST_READS);
+  assert_int_equal(battery.chargers, battery.calls);
 }
 
 /* A reading over the cutoff starts the count again */
@@ -382,7 +452,8 @@ static void test_power_no_cutoff(void **state)
 }
 
 /* With Board, the cutoff is the battery's power-off voltage: 3300 mV,
- * not the 5000 mV given
+ * not the 5000 mV given; the gauge and the charger are the battery's and
+ * the charger's files
  */
 
 static void test_power_board(void **state)
@@ -397,8 +468,78 @@ static void test_power_board(void **state)
     mv, NULL, 5, 0, 0
   };
 
-  assert_true(run_board(&battery, TEST_CUTOFF, 1000));
+  assert_true(run_board(&battery, TEST_CUTOFF, PARTS_BOTH, 1000));
   assert_int_equal(battery.calls, 2 + TEST_READS);
+  assert_int_equal(battery.chargers, battery.calls);
+}
+
+/* Without a charger in the description, or with one whose file is not
+ * there, the readings go on without one
+ */
+
+static void test_power_board_no_charger(void **state)
+{
+  static const int mv[] =
+  {
+    3700, 3300, 3290, 3280
+  };
+
+  struct battery_s battery =
+  {
+    mv, NULL, 4, 0, 0
+  };
+
+  assert_true(run_board(&battery, TEST_CUTOFF, PARTS_NO_CHARGER, 1000));
+  assert_int_equal(battery.calls, 1 + TEST_READS);
+  assert_int_equal(battery.chargers, 0);
+
+  battery.calls = 0;
+  assert_true(run_board(&battery, TEST_CUTOFF, PARTS_MISSING_CHARGER,
+                        1000));
+  assert_int_equal(battery.calls, 1 + TEST_READS);
+  assert_int_equal(battery.chargers, 0);
+}
+
+/* A battery part without its detail, before the battery: the battery's
+ * voltage and gauge all the same
+ */
+
+static void test_power_board_spare(void **state)
+{
+  static const int mv[] =
+  {
+    3700, 3300, 3290, 3280
+  };
+
+  struct battery_s battery =
+  {
+    mv, NULL, 4, 0, 0
+  };
+
+  assert_true(run_board(&battery, TEST_CUTOFF, PARTS_SPARE_BATTERY, 1000));
+  assert_int_equal(battery.calls, 1 + TEST_READS);
+  assert_int_equal(battery.chargers, battery.calls);
+}
+
+/* A battery without its device file, or with one that is not there: no
+ * readings, never off
+ */
+
+static void test_power_board_no_gauge(void **state)
+{
+  static const int mv[] =
+  {
+    3000
+  };
+
+  struct battery_s battery =
+  {
+    mv, NULL, 1, 0, 0
+  };
+
+  assert_false(run_board(&battery, TEST_CUTOFF, PARTS_NO_GAUGE, 50));
+  assert_false(run_board(&battery, TEST_CUTOFF, PARTS_MISSING_GAUGE, 50));
+  assert_int_equal(battery.calls, 0);
 }
 
 /* A description without the battery's power-off voltage, without a
@@ -417,9 +558,9 @@ static void test_power_board_none(void **state)
     mv, NULL, 1, 0, 0
   };
 
-  assert_false(run_board(&battery, 0, 50));
-  assert_false(run_board(&battery, -1, 50));
-  assert_false(run_board(&battery, -2, 50));
+  assert_false(run_board(&battery, 0, PARTS_BOTH, 50));
+  assert_false(run_board(&battery, -1, PARTS_BOTH, 50));
+  assert_false(run_board(&battery, -2, PARTS_BOTH, 50));
   assert_int_equal(battery.calls, 0);
 }
 
@@ -524,6 +665,9 @@ int main(void)
     cmocka_unit_test(test_power_battery_gone),
     cmocka_unit_test(test_power_no_cutoff),
     cmocka_unit_test(test_power_board),
+    cmocka_unit_test(test_power_board_no_charger),
+    cmocka_unit_test(test_power_board_no_gauge),
+    cmocka_unit_test(test_power_board_spare),
     cmocka_unit_test(test_power_board_none),
     cmocka_unit_test(test_power_sleep_rate),
   };

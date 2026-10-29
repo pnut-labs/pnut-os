@@ -22,7 +22,6 @@
 #include <nuttx/config.h>
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,20 +44,6 @@
 #include "wallclock.h"
 
 /****************************************************************************
- * Private Types
- ****************************************************************************/
-
-/* The battery's devices, for Power: its gauge, and the charger, which
- * tells whether there is external power
- */
-
-struct system_battery_s
-{
-  int gauge;
-  int charger;
-};
-
-/****************************************************************************
  * Private Functions
  ****************************************************************************/
 
@@ -76,37 +61,31 @@ static bool system_runs(FAR void *arg, FAR const char *program,
   return states_runs(arg, program, service);
 }
 
-/* Power reads the battery through the gauge's and the charger's devices.
- * Without a charger, a gauge that sees the battery charge, or full, tells
- * of external power.
+/* Power reads the battery through the gauge's and the charger's devices,
+ * which it opens.  Without a charger, a gauge that sees the battery
+ * charge, or full, tells of external power.
  */
 
-static int system_measure(FAR void *arg, FAR int *mv, FAR bool *external)
+static int system_measure(FAR void *arg, int gauge, int charger,
+                          FAR int *mv, FAR bool *external)
 {
-  FAR struct system_battery_s *battery = arg;
   int state;
 
-  if (battery->gauge < 0)
-    {
-      return -ENODEV;
-    }
-
-  if (ioctl(battery->gauge, BATIOC_VOLTAGE, (unsigned long)mv) < 0)
+  if (ioctl(gauge, BATIOC_VOLTAGE, (unsigned long)mv) < 0)
     {
       return -errno;
     }
 
-  if (battery->charger >= 0)
+  if (charger >= 0)
     {
-      if (ioctl(battery->charger, BATIOC_ONLINE,
-                (unsigned long)external) < 0)
+      if (ioctl(charger, BATIOC_ONLINE, (unsigned long)external) < 0)
         {
           return -errno;
         }
     }
   else
     {
-      if (ioctl(battery->gauge, BATIOC_STATE, (unsigned long)&state) < 0)
+      if (ioctl(gauge, BATIOC_STATE, (unsigned long)&state) < 0)
         {
           return -errno;
         }
@@ -160,7 +139,6 @@ int main(int argc, FAR char *argv[])
   struct power_config_s pconfig;
   struct wallclock_config_s wconfig;
   struct logs_config_s lconfig;
-  struct system_battery_s battery;
   FAR struct settings_s *settings;
   FAR struct board_s *board;
   FAR struct states_s *states;
@@ -258,12 +236,9 @@ int main(int argc, FAR char *argv[])
   lconfig.batch      = CONFIG_PNUT_LOG_BATCH;
   logs_init(logs, &lconfig);
 
-  battery.gauge   = open(CONFIG_PNUT_POWER_GAUGE, O_RDONLY | O_CLOEXEC);
-  battery.charger = open(CONFIG_PNUT_POWER_CHARGER, O_RDONLY | O_CLOEXEC);
-
   /* Without a way to power off, the guard never acts: it would only stop
-   * the program again and again.  The voltage it powers off at is the
-   * battery's, from Board's description.
+   * the program again and again.  The voltage it powers off at, and the
+   * battery's gauge and charger, are Board's description's.
    */
 
   memset(&pconfig, 0, sizeof(pconfig));
@@ -273,7 +248,6 @@ int main(int argc, FAR char *argv[])
   pconfig.board    = BOARD_SERVICE;
 #endif
   pconfig.measure  = system_measure;
-  pconfig.arg      = &battery;
 #ifdef CONFIG_BOARDCTL_SLEEP_RATE
   pconfig.sleep_rate = system_sleep_rate;
 #endif
@@ -325,16 +299,6 @@ int main(int argc, FAR char *argv[])
   free(power);
   free(wall);
   free(logs);
-
-  if (battery.gauge >= 0)
-    {
-      close(battery.gauge);
-    }
-
-  if (battery.charger >= 0)
-    {
-      close(battery.charger);
-    }
 
 #ifdef CONFIG_BOARDCTL_POWEROFF
   if (off)

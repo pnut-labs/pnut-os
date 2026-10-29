@@ -33,7 +33,8 @@
  * or under the cutoff, stops the program to power the device off.  The
  * settings are written as the program stops; the program's main powers
  * off after.  It hands the kernel the sleep clock's rate that Time
- * announces (RFC 0028).
+ * announces (RFC 0028).  It opens the battery's gauge and its charger
+ * itself, and holds them while it reads.
  */
 
 struct power_config_s
@@ -42,19 +43,30 @@ struct power_config_s
   int cutoff;                     /* In mV; zero never powers off */
   uint8_t reads;                  /* In a row, at or under the cutoff */
 
-  /* Board's service: the cutoff is then the battery's power-off voltage,
-   * from the device's description (RFC 0024), and none without one.
-   * NULL: the cutoff as given.
+  /* The battery's gauge and its charger, by their device files; NULL for
+   * none.  Without a gauge, nothing is read; without a charger, measure
+   * is given none.
+   */
+
+  FAR const char *gauge;
+  FAR const char *charger;
+
+  /* Board's service: the cutoff, the gauge and the charger are then the
+   * device's description's (RFC 0024): the battery's power-off voltage and
+   * device file, and the charger's file; none where it gives none.  NULL:
+   * as given.
    */
 
   FAR const char *board;
 
   /* Read the battery's voltage, in mV, and whether the device runs on
-   * external power.  A negated errno value; -ENODEV when the device has no
+   * external power, from the gauge and the charger opened (-1 for no
+   * charger).  A negated errno value; -ENODEV when the device has no
    * battery to read, which ends the readings.
    */
 
-  CODE int (*measure)(FAR void *arg, FAR int *mv, FAR bool *external);
+  CODE int (*measure)(FAR void *arg, int gauge, int charger, FAR int *mv,
+                      FAR bool *external);
   FAR void *arg;
 
   /* Hand the kernel the sleep clock's rate, parts per billion of the time
@@ -73,6 +85,8 @@ struct power_s
   struct pnut_board_client_s board;
   bool board_open;                /* Asking Board for the description */
   FAR struct pnut_timer_s *timer; /* The readings, periodic */
+  int gauge;                      /* The gauge's file, or -1 */
+  int charger;                    /* The charger's file, or -1 */
   struct pnut_sleep_rate_reader_s rates;
   bool rates_open;
   uint8_t low;                    /* Readings in a row under the cutoff */
