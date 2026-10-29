@@ -170,25 +170,21 @@ config PNUT_POWER_CHARGER
 		Power learns from it whether there is external power; without it,
 		from the gauge.
 
-config PNUT_POWER_CUTOFF
-	int "Power off at a battery voltage, in mV"
-	default 3300
-	range 0 5000
-	depends on BOARDCTL_POWEROFF
-	---help---
-		On battery power, at or under this voltage the system program
-		writes the settings and powers the device off (BOARDIOC_POWEROFF),
-		before the cell runs down to its protection circuit.  0 never
-		powers off; neither does a board without BOARDCTL_POWEROFF.
-
 config PNUT_POWER_INTERVAL
 	int "Between readings of the battery, in milliseconds"
 	default 10000
 	range 1000 600000
 	depends on BOARDCTL_POWEROFF
+	---help---
+		Power reads the battery this often.  On battery power, at or under
+		the battery's power-off voltage, from the device's description
+		(RFC 0024), the system program writes the settings and powers the
+		device off (BOARDIOC_POWEROFF), before the cell runs down to its
+		protection circuit.  A description without that voltage never
+		powers off; neither does a board without BOARDCTL_POWEROFF.
 
 config PNUT_POWER_READS
-	int "Readings in a row at or under the cutoff"
+	int "Readings in a row at or under the power-off voltage"
 	default 3
 	range 1 255
 	depends on BOARDCTL_POWEROFF
