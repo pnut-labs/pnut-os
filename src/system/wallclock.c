@@ -1060,7 +1060,8 @@ static void wallclock_board(FAR struct pnut_board_client_s *client,
   if (ret < 0)
     {
       pnut_log(&wall->module, PNUT_LOG_WARNING,
-               "Cannot ask Board: %d", ret);
+               "Cannot ask Board: %d; the sleep clock goes uncorrected",
+               ret);
     }
 }
 

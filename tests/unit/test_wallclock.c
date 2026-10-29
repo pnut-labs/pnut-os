@@ -1213,7 +1213,7 @@ static void rate_test_run(FAR struct rate_test_s *t, bool clock,
       rmdir(path);
     }
 
-  rmdir(dir);
+  assert_int_equal(rmdir(dir), 0);
 }
 
 /* Time announces the sleep clock's rate Board's description gives, once;

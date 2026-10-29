@@ -488,7 +488,7 @@ static void rate_run(FAR struct rate_s *rate, int32_t ppb)
   unlink(path);
   snprintf(path, sizeof(path), "%s/topic.sleep_rate", dir);
   rmdir(path);
-  rmdir(dir);
+  assert_int_equal(rmdir(dir), 0);
 }
 
 static void test_power_sleep_rate(void **state)

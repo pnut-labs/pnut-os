@@ -139,3 +139,13 @@ kind = "usb"
 name = "usb"
 chip = "ESP32-S3"
 usb = { modes = ["serial_jtag", "device"] }
+
+# What times light sleep: the ESP32-S3's internal RC oscillator, about
+# 136 kHz.  It gained 107 ppm of the time slept (2026-10-29), with the
+# sleeps of at most 2 s that the board's poll for USB power allows; Time's
+# starting value (RFC 0028)
+[[parts]]
+kind = "sleep_clock"
+name = "rtc"
+chip = "ESP32-S3"
+sleep_clock = { rate_ppb = 107000 }
