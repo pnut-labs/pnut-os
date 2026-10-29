@@ -1272,8 +1272,9 @@ static void test_settings_public(void **state)
 }
 
 /* Who may do what, through a client (RFC 0025): the program that runs
- * wifi, a caller Settings does not know, the system UI, and a caller who
- * cannot be told now
+ * wifi, a caller Settings does not know, the system UI, a caller who
+ * cannot be told now, and commands typed in the developer's shells (RFC
+ * 0012), or started by another program
  */
 
 struct access_s
@@ -1285,10 +1286,12 @@ struct access_s
   char dir[64];
   FAR const char *me;             /* Who calls: NULL for a stranger */
   bool unknown;                   /* Who calls cannot be told */
+  FAR const char *origin;         /* Started by: NULL for none */
+  bool origin_unknown;            /* What started it cannot be told */
   int step;
-  int status[16];
-  uint32_t code[16];
-  int64_t value;
+  int status[24];
+  uint32_t code[24];
+  int64_t value[24];              /* What a Get read */
   int listed;
 };
 
@@ -1299,6 +1302,17 @@ static int access_who(FAR void *arg, pid_t pid, FAR const char **programp)
   assert_int_equal(pid, getpid());
   *programp = a->me;
   return a->unknown ? -EAGAIN : a->me != NULL ? OK : -ESRCH;
+}
+
+static int access_origin(FAR void *arg, pid_t pid,
+                         FAR const char **programp)
+{
+  FAR struct access_s *a = arg;
+
+  assert_int_equal(pid, getpid());
+  assert_null(a->me);
+  *programp = a->origin;
+  return a->origin_unknown ? -EAGAIN : a->origin != NULL ? OK : -ESRCH;
 }
 
 static bool access_runs(FAR void *arg, FAR const char *program,
@@ -1334,7 +1348,7 @@ static void access_got(FAR struct pnut_settings_client_s *client,
 
   if (out != NULL)
     {
-      a->value = out->value.integer;
+      a->value[a->step] = out->value.integer;
     }
 
   access_record(a, status, err);
@@ -1455,6 +1469,42 @@ static void access_next(FAR struct access_s *a)
         access_register(a, "wifi");
         break;
 
+      case 14:
+        a->unknown = false;
+        a->me      = NULL;
+        a->origin  = "console";
+        access_set(a, "power", 4);
+        break;
+
+      case 15:
+        access_get(a, "power");
+        break;
+
+      case 16:
+        a->origin = "adbd";
+        access_set(a, "power", 5);
+        break;
+
+      case 17:
+        access_register(a, "wifi");
+        break;
+
+      case 18:
+        a->origin = "radios";
+        access_set(a, "power", 6);
+        break;
+
+      case 19:
+        a->origin = "consoles";
+        access_set(a, "power", 6);
+        break;
+
+      case 20:
+        a->origin         = NULL;
+        a->origin_unknown = true;
+        access_get(a, "region");
+        break;
+
       default:
         pnut_loop_stop(a->loop, 0);
         break;
@@ -1491,7 +1541,9 @@ static void test_settings_access(void **state)
   sconfig.delay    = 20;
   sconfig.who      = access_who;
   sconfig.runs     = access_runs;
+  sconfig.origin   = access_origin;
   sconfig.identity = a;
+  sconfig.shells   = " console  adbd";
   settings_init(&a->settings, &sconfig);
   assert_int_equal(pnut_module_add(a->loop, &a->settings.module), 0);
   assert_int_equal(pnut_settings_connect(a->loop, SETTINGS_SERVICE,
@@ -1503,7 +1555,7 @@ static void test_settings_access(void **state)
   pnut_loop_destroy(a->loop);
   settings_deinit(&a->settings);
 
-  assert_int_equal(a->step, 14);
+  assert_int_equal(a->step, 21);
 
   /* The program that runs wifi: its schema and values, no other's */
 
@@ -1525,7 +1577,7 @@ static void test_settings_access(void **state)
   assert_int_equal(a->status[7], PNUT_STATUS_OK);
   assert_int_equal(a->status[8], PNUT_STATUS_DENIED);
   assert_int_equal(a->status[9], PNUT_STATUS_OK);
-  assert_int_equal(a->value, 9);
+  assert_int_equal(a->value[9], 9);
 
   /* Its own settings it owns, as any program its services' */
 
@@ -1537,6 +1589,28 @@ static void test_settings_access(void **state)
   assert_int_equal(a->code[11], PNUT_SETTINGS_ERROR_CODE_CALLER_UNKNOWN);
   assert_int_equal(a->status[12], PNUT_STATUS_UNAVAILABLE);
   assert_int_equal(a->status[13], PNUT_STATUS_UNAVAILABLE);
+
+  /* A command typed in a shell: every value, as the system UI, but no
+   * schema of its making
+   */
+
+  assert_int_equal(a->status[14], PNUT_STATUS_OK);
+  assert_int_equal(a->status[15], PNUT_STATUS_OK);
+  assert_int_equal(a->value[15], 4);
+  assert_int_equal(a->status[16], PNUT_STATUS_OK);
+  assert_int_equal(a->status[17], PNUT_STATUS_DENIED);
+
+  /* Started by a program that is no shell, or by one whose name only
+   * begins as a shell's: a stranger's rights
+   */
+
+  assert_int_equal(a->status[18], PNUT_STATUS_DENIED);
+  assert_int_equal(a->status[19], PNUT_STATUS_DENIED);
+
+  /* What started it cannot be told now: to be tried again */
+
+  assert_int_equal(a->status[20], PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(a->code[20], PNUT_SETTINGS_ERROR_CODE_CALLER_UNKNOWN);
 
   snprintf(path, sizeof(path), "%s/wifi.pb", a->dir);
   unlink(path);
