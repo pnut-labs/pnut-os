@@ -241,14 +241,15 @@ int main(int argc, FAR char *argv[])
   battery.charger = open(CONFIG_PNUT_POWER_CHARGER, O_RDONLY | O_CLOEXEC);
 
   /* Without a way to power off, the guard never acts: it would only stop
-   * the program again and again
+   * the program again and again.  The voltage it powers off at is the
+   * battery's, from Board's description.
    */
 
   memset(&pconfig, 0, sizeof(pconfig));
 #ifdef CONFIG_BOARDCTL_POWEROFF
   pconfig.interval = CONFIG_PNUT_POWER_INTERVAL;
-  pconfig.cutoff   = CONFIG_PNUT_POWER_CUTOFF;
   pconfig.reads    = CONFIG_PNUT_POWER_READS;
+  pconfig.board    = BOARD_SERVICE;
 #endif
   pconfig.measure  = system_measure;
   pconfig.arg      = &battery;

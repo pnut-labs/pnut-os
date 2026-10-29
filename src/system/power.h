@@ -20,6 +20,8 @@
 #include <pnut/module.h>
 #include <pnut/timer.h>
 
+#include "pnut/board.pnut.h"
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -37,6 +39,13 @@ struct power_config_s
   int cutoff;                     /* In mV; zero never powers off */
   uint8_t reads;                  /* In a row, at or under the cutoff */
 
+  /* Board's service: the cutoff is then the battery's power-off voltage,
+   * from the device's description (RFC 0024), and none without one.
+   * NULL: the cutoff as given.
+   */
+
+  FAR const char *board;
+
   /* Read the battery's voltage, in mV, and whether the device runs on
    * external power.  A negated errno value; -ENODEV when the device has no
    * battery to read, which ends the readings.
@@ -51,6 +60,8 @@ struct power_s
   struct pnut_module_s module;    /* First: the module is the power */
   struct power_config_s config;
 
+  struct pnut_board_client_s board;
+  bool board_open;                /* Asking Board for the description */
   FAR struct pnut_timer_s *timer; /* The readings, periodic */
   uint8_t low;                    /* Readings in a row under the cutoff */
   bool failing;                   /* The last reading failed, logged */
