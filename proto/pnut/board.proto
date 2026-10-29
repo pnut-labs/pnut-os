@@ -101,9 +101,22 @@ message BoardRadio {
 
 // A mobile network's modem
 message BoardModem {
-  uint64 lte_bands = 1;           // Bit n - 1 for band n
-  uint32 gsm_bands = 2;           // Bits 0 to 3: 850, 900, 1800, 1900 MHz
-  uint32 sims = 3;
+  // GSM's bands, by their names
+  enum Gsm {
+    NONE = 0;
+    GSM_850 = 1;
+    GSM_900 = 2;
+    DCS_1800 = 3;
+    PCS_1900 = 4;
+  }
+
+  // LTE's bands, a set of bits: band n is bit n - 1, counted from the
+  // first byte's lowest bit.  The format takes any band; the buffer takes
+  // bands up to 128, and can grow without changing the format.  The build
+  // refuses more.
+  bytes lte_bands = 1 [(nanopb).max_size = 16];
+  repeated Gsm gsm_bands = 2 [(nanopb).max_count = 4];
+  uint32 sims = 3;                // SIM slots
   bool voice = 4;
   bool sms = 5;
 }

@@ -206,6 +206,21 @@ static void test_board_describe(void **state)
   part->detail.battery.capacity_mah  = 1400;
   part->detail.battery.empty_mv      = 3300;
 
+  /* LTE bands 1, 3 and 20, and the last the buffer holds, 128 */
+
+  part = &d->parts[d->parts_count++];
+  part->kind = PNUT_BOARD_PART_KIND_MODEM;
+  strlcpy(part->name, "modem", sizeof(part->name));
+  part->which_detail                     = PNUT_BOARD_PART_MODEM_TAG;
+  part->detail.modem.lte_bands.size      = 16;
+  part->detail.modem.lte_bands.bytes[0]  = 0x05;
+  part->detail.modem.lte_bands.bytes[2]  = 0x08;
+  part->detail.modem.lte_bands.bytes[15] = 0x80;
+  part->detail.modem.gsm_bands_count     = 2;
+  part->detail.modem.gsm_bands[0]        = PNUT_BOARD_MODEM_GSM_GSM_900;
+  part->detail.modem.gsm_bands[1]        = PNUT_BOARD_MODEM_GSM_DCS_1800;
+  part->detail.modem.sims                = 1;
+
   stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
   assert_true(pb_encode(&stream, PNUT_BOARD_DESCRIPTION_FIELDS, d));
   board_test_write(t->path, buffer, stream.bytes_written);
@@ -217,7 +232,7 @@ static void test_board_describe(void **state)
   assert_string_equal(t->desc.identity.target, "test");
   assert_string_equal(t->desc.identity.serial, "");
   assert_false(t->desc.identity.provisioned);
-  assert_int_equal(t->desc.parts_count, 2);
+  assert_int_equal(t->desc.parts_count, 3);
   assert_int_equal(t->desc.parts[0].kind, PNUT_BOARD_PART_KIND_SCREEN);
   assert_string_equal(t->desc.parts[0].device, "/dev/fb0");
   assert_int_equal(t->desc.parts[0].which_detail,
@@ -226,6 +241,17 @@ static void test_board_describe(void **state)
                    PNUT_BOARD_SCREEN_TECH_EPAPER);
   assert_int_equal(t->desc.parts[0].detail.screen.height, 320);
   assert_int_equal(t->desc.parts[1].detail.battery.empty_mv, 3300);
+  assert_int_equal(t->desc.parts[2].which_detail,
+                   PNUT_BOARD_PART_MODEM_TAG);
+  assert_int_equal(t->desc.parts[2].detail.modem.lte_bands.size, 16);
+  assert_int_equal(t->desc.parts[2].detail.modem.lte_bands.bytes[0], 0x05);
+  assert_int_equal(t->desc.parts[2].detail.modem.lte_bands.bytes[2], 0x08);
+  assert_int_equal(t->desc.parts[2].detail.modem.lte_bands.bytes[15],
+                   0x80);
+  assert_int_equal(t->desc.parts[2].detail.modem.gsm_bands_count, 2);
+  assert_int_equal(t->desc.parts[2].detail.modem.gsm_bands[1],
+                   PNUT_BOARD_MODEM_GSM_DCS_1800);
+  assert_int_equal(t->desc.parts[2].detail.modem.sims, 1);
 
   free(d);
   board_test_free(t);
