@@ -324,6 +324,9 @@ void pnut_loop_destroy(FAR struct pnut_loop_s *loop)
       return;
     }
 
+  /* The settings caches' connection, while timers and watches work */
+
+  pnut_settings_link_free(loop);
   pnut_worker_deinit(loop);
   pnut_timer_deinit(loop);
 

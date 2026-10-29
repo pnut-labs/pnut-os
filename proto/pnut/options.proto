@@ -66,7 +66,8 @@ extend google.protobuf.MessageOptions {
 
 message SettingOptions {
   // The key, when it is not the field's name: lowercase letters, digits,
-  // dots and underscores
+  // dots and underscores; not log.level, which the library adds to an
+  // owner named as its module (RFC 0026)
   optional string key = 1;
 
   // The default, written as text: "true", "10", "eu"; the type's zero

@@ -214,6 +214,10 @@ struct pnut_loop_s
   FAR struct pnut_module_s *first;
   FAR struct pnut_module_s *last;
   struct pnut_lograte_s rate;     /* Of the loop's own lines */
+
+  /* The settings caches' connection to Settings, made with the first */
+
+  FAR struct pnut_settings_link_s *settings;
   bool ready;
   struct pnut_ready_s nxinit;
 
@@ -345,6 +349,18 @@ void pnut_conn_recheck(FAR struct pnut_conn_s *conn);
 
 int pnut_module_startall(FAR struct pnut_loop_s *loop);
 void pnut_module_stopall(FAR struct pnut_loop_s *loop);
+
+/* settings_cache.c: with the loop's levels, a cache of the log level
+ * alone for each module whose owner no cache holds, once they have
+ * started (RFC 0026); closed again as they stop
+ */
+
+void pnut_settings_levels_open(FAR struct pnut_loop_s *loop);
+void pnut_settings_levels_close(FAR struct pnut_loop_s *loop);
+
+/* settings_cache.c: the caches' connection to Settings, as the loop goes */
+
+void pnut_settings_link_free(FAR struct pnut_loop_s *loop);
 
 /* loop.c: watch the descriptor that tells NxInit, in the slot kept for
  * it

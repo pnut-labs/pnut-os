@@ -64,6 +64,7 @@ int pnut_module_add(FAR struct pnut_loop_s *loop,
 
   module->loop    = loop;
   module->level   = PNUT_LOG_INFO;
+  module->levels  = NULL;
   memset(&module->rate, 0, sizeof(module->rate));
   module->started = false;
   module->ready   = false;
@@ -132,6 +133,7 @@ int pnut_module_startall(FAR struct pnut_loop_s *loop)
       module->started = true;
     }
 
+  pnut_settings_levels_open(loop);
   module_checkready(loop);
   return OK;
 }
@@ -149,6 +151,7 @@ void pnut_module_stopall(FAR struct pnut_loop_s *loop)
   FAR struct pnut_module_s *module;
 
   pnut_ready_stop(loop);
+  pnut_settings_levels_close(loop);
 
   for (module = loop->last; module != NULL; module = module->prev)
     {

@@ -13,6 +13,7 @@
  * Included Files
  ****************************************************************************/
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/epoll.h>
@@ -47,6 +48,13 @@ struct pnut_loop_config_s
   FAR const char *initctl;        /* NxInit's control socket, told when
                                    * the program is ready (RFC 0006), or
                                    * NULL */
+  bool levels;                    /* Each module's log level is a setting
+                                   * (RFC 0026): an owner named as the
+                                   * module holds it, opened by the library
+                                   * for a module that opens none; off by
+                                   * default.  Settings takes an owner from
+                                   * a program that runs a service of its
+                                   * name (etc/pnut/programs). */
 };
 
 /* Called on the loop when a watched descriptor is ready.  events are
