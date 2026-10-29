@@ -112,6 +112,11 @@ config PNUT_SETTINGS_OWNERS
 	int "Owners of settings"
 	default 16
 	range 1 255
+	---help---
+		Every module of a program whose loop has levels on holds an
+		owner, if only for its log level (RFC 0026): five in the system
+		program.  An owner that finds no room is refused, and its
+		program tries again, logging only at debug.
 
 config PNUT_SETTINGS_MAX
 	int "Settings, all owners' together"

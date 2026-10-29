@@ -44,6 +44,12 @@
 
 #define PNUT_SETTINGS_CACHE_ALL  (-1)
 
+/* A module's log level, a setting of the owner named as the module
+ * (RFC 0026): a choice of "error", "warning", "info" and "debug"
+ */
+
+#define PNUT_SETTINGS_CACHE_LEVEL  "log.level"
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -95,6 +101,7 @@ struct pnut_settings_desc_s
 };
 
 struct pnut_settings_cache_s;
+struct pnut_settings_link_s;
 
 /* Called on the loop when a setting's value in the struct changed, or with
  * PNUT_SETTINGS_CACHE_ALL once the values are first read
@@ -116,6 +123,7 @@ typedef CODE void
 
 struct pnut_settings_set_s
 {
+  FAR struct pnut_settings_cache_s *cache;
   pnut_settings_done_t done;
   FAR void *arg;
 };
@@ -125,7 +133,13 @@ struct pnut_settings_set_s
  * and reads them again whenever the settings topic tells of a change, or
  * of changes missed, or Settings comes back.  Reads are plain reads of the
  * struct, on the loop; changes go to Settings, and come back through the
- * topic.
+ * topic.  A program's caches share one connection to Settings and one
+ * reader of the topic (RFC 0023).
+ *
+ * An owner named as its module holds the module's log level too, the
+ * setting PNUT_SETTINGS_CACHE_LEVEL (RFC 0026): the cache registers it
+ * with the owner's schema, and sets the module's level from its value.
+ * It is not in the struct, and the change handler is not told of it.
  */
 
 struct pnut_settings_cache_s
@@ -138,9 +152,11 @@ struct pnut_settings_cache_s
   pnut_settings_changed_t changed;
   FAR void *arg;
 
-  struct pnut_settings_client_s client;
-  struct pnut_settings_change_reader_s reader;
-  bool subscribed;
+  FAR struct pnut_settings_link_s *link;
+
+  /* The link's next cache */
+
+  FAR struct pnut_settings_cache_s *flink;
   FAR struct pnut_timer_s *timer; /* The next try, once */
   uint32_t backoff;
 
@@ -148,8 +164,7 @@ struct pnut_settings_cache_s
   uint8_t next;                   /* The next declaration to register */
   bool ready;                     /* The values have been read */
   bool again;                     /* A change came while reading */
-  bool versioned;
-  uint32_t version;               /* The last change's */
+  bool level;                     /* Holds the module's log level */
   uint64_t touched;               /* The values that changed in a read */
   char after[sizeof(((FAR pnut_settings_page_request_t *)0)->after)];
 
@@ -172,7 +187,9 @@ extern "C"
  *   Start a cache of an owner's settings, on a running module's loop (from
  *   its start, for example), logging as that module.  values is the
  *   owner's struct: it holds the defaults until Settings' values are read,
- *   and is written only on the loop.
+ *   and is written only on the loop.  An owner named as the module holds
+ *   its log level too; a cache the library opened for the level alone
+ *   (pnut_loop_config_s's levels) is closed then.
  *
  * Returned Value:
  *   Zero (OK) on success; a negated errno value otherwise.

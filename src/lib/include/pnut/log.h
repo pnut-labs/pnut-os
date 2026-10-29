@@ -63,7 +63,9 @@ void pnut_vlog(FAR struct pnut_module_s *module, int level,
  * Name: pnut_module_setlevel
  *
  * Description:
- *   Set the least important level a module logs; info by default.
+ *   Set the least important level a module logs; info by default.  With
+ *   the loop's levels, the setting PNUT_SETTINGS_CACHE_LEVEL sets it once
+ *   Settings' value is read, and whenever it changes (RFC 0026).
  *
  ****************************************************************************/
 

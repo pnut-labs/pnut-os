@@ -22,9 +22,16 @@ an owner, each key in it a setting's key; a dotted owner or key is quoted:
 
 Every default is checked against its owner's schema, as protoc-gen-pnut
 reads it from the settings message: the owner and key must exist, and the
-value must have the setting's type and fit it.  The output is a
-pnut.SettingsDefaults message (proto/pnut/settings.proto), which Settings
-reads as schemas register (RFC 0025).
+value must have the setting's type and fit it.  The one exception is a
+module's log level, log.level, one of error, warning, info and debug: the
+library adds it to the owner named as each module (RFC 0026), which may
+declare no settings of its own, so any owner's is taken:
+
+    [power]
+    "log.level" = "debug"
+
+The output is a pnut.SettingsDefaults message (proto/pnut/settings.proto),
+which Settings reads as schemas register (RFC 0025).
 """
 
 import importlib.machinery
@@ -158,6 +165,17 @@ def checked(owner, key, value, setting, size):
     return "text", value
 
 
+def level(owner, value):
+    """A module's log level, which any owner may hold."""
+    if not gen.OWNER_NAME.fullmatch(owner) or len(owner) > 64:
+        raise DefaultsError(f"[{owner}]: not an owner's name")
+    where = f"[{owner}] {gen.LEVEL_KEY}"
+    if value not in gen.LEVEL_CHOICES:
+        raise DefaultsError(f"{where}: {value!r} is not one of "
+                            f"{', '.join(gen.LEVEL_CHOICES)}")
+    return "text", value
+
+
 def encode_varint(value):
     out = bytearray()
     while True:
@@ -203,17 +221,20 @@ def main(argv):
             toml = tomllib.load(f)
         message = b""
         for owner, table in toml.items():
-            if owner not in owners:
-                raise DefaultsError(f"[{owner}]: no such owner; a dotted "
-                                    "owner is quoted")
             if not isinstance(table, dict):
                 raise DefaultsError(f"{owner}: a table of settings")
             for key, value in flatten(table).items():
-                if key not in owners[owner]:
+                if key == gen.LEVEL_KEY:
+                    kind, value = level(owner, value)
+                elif owner not in owners:
+                    raise DefaultsError(f"[{owner}]: no such owner; a "
+                                        "dotted owner is quoted")
+                elif key not in owners[owner]:
                     raise DefaultsError(f"[{owner}] {key}: no such "
                                         "setting")
-                setting, size = owners[owner][key]
-                kind, value = checked(owner, key, value, setting, size)
+                else:
+                    setting, size = owners[owner][key]
+                    kind, value = checked(owner, key, value, setting, size)
                 message += encode_field(1, 2, encode_default(owner, key,
                                                              kind, value))
     except (DefaultsError, gen.GenError, tomllib.TOMLDecodeError,

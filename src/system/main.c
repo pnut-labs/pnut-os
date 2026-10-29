@@ -172,7 +172,8 @@ int main(int argc, FAR char *argv[])
     }
 
   pnut_loop_defaults(&config);
-  config.name = "system";
+  config.name   = "system";
+  config.levels = true;
 
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)

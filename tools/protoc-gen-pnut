@@ -411,6 +411,12 @@ INT_KINDS = {
 
 # pnut.Setting's limits (proto/pnut/settings.proto), without their NULs
 
+# The setting the library adds to an owner named as its module: the
+# module's log level (RFC 0026), as settings_cache.c declares it
+
+LEVEL_KEY = "log.level"
+LEVEL_CHOICES = ["error", "warning", "info", "debug"]
+
 SETTING_LIMITS = {"key": 64, "label": 48, "group": 48, "unit": 16,
                   "choice": 31, "choices": 16}
 
@@ -464,6 +470,9 @@ class Setting:
                 len(self.key) > SETTING_LIMITS["key"]:
             raise GenError(f"{where}: key {self.key!r}: lowercase letters, "
                            "digits, dots and underscores, at most 64")
+        if self.key == LEVEL_KEY:
+            raise GenError(f"{where}: key {LEVEL_KEY!r} is the library's: "
+                           "the module's log level (RFC 0026)")
         for name in ("label", "group", "unit"):
             if len(getattr(self, name)) > SETTING_LIMITS[name]:
                 raise GenError(f"{where}: {name} longer than "

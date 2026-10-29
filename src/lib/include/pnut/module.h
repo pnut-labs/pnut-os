@@ -23,6 +23,8 @@
  * Public Types
  ****************************************************************************/
 
+struct pnut_settings_cache_s;
+
 /* The library's count of log lines in the second so far, and of those
  * dropped over the rate (RFC 0026), for a module and for its loop
  */
@@ -64,6 +66,10 @@ struct pnut_module_s
   FAR struct pnut_loop_s *loop;
   struct pnut_lograte_s rate;
   uint8_t level;                  /* The least important level logged */
+
+  /* The cache of its level alone, if the library opened one (RFC 0026) */
+
+  FAR struct pnut_settings_cache_s *levels;
   bool started;
   bool ready;
 };
