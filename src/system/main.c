@@ -7,7 +7,8 @@
  ****************************************************************************/
 
 /* The system program (RFC 0007): the services every other program waits
- * on.  Service states comes first, since the others ask it who calls;
+ * on.  Board comes first, so that the others can ask it for the device's
+ * description; then Service states, since the others ask it who calls;
  * then Settings, then Time, which keeps its settings there, then Log,
  * once the clock is near the right time for its marks, then Power, which
  * may stop the program to power the device off: Settings, Time and Log,
