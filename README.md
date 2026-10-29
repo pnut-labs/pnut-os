@@ -9,7 +9,8 @@ what the system does and why.
 The work has just started. The tree builds NuttX's configurations for the
 simulator, QEMU and the LilyGo T-Deck Max, and the first pieces of
 pnut-os: the service library, `libpnut`, and the system program with its
-first services, Service states, Settings and Time, tested on the computer
+first services, Board's description of the device, Service states,
+Settings and Time, tested on the computer
 and in the simulator. On the T-Deck Max, the system program also keeps
 the log's warnings and errors, and crash reports, in `/var/lib/log`, and
 powers the device off when the battery runs low.
@@ -67,10 +68,13 @@ How a build goes:
    with NuttX's `tools/merge_config.py`. Every option in it must reach the
    final configuration: one that is misspelt, or whose dependencies are not
    met, stops the build.
-4. pnut-os's `/etc` is staged in `build/etc`: `etc/`, and the target's
-   settings' defaults, `configs/<target>/defaults.toml`, checked against
-   the settings' schemas and compiled into `pnut/defaults.pb` (RFC 0025);
-   any owner may be given a module's log level there, `log.level`.
+4. pnut-os's `/etc` is staged in `build/etc`: `etc/`; the target's
+   description, `configs/<target>/board.toml`, checked against
+   `pnut.BoardDescription` and compiled into `pnut/board.pb` (RFC 0024);
+   and its settings' defaults, `configs/<target>/defaults.toml`, checked
+   against the settings' schemas and compiled into `pnut/defaults.pb`
+   (RFC 0025); any owner may be given a module's log level there,
+   `log.level`.
 5. NuttX builds the image. The board's `/etc` gets `build/etc` laid over
    it (`ETC_OVERLAY`, which the Makefile hands every make of NuttX's):
    NxInit, NuttX's first task, reads `etc/init.d/pnut.rc`, which runs the
@@ -85,16 +89,16 @@ One target is configured at a time; building another configures afresh.
 | Path | What |
 |---|---|
 | `nuttx/`, `apps/` | submodules: [pnut-labs/nuttx](https://github.com/pnut-labs/nuttx), [pnut-labs/nuttx-apps](https://github.com/pnut-labs/nuttx-apps) |
-| `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it), `fragment.config` (pnut-os's options), and `defaults.toml` (its settings' defaults, if it changes any) |
+| `configs/<target>/` | a target: `target.mk` (the board's configuration, how to run or flash it), `fragment.config` (pnut-os's options), `board.toml` (the device's description, RFC 0024), and `defaults.toml` (its settings' defaults, if it changes any) |
 | `etc/` | laid over the board's `/etc` in the image (RFC 0010): `init.d/pnut.rc`, NxInit's configuration (RFC 0006); `pnut/programs`, which services each program runs (RFC 0007) |
 | `src/` | what NuttX builds into the firmware; `apps/external` links here |
 | `src/lib/` | the service library, `libpnut` (RFC 0023): the event loop, timers, workers, modules, fixed pools, logging; services and clients on local sockets; topics, on uORB; telling NxInit a program is ready; typed settings, kept in a struct and up to date, a program's over one connection (RFC 0025); each module's log level, a setting `log.level` of the owner named as it (RFC 0026); time zones, every zone of the tz database by name with its current rule (RFC 0028); the interfaces' generated code |
-| `src/system/` | the system program, `pnut_system` (RFC 0007), with Service states (RFC 0006: the services' states, which task is which program), Settings (RFC 0025), which checks who calls; Time (RFC 0028), so far the clock and the zone: readings from the sources' topics, the owner's time, the zone from its settings or the network's offset, the last good time kept across a power loss; and Power, so far only its power-off at a low battery |
+| `src/system/` | the system program, `pnut_system` (RFC 0007), with Board (RFC 0024), so far the device's description, read from `/etc` and served whole, every unit unprovisioned; Service states (RFC 0006: the services' states, which task is which program), Settings (RFC 0025), which checks who calls; Time (RFC 0028), so far the clock and the zone: readings from the sources' topics, the owner's time, the zone from its settings or the network's offset, the last good time kept across a power loss; and Power, so far only its power-off at a low battery |
 | `proto/` | the interfaces, their topics and their settings (RFC 0023, RFC 0025): one `.proto` file each, their numbers in `proto/interfaces.md`; pnut-os's own in `proto/pnut/`: its options, and `pnut.Error`, an error answer's detail |
 | `src/tests/` | the unit tests, built as programs for the simulator |
 | `tests/unit/` | the unit tests, with cmocka |
 | `tests/proto/` | interfaces for the tests |
-| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers, topics, settings and references, run with nanopb's by `generate.sh`; `stage-etc.sh` stages `/etc`, with `settings-defaults`, which compiles a target's `defaults.toml`; `gen-zones` writes the time zones' table from the tz database, kept in the source |
+| `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers, topics, settings and references, run with nanopb's by `generate.sh`; `stage-etc.sh` stages `/etc`, with `board-description`, which compiles a target's `board.toml`, and `settings-defaults`, which compiles its `defaults.toml`; `gen-zones` writes the time zones' table from the tz database, kept in the source |
 
 As the code arrives:
 

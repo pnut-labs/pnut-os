@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+############################################################################
+# pnut-os/tools/board-description
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+"""A target's description, from TOML to /etc/pnut/board.pb (RFC 0024).
+
+    tools/board-description <descriptors> <board.toml> <target> <out>
+
+descriptors is the interfaces' descriptor set, which tools/generate.sh
+writes (build/gen/descriptors.pb).  The TOML file is a pnut.BoardDescription
+(proto/pnut/board.proto), its fields by name, an enum's value by its name
+in lowercase:
+
+    [identity]
+    maker = "LilyGo"
+    model = "T-Deck Max"
+
+    [[parts]]
+    kind = "screen"
+    name = "screen"
+    screen = { tech = "epaper", width = 240, height = 320, depth = 1 }
+
+A bytes field is a set of bits, given as the numbers of the bits set,
+counted from 1: a modem's lte_bands = [1, 3, 20].
+
+The build's target names the identity's target; the unit's own fields
+(revision, serial, provisioned) are its device data's, never the file's.
+Every field is checked against the message, and against nanopb's sizes, so
+that Board can decode what the build wrote; protoc encodes it.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import subprocess
+import sys
+import tomllib
+
+from google.protobuf import descriptor_pb2
+
+# settings-defaults reads nanopb's field options from the wire, as no
+# Python module of them exists at build time
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_loader = importlib.machinery.SourceFileLoader(
+    "settings_defaults", os.path.join(_here, "settings-defaults"))
+_spec = importlib.util.spec_from_loader("settings_defaults", _loader)
+defaults = importlib.util.module_from_spec(_spec)
+_loader.exec_module(defaults)
+
+MESSAGE = "pnut.BoardDescription"
+PROTO = "pnut/board.proto"
+
+# NanoPBOptions' max_count, field 2
+
+NANOPB_MAX_COUNT = 2
+
+# The unit's own: device data's (RFC 0024)
+
+UNIT_FIELDS = {"revision", "serial", "provisioned"}
+
+FD = descriptor_pb2.FieldDescriptorProto
+
+INT_RANGES = {
+    FD.TYPE_UINT32: (0, 2**32 - 1),
+    FD.TYPE_UINT64: (0, 2**64 - 1),
+    FD.TYPE_INT32: (-2**31, 2**31 - 1),
+    FD.TYPE_SINT32: (-2**31, 2**31 - 1),
+    FD.TYPE_INT64: (-2**63, 2**63 - 1),
+    FD.TYPE_SINT64: (-2**63, 2**63 - 1),
+}
+
+
+class DescriptionError(Exception):
+    """A description that does not fit the message."""
+
+
+def max_count(field):
+    """A repeated field's nanopb max_count, or None."""
+    for number, wire, value in defaults.fields(
+            field.options.SerializeToString()):
+        if number == defaults.NANOPB_OPTIONS and wire == 2:
+            for n, w, v in defaults.fields(value):
+                if n == NANOPB_MAX_COUNT and w == 0:
+                    return v
+    return None
+
+
+def types(path):
+    """Every message and enum of the descriptor set, by its full name."""
+    with open(path, "rb") as f:
+        fds = descriptor_pb2.FileDescriptorSet.FromString(f.read())
+    messages = {}
+    enums = {}
+
+    def walk(prefix, msgs, enum_types):
+        for e in enum_types:
+            enums[f"{prefix}.{e.name}"] = e
+        for m in msgs:
+            name = f"{prefix}.{m.name}"
+            messages[name] = m
+            walk(name, m.nested_type, m.enum_type)
+
+    for fdesc in fds.file:
+        walk(f".{fdesc.package}" if fdesc.package else "",
+             fdesc.message_type, fdesc.enum_type)
+    return messages, enums
+
+
+def text_string(value):
+    """A string as the text format quotes it."""
+    out = []
+    for byte in value.encode():
+        if byte in (0x22, 0x5c):
+            out.append("\\" + chr(byte))
+        elif 0x20 <= byte < 0x7f:
+            out.append(chr(byte))
+        else:
+            out.append(f"\\{byte:03o}")
+    return '"' + "".join(out) + '"'
+
+
+def text_bytes(value):
+    """Bytes as the text format quotes them."""
+    return '"' + "".join(f"\\{byte:03o}" for byte in value) + '"'
+
+
+def bits(where, field, value):
+    """A set of bits, given as the numbers of the bits set, from 1."""
+    size = defaults.max_size(field)
+    if size is None:
+        raise DescriptionError(f"{where}: a field without nanopb's max_size")
+    if not isinstance(value, list):
+        raise DescriptionError(f"{where}: a list of bits' numbers")
+    out = bytearray()
+    for bit in value:
+        if isinstance(bit, bool) or not isinstance(bit, int) or \
+                not 1 <= bit <= size * 8:
+            raise DescriptionError(f"{where}: {bit!r} is not a number from "
+                                   f"1 to {size * 8}")
+        index = (bit - 1) // 8
+        if index >= len(out):
+            out.extend(bytes(index + 1 - len(out)))
+        out[index] |= 1 << ((bit - 1) % 8)
+    return bytes(out)
+
+
+def scalar(where, field, value, enums):
+    """A field's value in the text format, checked."""
+    if field.type == FD.TYPE_BOOL:
+        if not isinstance(value, bool):
+            raise DescriptionError(f"{where}: true or false")
+        return "true" if value else "false"
+    if field.type in INT_RANGES:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DescriptionError(f"{where}: an integer")
+        low, high = INT_RANGES[field.type]
+        if not low <= value <= high:
+            raise DescriptionError(f"{where}: {value} is outside {low} to "
+                                   f"{high}")
+        return str(value)
+    if field.type == FD.TYPE_STRING:
+        if not isinstance(value, str):
+            raise DescriptionError(f"{where}: a string")
+        size = defaults.max_size(field)
+        if size is not None and len(value.encode()) > size - 1:
+            raise DescriptionError(f"{where}: longer than {size - 1} bytes")
+        return text_string(value)
+    if field.type == FD.TYPE_BYTES:
+        return text_bytes(bits(where, field, value))
+    if field.type == FD.TYPE_ENUM:
+        names = [v.name for v in enums[field.type_name].value]
+        if not isinstance(value, str) or value != value.lower() or \
+                value.upper() not in names:
+            raise DescriptionError(
+                f"{where}: one of "
+                f"{', '.join(n.lower() for n in names)}")
+        return value.upper()
+    raise DescriptionError(f"{where}: a field of a type not taken")
+
+
+def message(where, desc, table, messages, enums, indent=""):
+    """A table as a message in the text format, checked."""
+    if not isinstance(table, dict):
+        raise DescriptionError(f"{where}: a table")
+    byname = {f.name: f for f in desc.field}
+    oneofs = {}
+    lines = []
+    for key, value in table.items():
+        here = f"{where}.{key}" if where else key
+        if key not in byname:
+            raise DescriptionError(f"{here}: no such field")
+        field = byname[key]
+        if field.HasField("oneof_index"):
+            taken = oneofs.setdefault(field.oneof_index, key)
+            if taken != key:
+                raise DescriptionError(f"{here}: {taken} is given already, "
+                                       "and only one of them may be")
+        values = value if field.label == FD.LABEL_REPEATED else [value]
+        if field.label == FD.LABEL_REPEATED:
+            if not isinstance(value, list):
+                raise DescriptionError(f"{here}: a list")
+            count = max_count(field)
+            if count is not None and len(value) > count:
+                raise DescriptionError(f"{here}: more than {count}")
+        for i, item in enumerate(values):
+            at = f"{here}[{i}]" if field.label == FD.LABEL_REPEATED else here
+            if field.type == FD.TYPE_MESSAGE:
+                inner = message(at, messages[field.type_name], item,
+                                messages, enums, indent + "  ")
+                lines.append(f"{indent}{key} {{")
+                lines.extend(inner)
+                lines.append(f"{indent}}}")
+            else:
+                lines.append(f"{indent}{key}: "
+                             f"{scalar(at, field, item, enums)}")
+    return lines
+
+
+def check_parts(parts):
+    """Every part has a kind, and is one of its kind by its name."""
+    if not isinstance(parts, list):
+        raise DescriptionError("parts: a list")
+    seen = set()
+    for i, part in enumerate(parts):
+        if not isinstance(part, dict):
+            raise DescriptionError(f"parts[{i}]: a table")
+        kind = part.get("kind", "none")
+        if kind == "none":
+            raise DescriptionError(f"parts[{i}].kind: a part has one")
+        key = (kind, part.get("name", ""))
+        if key in seen:
+            raise DescriptionError(f"parts[{i}]: another {kind} is named "
+                                   f"{key[1]!r} already")
+        seen.add(key)
+
+
+def main(argv):
+    if len(argv) != 5:
+        sys.exit(f"usage: {argv[0]} <descriptors> <board.toml> <target> "
+                 "<out>")
+    descriptors, source, target, out = argv[1:]
+
+    try:
+        messages, enums = types(descriptors)
+        with open(source, "rb") as f:
+            toml = tomllib.load(f)
+        identity = toml.setdefault("identity", {})
+        if not isinstance(identity, dict):
+            raise DescriptionError("identity: a table")
+        for key in UNIT_FIELDS & identity.keys():
+            raise DescriptionError(f"identity.{key}: the unit's device "
+                                   "data's, not the target's")
+        if "target" in identity:
+            raise DescriptionError("identity.target: the build's target")
+        identity["target"] = target
+        text = "\n".join(message("", messages["." + MESSAGE], toml,
+                                 messages, enums)) + "\n"
+        check_parts(toml.get("parts", []))
+        encoded = subprocess.run(
+            ["protoc", f"--descriptor_set_in={descriptors}",
+             f"--encode={MESSAGE}", PROTO],
+            input=text.encode(), capture_output=True, check=False)
+        if encoded.returncode != 0:
+            raise DescriptionError(encoded.stderr.decode().strip())
+    except (DescriptionError, tomllib.TOMLDecodeError, OSError) as e:
+        sys.exit(f"{source}: {e}")
+
+    with open(out + ".tmp", "wb") as f:
+        f.write(encoded.stdout)
+    os.replace(out + ".tmp", out)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

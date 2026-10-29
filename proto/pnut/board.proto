@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Board (RFC 0024): the device's description, served by a module of the
+// system program.  The description is the target's file,
+// configs/<target>/board.toml, which the build checks and compiles into
+// /etc/pnut/board.pb, a BoardDescription; Board adds what differs per
+// unit, from the device data partition.  No device has that partition
+// yet, so every unit is described as unprovisioned, from the target's
+// file alone.
+//
+// The description does not change while the device runs: a reader asks
+// once and keeps it.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Board {
+  option (pnut.iface) = 4;
+
+  // The description, whole
+  rpc Describe (BoardDescribeRequest) returns (BoardDescription) {
+    option (pnut.method) = 1;
+  }
+}
+
+message BoardDescribeRequest {
+}
+
+// What the device is, and which unit
+message BoardIdentity {
+  string maker = 1 [(nanopb).max_size = 24];
+  string model = 2 [(nanopb).max_size = 32];
+
+  // The build's target, configs/<target>
+  string target = 3 [(nanopb).max_size = 16];
+
+  // The unit's, from its device data: empty while unprovisioned
+  string revision = 4 [(nanopb).max_size = 16];
+  string serial = 5 [(nanopb).max_size = 32];
+  bool provisioned = 6;
+}
+
+// A screen
+message BoardScreen {
+  enum Tech {
+    LCD = 0;
+    EPAPER = 1;
+    OLED = 2;
+    WINDOW = 3;                   // A window on a computer's screen
+  }
+
+  Tech tech = 1;
+  uint32 width = 2;               // In pixels
+  uint32 height = 3;
+  uint32 depth = 4;               // Bits a pixel
+}
+
+// A keyboard: its layout, the characters on its keys in layers, comes
+// with input (RFC 0027)
+message BoardKeyboard {
+  string layout = 1 [(nanopb).max_size = 16];  // Its keys' arrangement
+  uint32 keys = 2;
+}
+
+// Keys whose meaning the screen shows above or beside them
+message BoardFunctionKeys {
+  uint32 keys = 1;
+}
+
+// A button, with its role
+message BoardButton {
+  enum Role {
+    OTHER = 0;
+    POWER = 1;
+    VOLUME_UP = 2;
+    VOLUME_DOWN = 3;
+  }
+
+  Role role = 1;
+}
+
+// A touch screen, or a touch pad
+message BoardTouch {
+  uint32 width = 1;               // In its own points
+  uint32 height = 2;
+  uint32 points = 3;              // Touches followed at once
+}
+
+// A radio's band, and the power it sends with
+message BoardRadio {
+  uint32 min_khz = 1;
+  uint32 max_khz = 2;
+  sint32 min_dbm = 3;
+  sint32 max_dbm = 4;
+}
+
+// A mobile network's modem
+message BoardModem {
+  // GSM's bands, by their names
+  enum Gsm {
+    NONE = 0;
+    GSM_850 = 1;
+    GSM_900 = 2;
+    DCS_1800 = 3;
+    PCS_1900 = 4;
+  }
+
+  // LTE's bands, a set of bits: band n is bit n - 1, counted from the
+  // first byte's lowest bit.  The format takes any band; the buffer takes
+  // bands up to 128, and can grow without changing the format.  The build
+  // refuses more.
+  bytes lte_bands = 1 [(nanopb).max_size = 16];
+  repeated Gsm gsm_bands = 2 [(nanopb).max_count = 4];
+  uint32 sims = 3;                // SIM slots
+  bool voice = 4;
+  bool sms = 5;
+}
+
+// A battery
+message BoardBattery {
+  uint32 capacity_mah = 1;
+  uint32 full_mv = 2;             // Charged to
+  uint32 empty_mv = 3;            // The device powers off at
+}
+
+// The clock that keeps time while the chip sleeps: how fast it runs over
+// the time slept, as measured on this kind of device, until Time has
+// learnt the unit's own rate (RFC 0028)
+message BoardSleepClock {
+  sint32 rate_ppb = 1;            // Parts per billion gained
+}
+
+// A USB port: the modes it can be in (RFC 0012)
+message BoardUsb {
+  enum Mode {
+    NONE = 0;
+    SERIAL_JTAG = 1;              // The chip's own serial console and
+                                  // debugger
+    DEVICE = 2;                   // A USB device: MTP, adb, ...
+    HOST = 3;
+  }
+
+  repeated Mode modes = 1 [(nanopb).max_count = 3];
+}
+
+// A part of the device.  Several of a kind are allowed: two SIM slots,
+// two screens.
+message BoardPart {
+  // What a part is.  A kind, once numbered, is never renumbered: apps'
+  // manifests name them (RFC 0008, RFC 0024).
+  enum Kind {
+    NONE = 0;
+
+    // Screens, input, lights
+    SCREEN = 1;
+    KEYBOARD = 2;
+    FUNCTION_KEYS = 3;
+    NAVIGATION = 4;               // Arrow keys, a joystick, a trackball
+    BUTTON = 5;
+    TOUCH = 6;
+    BACKLIGHT = 7;
+    LIGHT = 8;                    // A status or notification light
+
+    // Radios
+    MODEM = 16;
+    LORA = 17;
+    GNSS = 18;
+    WIFI = 19;
+    BLUETOOTH = 20;
+    NFC = 21;
+
+    // Sound, motion, sensors, cameras
+    SPEAKER = 32;
+    MICROPHONE = 33;
+    VIBRATION = 34;
+    MOTION = 35;                  // Accelerometer, gyroscope
+    CAMERA = 36;
+
+    // Power, storage, ports, clocks
+    BATTERY = 48;
+    CHARGER = 49;
+    STORAGE_SLOT = 50;            // A card slot
+    USB = 51;
+    SLEEP_CLOCK = 52;
+  }
+
+  Kind kind = 1;
+
+  // Which one, among parts of its kind: "screen", "keyboard"
+  string name = 2 [(nanopb).max_size = 16];
+
+  // The chip, or the module, as its maker names it
+  string chip = 3 [(nanopb).max_size = 24];
+
+  // Its device file, if it has one
+  string device = 4 [(nanopb).max_size = 24];
+
+  oneof detail {
+    BoardScreen screen = 8;
+    BoardKeyboard keyboard = 9;
+    BoardFunctionKeys function_keys = 10;
+    BoardButton button = 11;
+    BoardTouch touch = 12;
+    BoardRadio radio = 13;
+    BoardModem modem = 14;
+    BoardBattery battery = 15;
+    BoardSleepClock sleep_clock = 16;
+    BoardUsb usb = 17;
+  }
+}
+
+message BoardDescription {
+  BoardIdentity identity = 1;
+  repeated BoardPart parts = 2 [(nanopb).max_count = 32];
+}

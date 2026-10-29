@@ -1,0 +1,141 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The LilyGo T-Deck Max's description (RFC 0024): the build checks it
+# against pnut.BoardDescription (proto/pnut/board.proto) and compiles it
+# into /etc/pnut/board.pb, which Board serves.  A part's fields are the
+# message's; an enum's value is its name in lowercase; a set of bits lists
+# the numbers of the bits set, from 1.
+
+[identity]
+maker = "LilyGo"
+model = "T-Deck Max"
+
+[[parts]]
+kind = "screen"
+name = "screen"
+chip = "UC8253"
+device = "/dev/fb0"
+screen = { tech = "epaper", width = 240, height = 320, depth = 1 }
+
+[[parts]]
+kind = "backlight"
+name = "screen"
+
+[[parts]]
+kind = "touch"
+name = "screen"
+chip = "CST3530"
+device = "/dev/input0"
+touch = { width = 240, height = 320, points = 5 }
+
+[[parts]]
+kind = "function_keys"
+name = "keys"
+chip = "CST3530"
+device = "/dev/softkeys"
+function_keys = { keys = 3 }
+
+[[parts]]
+kind = "keyboard"
+name = "keyboard"
+chip = "TCA8418"
+device = "/dev/kbd0"
+keyboard = { layout = "blackberry-q20", keys = 35 }
+
+[[parts]]
+kind = "backlight"
+name = "keyboard"
+
+# The side button, the power key (RFC 0027), as the earlier shell had it;
+# no driver reports it yet
+[[parts]]
+kind = "button"
+name = "boot"
+button = { role = "power" }
+
+# The A7682E's bands, as SIMCom gives them; one SIM, in the holder it
+# shares with the microSD card
+[[parts]]
+kind = "modem"
+name = "modem"
+chip = "A7682E"
+device = "/dev/ttyS1"
+
+[parts.modem]
+lte_bands = [1, 3, 5, 7, 8, 20]
+gsm_bands = ["gsm_900", "dcs_1800"]
+sims = 1
+voice = true
+sms = true
+
+[[parts]]
+kind = "lora"
+name = "lora"
+chip = "SX1262"
+device = "/dev/lora0"
+radio = { min_khz = 863000, max_khz = 870000, min_dbm = -9, max_dbm = 22 }
+
+[[parts]]
+kind = "gnss"
+name = "gnss"
+chip = "MIA-M10Q"
+device = "/dev/ttyGNSS0"
+
+[[parts]]
+kind = "wifi"
+name = "wifi"
+chip = "ESP32-S3"
+
+[[parts]]
+kind = "bluetooth"
+name = "bluetooth"
+chip = "ESP32-S3"
+
+[[parts]]
+kind = "speaker"
+name = "speaker"
+chip = "ES8311"
+device = "/dev/audio/pcm0"
+
+[[parts]]
+kind = "microphone"
+name = "microphone"
+chip = "ES8311"
+device = "/dev/audio/pcm_in0"
+
+[[parts]]
+kind = "vibration"
+name = "motor"
+chip = "DRV2605L"
+device = "/dev/input_ff0"
+
+[[parts]]
+kind = "motion"
+name = "motion"
+chip = "BHI260AP"
+
+# The kernel sets the charger to full_mv before any program runs, from
+# BOARD_CHARGE_MV in the board's code: the two must agree
+[[parts]]
+kind = "battery"
+name = "battery"
+chip = "BQ27220"
+device = "/dev/batt0"
+battery = { capacity_mah = 1400, full_mv = 4288, empty_mv = 3300 }
+
+[[parts]]
+kind = "charger"
+name = "charger"
+chip = "SY6970"
+device = "/dev/charger0"
+
+[[parts]]
+kind = "storage_slot"
+name = "microsd"
+device = "/dev/mmcsd0"
+
+[[parts]]
+kind = "usb"
+name = "usb"
+chip = "ESP32-S3"
+usb = { modes = ["serial_jtag", "device"] }

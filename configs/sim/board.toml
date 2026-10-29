@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The simulator's description (RFC 0024): NuttX's simulator, a program on
+# a computer, with a console and none of a device's parts.  The build
+# checks it against pnut.BoardDescription (proto/pnut/board.proto) and
+# compiles it into /etc/pnut/board.pb, which Board serves.
+
+[identity]
+maker = "NuttX"
+model = "Simulator"
