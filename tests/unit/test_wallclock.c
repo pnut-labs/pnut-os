@@ -32,11 +32,14 @@
 
 #include <cmocka.h>
 
+#include <pb_encode.h>
+
 #include <pnut/loop.h>
 #include <pnut/module.h>
 #include <pnut/timer.h>
 #include <pnut/topic.h>
 
+#include "board.h"
 #include "settings.h"
 #include "wallclock.h"
 
@@ -1063,6 +1066,177 @@ static void test_wallclock_bad_state(void **state)
   wall_test_free(t);
 }
 
+/* The sleep clock's rate: Board, with a description, Time, and a module
+ * reading what Time announces.  A topic keeps its last message, in the
+ * simulator from earlier tests too: the test publishes a marker first, and
+ * counts only what differs from it.
+ */
+
+#define RATE_MARKER  (-1)
+
+struct rate_test_s
+{
+  struct board_s board;
+  struct wallclock_s wall;
+  struct pnut_module_s module;
+  struct pnut_sleep_rate_reader_s reader;
+  int messages;
+  pnut_sleep_rate_t msg;
+};
+
+static void rate_test_stop(FAR struct pnut_loop_s *loop,
+                           FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  pnut_loop_stop(loop, 0);
+}
+
+static void rate_test_got(FAR struct pnut_sleep_rate_reader_s *reader,
+                          FAR const pnut_sleep_rate_t *msg, FAR void *arg)
+{
+  FAR struct rate_test_s *t = arg;
+
+  if (msg->ppb != RATE_MARKER)
+    {
+      /* Time asked Board once, and let go of it as the answer came */
+
+      assert_false(t->wall.board_open);
+      t->messages++;
+      t->msg = *msg;
+    }
+}
+
+static int rate_test_start(FAR struct pnut_module_s *module,
+                           FAR struct pnut_loop_s *loop)
+{
+  FAR struct rate_test_s *t = (FAR struct rate_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct rate_test_s, module));
+
+  assert_int_equal(pnut_sleep_rate_subscribe(loop, rate_test_got, t,
+                                             &t->reader), 0);
+  pnut_module_ready(module);
+  return 0;
+}
+
+static void rate_test_stop_module(FAR struct pnut_module_s *module,
+                                  FAR struct pnut_loop_s *loop)
+{
+  FAR struct rate_test_s *t = (FAR struct rate_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct rate_test_s, module));
+
+  pnut_sleep_rate_unsubscribe(&t->reader);
+}
+
+/* Run with a description that has a sleep clock of rate ppb, or none */
+
+static void rate_test_run(FAR struct rate_test_s *t, bool clock,
+                          int32_t ppb)
+{
+  FAR pnut_board_description_t *d = calloc(1, sizeof(*d));
+  uint8_t buffer[PNUT_BOARD_DESCRIPTION_SIZE];
+  struct pnut_loop_config_s config;
+  struct wallclock_config_s wconfig;
+  struct board_config_s bconfig;
+  FAR struct pnut_publisher_s *marker;
+  FAR struct pnut_loop_s *loop;
+  pnut_sleep_rate_t msg;
+  pb_ostream_t stream;
+  char dir[48];
+  char path[96];
+  size_t i;
+  FILE *f;
+  static FAR const char * const topics[] =
+  {
+    "sleep_rate", "time", "network_time", "gnss_time", "settings"
+  };
+
+  snprintf(dir, sizeof(dir), "/tmp/pnut-rate-%d", (int)getpid());
+  assert_int_equal(mkdir(dir, 0700), 0);
+  snprintf(path, sizeof(path), "%s/board.pb", dir);
+
+  assert_non_null(d);
+  d->has_identity = true;
+  strlcpy(d->identity.model, "Model", sizeof(d->identity.model));
+  if (clock)
+    {
+      d->parts[0].kind         = PNUT_BOARD_PART_KIND_SLEEP_CLOCK;
+      d->parts[0].which_detail = PNUT_BOARD_PART_SLEEP_CLOCK_TAG;
+      d->parts[0].detail.sleep_clock.rate_ppb = ppb;
+      d->parts_count = 1;
+    }
+
+  stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+  assert_true(pb_encode(&stream, PNUT_BOARD_DESCRIPTION_FIELDS, d));
+  f = fopen(path, "wb");
+  assert_non_null(f);
+  assert_int_equal(fwrite(buffer, 1, stream.bytes_written, f),
+                   stream.bytes_written);
+  fclose(f);
+  free(d);
+
+  pnut_loop_defaults(&config);
+  config.rundir = dir;
+  assert_int_equal(pnut_loop_create(&config, &loop), 0);
+
+  assert_int_equal(pnut_sleep_rate_advertise(loop, &marker), 0);
+  memset(&msg, 0, sizeof(msg));
+  msg.ppb = RATE_MARKER;
+  assert_int_equal(pnut_sleep_rate_publish(marker, &msg), 0);
+
+  bconfig.path = path;
+  board_init(&t->board, &bconfig);
+  assert_int_equal(pnut_module_add(loop, &t->board.module), 0);
+
+  memset(&wconfig, 0, sizeof(wconfig));
+  wconfig.board = BOARD_SERVICE;
+  wallclock_init(&t->wall, &wconfig);
+  assert_int_equal(pnut_module_add(loop, &t->wall.module), 0);
+
+  memset(&t->module, 0, sizeof(t->module));
+  t->module.name  = "test";
+  t->module.start = rate_test_start;
+  t->module.stop  = rate_test_stop_module;
+  assert_int_equal(pnut_module_add(loop, &t->module), 0);
+
+  t->messages = 0;
+  assert_int_equal(pnut_timer_start(loop, 500, 0, rate_test_stop, NULL,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(loop), 0);
+  pnut_topic_unadvertise(marker);
+  pnut_loop_destroy(loop);
+
+  unlink(path);
+  for (i = 0; i < sizeof(topics) / sizeof(topics[0]); i++)
+    {
+      snprintf(path, sizeof(path), "%s/topic.%s/last", dir, topics[i]);
+      unlink(path);
+      snprintf(path, sizeof(path), "%s/topic.%s", dir, topics[i]);
+      rmdir(path);
+    }
+
+  rmdir(dir);
+}
+
+/* Time announces the sleep clock's rate Board's description gives, once;
+ * without one, none
+ */
+
+static void test_wallclock_sleep_rate(void **state)
+{
+  FAR struct rate_test_s *t = calloc(1, sizeof(*t));
+
+  assert_non_null(t);
+  rate_test_run(t, true, 8500000);
+  assert_int_equal(t->messages, 1);
+  assert_int_equal(t->msg.ppb, 8500000);
+  assert_false(t->msg.learnt);
+  assert_false(t->wall.board_open);
+
+  rate_test_run(t, false, 0);
+  assert_int_equal(t->messages, 0);
+  assert_false(t->wall.board_open);
+  free(t);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -1078,6 +1252,7 @@ int main(void)
     cmocka_unit_test(test_wallclock_state),
     cmocka_unit_test(test_wallclock_bad_state),
     cmocka_unit_test(test_wallclock_uncertain),
+    cmocka_unit_test(test_wallclock_sleep_rate),
   };
 
   return cmocka_run_group_tests_name("wallclock", tests, NULL, NULL);

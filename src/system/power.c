@@ -11,6 +11,7 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <inttypes.h>
 #include <string.h>
 
 #include <pnut/log.h>
@@ -90,6 +91,35 @@ static void power_read(FAR struct pnut_loop_s *loop,
 }
 
 /****************************************************************************
+ * Name: power_rate
+ *
+ * Description:
+ *   Time announced the sleep clock's rate: hand it to the kernel, which
+ *   corrects the time each light sleep moves the clock on by (RFC 0028).
+ *
+ ****************************************************************************/
+
+static void power_rate(FAR struct pnut_sleep_rate_reader_s *reader,
+                       FAR const pnut_sleep_rate_t *msg, FAR void *arg)
+{
+  FAR struct power_s *power = arg;
+  int ret;
+
+  ret = power->config.sleep_rate(power->config.arg, msg->ppb);
+  if (ret < 0)
+    {
+      pnut_log(&power->module, PNUT_LOG_WARNING,
+               "The kernel took no sleep clock's rate (%+" PRId32
+               " ppb): %d", msg->ppb, ret);
+      return;
+    }
+
+  pnut_log(&power->module, PNUT_LOG_INFO,
+           "Light sleeps corrected by %+" PRId32 " ppb, %s", msg->ppb,
+           msg->learnt ? "learnt" : "the device's");
+}
+
+/****************************************************************************
  * Name: power_start
  ****************************************************************************/
 
@@ -104,6 +134,22 @@ static int power_start(FAR struct pnut_module_s *module,
   /* Nothing more to do here yet: Power serves nothing so far */
 
   pnut_module_ready(module);
+
+  if (power->config.sleep_rate != NULL)
+    {
+      ret = pnut_sleep_rate_subscribe(loop, power_rate, power,
+                                      &power->rates);
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_WARNING,
+                   "No sleep_rate topic: %d; light sleeps go uncorrected",
+                   ret);
+        }
+      else
+        {
+          power->rates_open = true;
+        }
+    }
 
   if (power->config.cutoff <= 0 || power->config.measure == NULL)
     {
@@ -147,6 +193,12 @@ static void power_stop(FAR struct pnut_module_s *module,
     {
       pnut_timer_cancel(loop, power->timer);
       power->timer = NULL;
+    }
+
+  if (power->rates_open)
+    {
+      pnut_sleep_rate_unsubscribe(&power->rates);
+      power->rates_open = false;
     }
 
   power->low     = 0;
