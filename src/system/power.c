@@ -11,8 +11,10 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <pnut/log.h>
 #include <pnut/loop.h>
@@ -29,6 +31,29 @@ static void power_board(FAR struct pnut_board_client_s *client,
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: power_close
+ *
+ * Description:
+ *   Let go of the gauge and the charger: no more readings.
+ *
+ ****************************************************************************/
+
+static void power_close(FAR struct power_s *power)
+{
+  if (power->gauge >= 0)
+    {
+      close(power->gauge);
+      power->gauge = -1;
+    }
+
+  if (power->charger >= 0)
+    {
+      close(power->charger);
+      power->charger = -1;
+    }
+}
 
 /****************************************************************************
  * Name: power_read
@@ -48,13 +73,15 @@ static void power_read(FAR struct pnut_loop_s *loop,
   int mv = 0;
   int ret;
 
-  ret = power->config.measure(power->config.arg, &mv, &external);
+  ret = power->config.measure(power->config.arg, power->gauge,
+                              power->charger, &mv, &external);
   if (ret == -ENODEV)
     {
       pnut_log(&power->module, PNUT_LOG_WARNING,
                "The battery is gone: no more readings");
       pnut_timer_cancel(loop, power->timer);
       power->timer = NULL;
+      power_close(power);
       return;
     }
 
@@ -130,12 +157,15 @@ static void power_rate(FAR struct pnut_sleep_rate_reader_s *reader,
  * Name: power_watch
  *
  * Description:
- *   Start reading the battery, once the cutoff is known.
+ *   Start reading the battery, once the cutoff and the gauge's and the
+ *   charger's device files are known; NULL for none.  Whether the readings
+ *   started.
  *
  ****************************************************************************/
 
-static void power_watch(FAR struct power_s *power,
-                        FAR struct pnut_loop_s *loop)
+static bool power_watch(FAR struct power_s *power,
+                        FAR struct pnut_loop_s *loop,
+                        FAR const char *gauge, FAR const char *charger)
 {
   bool external;
   int mv;
@@ -143,15 +173,44 @@ static void power_watch(FAR struct power_s *power,
 
   if (power->config.cutoff <= 0)
     {
-      return;
+      return false;
     }
 
-  ret = power->config.measure(power->config.arg, &mv, &external);
+  if (gauge == NULL)
+    {
+      pnut_log(&power->module, PNUT_LOG_INFO,
+               "No gauge for the battery: no power-off at a low battery");
+      return false;
+    }
+
+  power->gauge = open(gauge, O_RDONLY | O_CLOEXEC);
+  if (power->gauge < 0)
+    {
+      pnut_log(&power->module, PNUT_LOG_WARNING,
+               "Cannot open the battery's gauge, %s: %d; no power-off at a "
+               "low battery", gauge, -errno);
+      return false;
+    }
+
+  if (charger != NULL)
+    {
+      power->charger = open(charger, O_RDONLY | O_CLOEXEC);
+      if (power->charger < 0)
+        {
+          pnut_log(&power->module, PNUT_LOG_WARNING,
+                   "Cannot open the charger, %s: %d; the gauge tells of "
+                   "external power", charger, -errno);
+        }
+    }
+
+  ret = power->config.measure(power->config.arg, power->gauge,
+                              power->charger, &mv, &external);
   if (ret == -ENODEV)
     {
       pnut_log(&power->module, PNUT_LOG_INFO,
                "No battery: no power-off at a low battery");
-      return;
+      power_close(power);
+      return false;
     }
 
   ret = pnut_timer_start(loop, power->config.interval,
@@ -165,7 +224,38 @@ static void power_watch(FAR struct power_s *power,
                "No timer for the battery: %d; no power-off at a low "
                "battery", ret);
       power->timer = NULL;
+      power_close(power);
+      return false;
     }
+
+  return true;
+}
+
+/****************************************************************************
+ * Name: power_part
+ *
+ * Description:
+ *   The description's first part of a kind, with that detail unless it is
+ *   zero, or NULL.
+ *
+ ****************************************************************************/
+
+static FAR const pnut_board_part_t *
+power_part(FAR const pnut_board_description_t *description,
+           pnut_board_part_kind_t kind, pb_size_t detail)
+{
+  pb_size_t i;
+
+  for (i = 0; i < description->parts_count; i++)
+    {
+      if (description->parts[i].kind == kind &&
+          (detail == 0 || description->parts[i].which_detail == detail))
+        {
+          return &description->parts[i];
+        }
+    }
+
+  return NULL;
 }
 
 /****************************************************************************
@@ -173,8 +263,9 @@ static void power_watch(FAR struct power_s *power,
  *
  * Description:
  *   Board's description came: the battery's power-off voltage is the
- *   cutoff.  Board is asked once: the description does not change while
- *   the device runs.
+ *   cutoff, and the battery's and the charger's device files are the
+ *   gauge and the charger.  Board is asked once: the description does not
+ *   change while the device runs.
  *
  ****************************************************************************/
 
@@ -184,8 +275,8 @@ static void power_described(FAR struct pnut_board_client_s *client,
                             FAR const pnut_error_t *err, FAR void *arg)
 {
   FAR struct power_s *power = arg;
-  FAR const pnut_board_part_t *part = NULL;
-  pb_size_t i;
+  FAR const pnut_board_part_t *battery;
+  FAR const pnut_board_part_t *charger;
 
   /* No answer: the connection was lost, and the library connects again,
    * when Board is asked again; or Board did not answer in time
@@ -220,16 +311,9 @@ static void power_described(FAR struct pnut_board_client_s *client,
       return;
     }
 
-  for (i = 0; i < out->parts_count && part == NULL; i++)
-    {
-      if (out->parts[i].kind == PNUT_BOARD_PART_KIND_BATTERY &&
-          out->parts[i].which_detail == PNUT_BOARD_PART_BATTERY_TAG)
-        {
-          part = &out->parts[i];
-        }
-    }
-
-  if (part == NULL || part->detail.battery.empty_mv == 0)
+  battery = power_part(out, PNUT_BOARD_PART_KIND_BATTERY,
+                       PNUT_BOARD_PART_BATTERY_TAG);
+  if (battery == NULL || battery->detail.battery.empty_mv == 0)
     {
       pnut_log(&power->module, PNUT_LOG_INFO,
                "The description gives no power-off voltage for the "
@@ -237,11 +321,18 @@ static void power_described(FAR struct pnut_board_client_s *client,
       return;
     }
 
-  power->config.cutoff = part->detail.battery.empty_mv;
-  pnut_log(&power->module, PNUT_LOG_INFO,
-           "Powers off at or under %d mV, the battery's",
-           power->config.cutoff);
-  power_watch(power, power->module.loop);
+  charger = power_part(out, PNUT_BOARD_PART_KIND_CHARGER, 0);
+
+  power->config.cutoff = battery->detail.battery.empty_mv;
+  if (power_watch(power, power->module.loop,
+                  battery->device[0] != '\0' ? battery->device : NULL,
+                  charger != NULL && charger->device[0] != '\0' ?
+                  charger->device : NULL))
+    {
+      pnut_log(&power->module, PNUT_LOG_INFO,
+               "Powers off at or under %d mV, the battery's",
+               power->config.cutoff);
+    }
 }
 
 /****************************************************************************
@@ -306,11 +397,11 @@ static int power_start(FAR struct pnut_module_s *module,
 
   if (power->config.board == NULL)
     {
-      power_watch(power, loop);
+      power_watch(power, loop, power->config.gauge, power->config.charger);
       return OK;
     }
 
-  /* The cutoff is the battery's, from the description */
+  /* The cutoff and the devices are the description's */
 
   power->config.cutoff = 0;
   ret = pnut_board_connect(loop, power->config.board, power_board, power,
@@ -353,6 +444,7 @@ static void power_stop(FAR struct pnut_module_s *module,
       power->rates_open = false;
     }
 
+  power_close(power);
   power->low     = 0;
   power->failing = false;
 }
@@ -373,6 +465,8 @@ void power_init(FAR struct power_s *power,
   power->module.name   = "power";
   power->module.start  = power_start;
   power->module.stop   = power_stop;
+  power->gauge         = -1;
+  power->charger       = -1;
 
   if (power->config.reads == 0)
     {
