@@ -8,7 +8,9 @@
 ############################################################################
 
 # pnut-os's files for the image's /etc (RFC 0010), staged for NuttX's
-# ETC_OVERLAY: etc/, and the target's settings' defaults, compiled from
+# ETC_OVERLAY: etc/; the target's description, compiled from
+# configs/<target>/board.toml into pnut/board.pb (RFC 0024), which every
+# target has; and its settings' defaults, compiled from
 # configs/<target>/defaults.toml into pnut/defaults.pb (RFC 0025).
 #
 #   tools/stage-etc.sh <root> <out> <target> <python> <gen>
@@ -36,9 +38,20 @@ rm -rf "$new"
 mkdir -p "$new"
 cp -R "$root/etc/." "$new/"
 
+board="$root/configs/$target/board.toml"
+if [ ! -f "$board" ]; then
+  echo "$0: $board: every target has a description (RFC 0024)" >&2
+  rm -rf "$new"
+  exit 1
+fi
+
+mkdir -p "$new/pnut"
+PYTHONPATH="$gen/py${PYTHONPATH:+:$PYTHONPATH}" \
+  "$python" "$root/tools/board-description" "$gen/descriptors.pb" \
+  "$board" "$target" "$new/pnut/board.pb"
+
 defaults="$root/configs/$target/defaults.toml"
 if [ -f "$defaults" ]; then
-  mkdir -p "$new/pnut"
   PYTHONPATH="$gen/py${PYTHONPATH:+:$PYTHONPATH}" \
     "$python" "$root/tools/settings-defaults" "$gen/descriptors.pb" \
     "$defaults" "$new/pnut/defaults.pb"

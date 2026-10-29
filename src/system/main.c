@@ -35,6 +35,7 @@
 #include <pnut/loop.h>
 #include <pnut/module.h>
 
+#include "board.h"
 #include "logs.h"
 #include "power.h"
 #include "settings.h"
@@ -139,6 +140,7 @@ static void system_power_off(void)
 int main(int argc, FAR char *argv[])
 {
   struct pnut_loop_config_s config;
+  struct board_config_s bconfig;
   struct settings_config_s sconfig;
   struct states_config_s tconfig;
   struct power_config_s pconfig;
@@ -146,6 +148,7 @@ int main(int argc, FAR char *argv[])
   struct logs_config_s lconfig;
   struct system_battery_s battery;
   FAR struct settings_s *settings;
+  FAR struct board_s *board;
   FAR struct states_s *states;
   FAR struct power_s *power;
   FAR struct wallclock_s *wall;
@@ -155,15 +158,17 @@ int main(int argc, FAR char *argv[])
   int ret;
 
   settings = calloc(1, sizeof(*settings));
+  board    = calloc(1, sizeof(*board));
   states   = calloc(1, sizeof(*states));
   power    = calloc(1, sizeof(*power));
   wall     = calloc(1, sizeof(*wall));
   logs     = calloc(1, sizeof(*logs));
-  if (settings == NULL || states == NULL || power == NULL || wall == NULL ||
-      logs == NULL)
+  if (settings == NULL || board == NULL || states == NULL || power == NULL ||
+      wall == NULL || logs == NULL)
     {
       fprintf(stderr, "pnut_system: no memory\n");
       free(settings);
+      free(board);
       free(states);
       free(power);
       free(wall);
@@ -180,12 +185,17 @@ int main(int argc, FAR char *argv[])
     {
       fprintf(stderr, "pnut_system: no loop: %d\n", ret);
       free(settings);
+      free(board);
       free(states);
       free(power);
       free(wall);
       free(logs);
       return EXIT_FAILURE;
     }
+
+  bconfig.path = CONFIG_PNUT_BOARD_DESCRIPTION[0] != '\0' ?
+                 CONFIG_PNUT_BOARD_DESCRIPTION : NULL;
+  board_init(board, &bconfig);
 
   tconfig.initctl  = config.initctl;
   tconfig.programs = CONFIG_PNUT_PROGRAMS_PATH;
@@ -243,7 +253,14 @@ int main(int argc, FAR char *argv[])
   pconfig.arg      = &battery;
   power_init(power, &pconfig);
 
-  ret = pnut_module_add(loop, &states->module);
+  /* Board first: the others read the description (RFC 0024) */
+
+  ret = pnut_module_add(loop, &board->module);
+  if (ret >= 0)
+    {
+      ret = pnut_module_add(loop, &states->module);
+    }
+
   if (ret >= 0)
     {
       ret = pnut_module_add(loop, &settings->module);
@@ -277,6 +294,7 @@ int main(int argc, FAR char *argv[])
   states_deinit(states);
   logs_deinit(logs);
   free(settings);
+  free(board);
   free(states);
   free(power);
   free(wall);

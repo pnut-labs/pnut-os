@@ -11,10 +11,10 @@ config PNUT_SYSTEM
 	depends on PNUT_LIB && NETUTILS_NANOPB
 	---help---
 		pnut_system, the program of the services every other program waits
-		on (RFC 0007).  So far it serves Service states (RFC 0006),
-		Settings (RFC 0025) and Time (RFC 0028); Log keeps the log across
-		restarts (RFC 0026), and Power powers the device off when the
-		battery runs low.
+		on (RFC 0007).  So far it serves Board's description of the
+		device (RFC 0024), Service states (RFC 0006), Settings (RFC 0025)
+		and Time (RFC 0028); Log keeps the log across restarts (RFC 0026),
+		and Power powers the device off when the battery runs low.
 
 if PNUT_SYSTEM
 
@@ -36,6 +36,14 @@ config PNUT_STATES_SERVICES
 	---help---
 		Service states keeps each one's name, state and task: about 40
 		bytes each.
+
+config PNUT_BOARD_DESCRIPTION
+	string "The device's description"
+	default "/etc/pnut/board.pb"
+	---help---
+		Board (RFC 0024) serves it: the build compiles it from
+		configs/<target>/board.toml.  Empty, or no file: Board serves
+		none.
 
 config PNUT_LOG_SOURCE
 	string "The RAM log"
@@ -114,7 +122,7 @@ config PNUT_SETTINGS_OWNERS
 	range 1 255
 	---help---
 		Every module of a program whose loop has levels on holds an
-		owner, if only for its log level (RFC 0026): five in the system
+		owner, if only for its log level (RFC 0026): six in the system
 		program.  An owner that finds no room is refused, and its
 		program tries again, logging only at debug.
 
