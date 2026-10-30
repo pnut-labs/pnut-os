@@ -3213,7 +3213,7 @@ static void tel_who(FAR struct pnut_services_client_s *client, int status,
       tel_do_command(tel, &ask->req, &ask->in.command);
     }
 
-  memset(&ask->in, 0, sizeof(ask->in));
+  explicit_bzero(&ask->in, sizeof(ask->in));
 }
 
 /****************************************************************************
@@ -3261,7 +3261,7 @@ static void tel_ask(FAR struct telephony_s *tel,
         -ENOTCONN;
   if (ret < 0)
     {
-      memset(&ask->in, 0, sizeof(ask->in));
+      explicit_bzero(&ask->in, sizeof(ask->in));
       tel_fail(tel, req, PNUT_STATUS_UNAVAILABLE,
                PNUT_TELEPHONY_ERROR_CODE_DENIED,
                "who calls cannot be told now");
@@ -3299,6 +3299,10 @@ static void tel_enter_pin(FAR struct pnut_telephony_server_s *server,
                           FAR void *arg)
 {
   tel_ask(arg, req, PNUT_TELEPHONY_ENTER_PIN, in, sizeof(*in));
+
+  /* The library's copy, decoded: the PIN is kept nowhere (RFC 0030) */
+
+  explicit_bzero(&server->in, sizeof(server->in));
 }
 
 static void tel_enter_puk(FAR struct pnut_telephony_server_s *server,
@@ -3307,6 +3311,7 @@ static void tel_enter_puk(FAR struct pnut_telephony_server_s *server,
                           FAR void *arg)
 {
   tel_ask(arg, req, PNUT_TELEPHONY_ENTER_PUK, in, sizeof(*in));
+  explicit_bzero(&server->in, sizeof(server->in));
 }
 
 static void tel_command(FAR struct pnut_telephony_server_s *server,

@@ -111,7 +111,11 @@ static size_t mux_free(FAR struct mux_s *mux)
     {
       memmove(mux->queue, mux->queue + mux->off, mux->len - mux->off);
       mux->len -= mux->off;
-      mux->off  = 0;
+
+      /* What was written leaves nothing behind: a PIN went this way */
+
+      explicit_bzero(mux->queue + mux->len, mux->off);
+      mux->off = 0;
     }
 
   return MUX_QUEUE - mux->len;
@@ -427,6 +431,7 @@ void mux_reset(FAR struct mux_s *mux)
   mux->opened  = 0;
   mux->state   = RX_FLAG;
   mux->tlen    = 0;
+  explicit_bzero(mux->queue, mux->len);
   mux->off     = 0;
   mux->len     = 0;
 }
@@ -690,6 +695,7 @@ int mux_flush(FAR struct mux_s *mux)
       mux->off += n;
     }
 
+  explicit_bzero(mux->queue, mux->len);
   mux->off = 0;
   mux->len = 0;
 

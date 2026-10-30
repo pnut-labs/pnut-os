@@ -301,7 +301,7 @@ static void telephony_ask(FAR struct telephony_cmd_s *cmd)
 
   /* Nothing of the PIN stays here once it is sent */
 
-  memset(&cmd->in, 0, sizeof(cmd->in));
+  explicit_bzero(&cmd->in, sizeof(cmd->in));
   if (ret < 0)
     {
       fprintf(stderr, "telephony: cannot ask: %d\n", ret);
@@ -535,7 +535,10 @@ int main(int argc, FAR char *argv[])
     }
 
   pnut_loop_destroy(loop);
-  memset(cmd, 0, sizeof(*cmd));
+
+  /* The PIN went through the client's buffers too */
+
+  explicit_bzero(cmd, sizeof(*cmd));
   free(cmd);
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }

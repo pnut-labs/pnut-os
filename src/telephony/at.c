@@ -188,7 +188,7 @@ static void at_finish(FAR struct at_s *at, int result)
   arg  = cmd->arg;
   if (cmd->flags & AT_SECRET)
     {
-      memset(cmd->command, 0, sizeof(cmd->command));
+      explicit_bzero(cmd->command, sizeof(cmd->command));
     }
 
   at->head = (at->head + 1) % AT_QUEUE;
@@ -394,7 +394,7 @@ void at_cancel(FAR struct at_s *at, int result)
       arg  = cmd->arg;
       if (cmd->flags & AT_SECRET)
         {
-          memset(cmd->command, 0, sizeof(cmd->command));
+          explicit_bzero(cmd->command, sizeof(cmd->command));
         }
 
       at->head = (at->head + 1) % AT_QUEUE;
