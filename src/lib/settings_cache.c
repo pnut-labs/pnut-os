@@ -364,9 +364,29 @@ static void cache_failed(FAR struct pnut_settings_cache_s *cache,
   if (status == PNUT_STATUS_UNAVAILABLE || status == PNUT_STATUS_TIMEOUT ||
       status == PNUT_STATUS_BUSY)
     {
-      pnut_log(cache->module, PNUT_LOG_DEBUG,
-               "Settings of %s: %s: status %d; trying again",
-               cache->desc->owner, what, status);
+      /* No room left in Settings lasts until it has room, its limits
+       * grown or another owner's schema shrunk, unlike Settings starting
+       * or busy for a moment: the owner's settings stay at their defaults
+       * meanwhile, which is worth a warning, once
+       */
+
+      if (err != NULL && err->code == PNUT_SETTINGS_ERROR_CODE_FULL)
+        {
+          if (!cache->full)
+            {
+              pnut_log(cache->module, PNUT_LOG_WARNING,
+                       "Settings of %s: no room left in Settings; at the "
+                       "defaults, trying again", cache->desc->owner);
+              cache->full = true;
+            }
+        }
+      else
+        {
+          pnut_log(cache->module, PNUT_LOG_DEBUG,
+                   "Settings of %s: %s: status %d; trying again",
+                   cache->desc->owner, what, status);
+        }
+
       cache_later(cache);
       return;
     }
@@ -545,6 +565,14 @@ static void cache_registered(FAR struct pnut_settings_client_s *client,
     {
       cache_register(cache);
       return;
+    }
+
+  if (cache->full)
+    {
+      pnut_log(cache->module, PNUT_LOG_INFO,
+               "Settings of %s: registered, with room now",
+               cache->desc->owner);
+      cache->full = false;
     }
 
   cache->after[0] = '\0';

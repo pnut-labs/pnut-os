@@ -60,6 +60,8 @@ struct cache_test_s
   int status;                     /* The last set's answer */
   uint32_t code;
   bool defaults_seen;             /* The struct held them at open */
+  bool full;                      /* What the cache said, as it stopped */
+  uint32_t backoff;
 };
 
 /****************************************************************************
@@ -438,6 +440,146 @@ static void test_settings_cache_defaults(void **state)
   free(t);
 }
 
+/* Settings with no room for the owner's schema: the cache keeps its
+ * defaults and tries again, waiting longer each time, and says so once.
+ * On the computer the log is the standard error, caught to count the
+ * lines, the module's debug ones among them; NuttX's goes to syslog.
+ */
+
+#ifndef __NuttX__
+static int cache_test_count(FAR const char *s, FAR const char *what)
+{
+  int n = 0;
+
+  while ((s = strstr(s, what)) != NULL)
+    {
+      n++;
+      s += strlen(what);
+    }
+
+  return n;
+}
+#endif
+
+static void cache_test_full_stop(FAR struct pnut_loop_s *loop,
+                                 FAR struct pnut_timer_s *timer,
+                                 FAR void *arg)
+{
+  FAR struct cache_test_s *t = arg;
+
+  t->full    = t->prefs.cache.full;
+  t->backoff = t->prefs.cache.backoff;
+  pnut_loop_stop(loop, 0);
+}
+
+static int cache_test_full_start(FAR struct pnut_module_s *module,
+                                 FAR struct pnut_loop_s *loop)
+{
+  FAR struct cache_test_s *t = (FAR struct cache_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct cache_test_s, module));
+  int ret;
+
+  ret = cache_test_start(module, loop);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  return pnut_timer_start(loop, 1000, 0, cache_test_full_stop, t, NULL);
+}
+
+static void test_settings_cache_full(void **state)
+{
+  static const struct settings_limits_s limits =
+  {
+    .owners   = 4,
+    .settings = 2,
+    .texts    = 16,
+    .choices  = 32,
+  };
+
+  FAR struct cache_test_s *t = calloc(1, sizeof(*t));
+  struct pnut_loop_config_s config;
+  struct settings_config_s sconfig;
+  int ret;
+#ifndef __NuttX__
+  static char out[16384];
+  FAR FILE *file;
+  size_t n;
+  int saved;
+#endif
+
+  assert_non_null(t);
+  snprintf(t->dir, sizeof(t->dir), "/tmp/pnut-full-%d", (int)getpid());
+  assert_int_equal(mkdir(t->dir, 0700), 0);
+
+  pnut_loop_defaults(&config);
+  config.rundir = t->dir;
+  assert_int_equal(pnut_loop_create(&config, &t->loop), 0);
+
+  memset(&sconfig, 0, sizeof(sconfig));
+  sconfig.dir    = t->dir;
+  sconfig.limits = limits;
+  sconfig.delay  = 20;
+  settings_init(&t->settings, &sconfig);
+  assert_int_equal(pnut_module_add(t->loop, &t->settings.module), 0);
+
+  memset(&t->module, 0, sizeof(t->module));
+  t->module.name  = "test";
+  t->module.start = cache_test_full_start;
+  t->module.stop  = cache_test_stop_module;
+  assert_int_equal(pnut_module_add(t->loop, &t->module), 0);
+  pnut_module_setlevel(&t->module, PNUT_LOG_DEBUG);
+
+#ifndef __NuttX__
+  fflush(stderr);
+  file = tmpfile();
+  assert_non_null(file);
+  saved = dup(STDERR_FILENO);
+  assert_true(saved >= 0);
+  assert_true(dup2(fileno(file), STDERR_FILENO) >= 0);
+#endif
+
+  /* The standard error comes back before any check */
+
+  ret = pnut_loop_run(t->loop);
+
+#ifndef __NuttX__
+  fflush(stderr);
+  dup2(saved, STDERR_FILENO);
+  close(saved);
+  rewind(file);
+  n = fread(out, 1, sizeof(out) - 1, file);
+  out[n] = '\0';
+  fclose(file);
+  fputs(out, stderr);
+#endif
+
+  assert_int_equal(ret, 0);
+  pnut_loop_destroy(t->loop);
+  settings_deinit(&t->settings);
+
+  /* Still at the defaults, and tried again several times: from the first
+   * wait of 100 ms, it doubled to 800 ms at least (failures near 0, 100,
+   * 300 and 700 ms make it 1600 ms by the stop)
+   */
+
+  assert_true(t->full);
+  assert_int_equal(t->nchanges, 0);
+  assert_int_equal(t->prefs.values.level, 10);
+  assert_true(t->backoff >= 800);
+
+  /* Told once: no line for the retries, not even a debug one */
+
+#ifndef __NuttX__
+  assert_int_equal(cache_test_count(out, "no room left in Settings"), 1);
+  assert_int_equal(cache_test_count(out, "Settings of test.prefs"), 1);
+#endif
+
+  cache_test_clean(t->dir, "");
+  free(t);
+}
+
 /* An index out of range is refused before anything is sent */
 
 static void test_settings_cache_bad_index(void **state)
@@ -788,6 +930,7 @@ int main(void)
     cmocka_unit_test(test_settings_cache),
     cmocka_unit_test(test_settings_cache_defaults),
     cmocka_unit_test(test_settings_cache_bad_index),
+    cmocka_unit_test(test_settings_cache_full),
     cmocka_unit_test(test_settings_cache_levels),
     cmocka_unit_test(test_settings_cache_levels_late),
   };
