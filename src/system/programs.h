@@ -109,4 +109,15 @@ int programs_load(FAR struct programs_s *programs, FAR const char *path,
 bool programs_runs(FAR const struct programs_s *programs,
                    FAR const char *program, FAR const char *service);
 
+/****************************************************************************
+ * Name: programs_listed
+ *
+ * Description:
+ *   Whether a program is among names separated by spaces: the developer's
+ *   shells (RFC 0025).
+ *
+ ****************************************************************************/
+
+bool programs_listed(FAR const char *list, FAR const char *program);
+
 #endif /* __PNUT_OS_SYSTEM_PROGRAMS_H */

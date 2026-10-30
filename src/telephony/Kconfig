@@ -1,0 +1,34 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_TELEPHONY
+	bool "The telephony program"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB && PNUT_SYSTEM
+	---help---
+		Telephony (RFC 0030): the cellular modem, powered, its UART
+		multiplexed, its state and the network's time announced, the
+		SIM's PIN taken.  The modem's UART and lines are Board's
+		description's.  A device without a modem runs no telephony
+		program.
+
+if PNUT_TELEPHONY
+
+config PNUT_TELEPHONY_STACKSIZE
+	int "The program's stack, in bytes"
+	default 8192
+
+config PNUT_TELEPHONY_FINISH
+	int "Time to power the modem down when asked to stop, in ms"
+	default 9500
+	---help---
+		AT+CPOF, then up to 6 s or so for the modem to stop answering,
+		2 s more, then its rail.  Keep it under
+		CONFIG_SYSTEM_NXINIT_SERVICE_GENTLE_KILL_TIMEOUT, after which
+		NxInit kills the program.
+
+endif

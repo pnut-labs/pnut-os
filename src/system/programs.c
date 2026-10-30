@@ -260,3 +260,41 @@ bool programs_runs(FAR const struct programs_s *programs,
 
   return false;
 }
+
+/****************************************************************************
+ * Name: programs_listed
+ *
+ * Description:
+ *   Whether a program is among names separated by spaces.
+ *
+ ****************************************************************************/
+
+bool programs_listed(FAR const char *list, FAR const char *program)
+{
+  size_t len = strlen(program);
+  FAR const char *end;
+
+  while (*list != '\0')
+    {
+      while (*list == ' ')
+        {
+          list++;
+        }
+
+      end = list;
+      while (*end != '\0' && *end != ' ')
+        {
+          end++;
+        }
+
+      if (end > list && (size_t)(end - list) == len &&
+          strncmp(list, program, len) == 0)
+        {
+          return true;
+        }
+
+      list = end;
+    }
+
+  return false;
+}

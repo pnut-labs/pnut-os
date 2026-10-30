@@ -492,6 +492,7 @@ static void fixture_setup(FAR struct fixture_s *f, FAR const char *table)
   sconfig.programs = f->programs;
   sconfig.services = 8;
   sconfig.parent   = fake_parent;
+  sconfig.shells   = "console adbd";
   states_init(&f->states, &sconfig);
   assert_int_equal(pnut_module_add(f->loop, &f->states.module), 0);
 }
@@ -781,6 +782,7 @@ struct call_s
   int status;
   uint32_t code;
   char answer[32];                /* Who's */
+  bool shell;                     /* Who's: a shell's command */
 };
 
 static bool answered(FAR struct fixture_s *f)
@@ -815,6 +817,7 @@ static void call_who_replied(FAR struct pnut_services_client_s *client,
   if (out != NULL)
     {
       strlcpy(f->call->answer, out->name, sizeof(f->call->answer));
+      f->call->shell = out->shell;
     }
 
   call_record(f, status, err);
@@ -941,6 +944,23 @@ static void test_states_calls(void **state)
   run_call("telephony", &call, last, sizeof(last));
   assert_int_equal(call.status, PNUT_STATUS_OK);
   assert_string_equal(call.answer, "telephony");
+  assert_false(call.shell);
+
+  /* A command typed in the console: no program's, the shell's */
+
+  call.pid = 30;
+  run_call("telephony", &call, last, sizeof(last));
+  assert_int_equal(call.status, PNUT_STATUS_OK);
+  assert_string_equal(call.answer, "");
+  assert_true(call.shell);
+
+  /* A task without a parent: no one's */
+
+  call.pid   = 60;
+  call.shell = false;
+  run_call("telephony", &call, last, sizeof(last));
+  assert_int_equal(call.status, PNUT_STATUS_NOTFOUND);
+  assert_false(call.shell);
 }
 
 /****************************************************************************

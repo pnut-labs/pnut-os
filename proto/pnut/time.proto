@@ -115,12 +115,21 @@ message TimeChange {
 message NetworkTime {
   option (pnut.topic) = "network_time";
 
+  // What the reading is (RFC 0030): the network's own message, or the
+  // modem's clock, which the network set last and which runs on the
+  // modem's crystal since.  Time learns no rate from the modem's clock.
+  enum Kind {
+    MESSAGE = 0;
+    MODEM_CLOCK = 1;
+  }
+
   int64 utc = 1;                  // Seconds since 1970, UTC; 0 none
   uint32 uncertainty = 2;         // In milliseconds
   bool has_offset = 3;            // The network gave its offset
   sint32 offset = 4;              // Seconds east of UTC, summer time in
   bool dst = 5;
   uint64 taken = 6;               // CLOCK_MONOTONIC, in milliseconds
+  Kind kind = 7;
 }
 
 // A reading of the satellites' time, from Location

@@ -42,7 +42,9 @@ service Services {
   }
 
   // Which service a task is: for a program, its name (RFC 0007), the
-  // caller identity other services check (RFC 0006)
+  // caller identity other services check (RFC 0006).  A task that is no
+  // program's, started from a developer's shell, is told as the shell's
+  // (RFC 0025): no name, and shell set; another is not found.
   rpc Who (ServicesWhoRequest) returns (ServicesWhoReply) {
     option (pnut.method) = 5;
   }
@@ -94,7 +96,11 @@ message ServicesWhoRequest {
 }
 
 message ServicesWhoReply {
-  string name = 1 [(nanopb).max_size = 32];
+  string name = 1 [(nanopb).max_size = 32];   // The program's; empty for
+                                              // a shell's command
+  bool shell = 2;                 // A command typed in a developer's
+                                  // shell: it may do what the system UI
+                                  // may (RFC 0025)
 }
 
 // A change of a service's state, on the services topic.  seq counts the
