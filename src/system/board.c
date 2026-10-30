@@ -154,6 +154,49 @@ static void board_describe(FAR struct pnut_board_server_s *server,
 }
 
 /****************************************************************************
+ * Name: board_settings
+ *
+ * Description:
+ *   Board's settings were read, or one changed: announce airplane mode,
+ *   once read, and at each change.
+ *
+ ****************************************************************************/
+
+static void board_settings(FAR struct pnut_settings_cache_s *cache,
+                           int index, FAR void *arg)
+{
+  FAR struct board_s *board = arg;
+  pnut_airplane_mode_t msg;
+  bool on = board->settings.values.airplane;
+  int ret;
+
+  if (board->airplanes == NULL ||
+      (board->announced && on == board->airplane))
+    {
+      return;
+    }
+
+  memset(&msg, 0, sizeof(msg));
+  msg.on = on;
+  ret = pnut_airplane_mode_publish(board->airplanes, &msg);
+  if (ret < 0)
+    {
+      pnut_log(&board->module, PNUT_LOG_WARNING,
+               "Cannot announce airplane mode: %d", ret);
+      return;
+    }
+
+  if (board->announced || on)
+    {
+      pnut_log(&board->module, PNUT_LOG_INFO, "Airplane mode %s",
+               on ? "on" : "off");
+    }
+
+  board->announced = true;
+  board->airplane  = on;
+}
+
+/****************************************************************************
  * Name: board_start
  ****************************************************************************/
 
@@ -198,6 +241,36 @@ static int board_start(FAR struct pnut_module_s *module,
     }
 
   board->serving = true;
+
+  /* Airplane mode is announced once Settings' value is read: until then
+   * the radios' owners have none, and keep their radios as they are
+   */
+
+  ret = pnut_airplane_mode_advertise(loop, &board->airplanes);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_WARNING,
+               "No airplane_mode topic: %d; airplane mode not announced",
+               ret);
+      board->airplanes = NULL;
+    }
+  else
+    {
+      ret = pnut_board_settings_open(module, board_settings, board,
+                                     &board->settings);
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_WARNING,
+                   "No settings: %d; airplane mode not announced", ret);
+          pnut_topic_unadvertise(board->airplanes);
+          board->airplanes = NULL;
+        }
+      else
+        {
+          board->settings_open = true;
+        }
+    }
+
   pnut_module_ready(module);
   return OK;
 }
@@ -210,6 +283,20 @@ static void board_stop(FAR struct pnut_module_s *module,
                        FAR struct pnut_loop_s *loop)
 {
   FAR struct board_s *board = (FAR struct board_s *)module;
+
+  if (board->settings_open)
+    {
+      pnut_board_settings_close(&board->settings);
+      board->settings_open = false;
+    }
+
+  if (board->airplanes != NULL)
+    {
+      pnut_topic_unadvertise(board->airplanes);
+      board->airplanes = NULL;
+    }
+
+  board->announced = false;
 
   if (board->serving)
     {
