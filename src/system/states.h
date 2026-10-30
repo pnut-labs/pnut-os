@@ -76,6 +76,7 @@
  */
 
 typedef CODE void (*states_halted_t)(FAR void *arg, int running);
+
 /* A task's parent, or -1 when it cannot be told */
 
 typedef CODE pid_t (*states_parent_t)(pid_t pid);
