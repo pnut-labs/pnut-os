@@ -1146,7 +1146,8 @@ static void rate_test_run(FAR struct rate_test_s *t, bool clock,
   FILE *f;
   static FAR const char * const topics[] =
   {
-    "sleep_rate", "time", "network_time", "gnss_time", "settings"
+    "sleep_rate", "time", "network_time", "gnss_time", "settings",
+    "airplane_mode"
   };
 
   snprintf(dir, sizeof(dir), "/tmp/pnut-rate-%d", (int)getpid());

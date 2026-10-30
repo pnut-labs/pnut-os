@@ -149,3 +149,30 @@ kind = "sleep_clock"
 name = "rtc"
 chip = "ESP32-S3"
 sleep_clock = { rate_ppb = 107000 }
+
+# The modem's control lines (RFC 0030).  The board leaves its supply off at
+# start, unless the modem was running before a reset of the chip.
+
+[[lines]]
+kind = "modem"
+part = "modem"
+role = "power"
+device = "/dev/modem_pwr"
+
+[[lines]]
+kind = "modem"
+part = "modem"
+role = "power_key"
+device = "/dev/modem_pwrkey"
+
+[[lines]]
+kind = "modem"
+part = "modem"
+role = "ring"
+device = "/dev/modem_ri"
+
+[[lines]]
+kind = "modem"
+part = "modem"
+role = "dtr"
+device = "/dev/modem_dtr"
