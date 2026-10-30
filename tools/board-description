@@ -259,7 +259,13 @@ def check_lines(lines, parts):
         if not isinstance(line, dict):
             raise DescriptionError(f"lines[{i}]: a table")
         key = (line.get("kind", "none"), line.get("part", ""))
-        if key[0] == "none" or key[1] == "" or key not in keys:
+        if key[0] == "none":
+            raise DescriptionError(f"lines[{i}].kind: a line names its "
+                                   "part's kind")
+        if key[1] == "":
+            raise DescriptionError(f"lines[{i}].part: a line names its "
+                                   "part")
+        if key not in keys:
             raise DescriptionError(f"lines[{i}]: no {key[0]} part is "
                                    f"named {key[1]!r}")
         role = line.get("role", "none")
