@@ -30,7 +30,9 @@ config PNUT_LIB_TIMERS
 	---help---
 		The program's own, and one for each service and each client open.
 		A handler that closes one and opens another needs one more: the
-		old one's is given back once the handler returns.
+		old one's is given back once the handler returns.  A program
+		whose modules finish before it stops (PNUT_LIB_FINISH) needs one
+		for the finish time.
 
 config PNUT_LIB_JOBS
 	int "Jobs a loop queues at once"
@@ -50,6 +52,16 @@ config PNUT_LIB_BUDGET
 	---help---
 		A handler that runs longer is logged (RFC 0007).  Zero turns the
 		check off.
+
+config PNUT_LIB_FINISH
+	int "The modules' finish time, in milliseconds"
+	default 2000
+	---help---
+		A loop asked to stop runs on while its modules finish what has
+		to end in order, for this long at most; zero stops it as soon as
+		their finish handlers have returned.  NxInit kills a program
+		CONFIG_SYSTEM_NXINIT_SERVICE_GENTLE_KILL_TIMEOUT after asking it
+		to stop: keep it shorter.
 
 config PNUT_LIB_LOG_LINE
 	int "The longest log line, in characters"

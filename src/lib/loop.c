@@ -61,10 +61,83 @@ static void loop_signal(FAR struct pnut_loop_s *loop, int fd,
 
   while (read(fd, &info, sizeof(info)) == sizeof(info))
     {
-      pnut_loop_log(loop, PNUT_LOG_INFO, "Signal %d: stopping",
+      pnut_loop_log(loop, PNUT_LOG_INFO, loop->stopping || loop->finishing ?
+                    "Signal %d: stopping already" : "Signal %d: stopping",
                     (int)info.ssi_signo);
       pnut_loop_stop(loop, 0);
     }
+}
+
+/****************************************************************************
+ * Name: loop_finish_timeout
+ *
+ * Description:
+ *   The finish time is up: stop the loop, with what is not finished.
+ *
+ ****************************************************************************/
+
+static void loop_finish_timeout(FAR struct pnut_loop_s *loop,
+                                FAR struct pnut_timer_s *timer,
+                                FAR void *arg)
+{
+  FAR struct pnut_module_s *module;
+
+  loop->finish = NULL;
+
+  for (module = loop->first; module != NULL; module = module->next)
+    {
+      if (module->finishing)
+        {
+          pnut_log(module, PNUT_LOG_WARNING, "Not finished in %lu ms",
+                   (unsigned long)loop->config.finish);
+        }
+    }
+
+  loop->running = false;
+}
+
+/****************************************************************************
+ * Name: loop_finish
+ *
+ * Description:
+ *   The loop was asked to stop: ask the modules to finish, and run on
+ *   until they have, or for the finish time.
+ *
+ ****************************************************************************/
+
+static void loop_finish(FAR struct pnut_loop_s *loop)
+{
+  int ret;
+
+  /* The time first: the modules take timers as they begin.  Without it,
+   * they finish unbounded, until NxInit kills the program.
+   */
+
+  ret = pnut_timer_start(loop, loop->config.finish, 0, loop_finish_timeout,
+                         NULL, &loop->finish);
+  if (ret < 0)
+    {
+      pnut_loop_log(loop, PNUT_LOG_ERROR,
+                    "No timer for the modules' finish time: %d", ret);
+    }
+
+  /* A stop from a finish handler changes nothing: still stopping */
+
+  if (!pnut_module_finishall(loop))
+    {
+      if (loop->finish != NULL)
+        {
+          pnut_timer_cancel(loop, loop->finish);
+          loop->finish = NULL;
+        }
+
+      loop->stopping = false;
+      loop->running  = false;
+      return;
+    }
+
+  loop->stopping  = false;
+  loop->finishing = true;
 }
 
 /****************************************************************************
@@ -206,6 +279,7 @@ void pnut_loop_defaults(FAR struct pnut_loop_config_s *config)
   config->workers   = CONFIG_PNUT_LIB_WORKERS;
   config->stacksize = CONFIG_PNUT_LIB_WORKER_STACKSIZE;
   config->budget    = CONFIG_PNUT_LIB_BUDGET;
+  config->finish    = CONFIG_PNUT_LIB_FINISH;
   config->rundir    = CONFIG_PNUT_LIB_RUNDIR;
 #ifdef CONFIG_SYSTEM_NXINIT_CONTROL
   config->initctl   = CONFIG_SYSTEM_NXINIT_CONTROL_PATH;
@@ -373,8 +447,11 @@ int pnut_loop_run(FAR struct pnut_loop_s *loop)
   int i;
   int ret;
 
-  loop->running = true;
-  loop->status  = OK;
+  loop->running   = true;
+  loop->status    = OK;
+  loop->stopping  = false;
+  loop->finishing = false;
+  loop->finish    = NULL;
 
   ret = pnut_module_startall(loop);
   if (ret < 0)
@@ -385,6 +462,14 @@ int pnut_loop_run(FAR struct pnut_loop_s *loop)
 
   while (loop->running)
     {
+      /* Asked to stop, by a handler or as the modules started */
+
+      if (loop->stopping)
+        {
+          loop_finish(loop);
+          continue;
+        }
+
       n = epoll_wait(loop->epfd, loop->events, loop->nwatches, -1);
       if (n < 0)
         {
@@ -399,7 +484,7 @@ int pnut_loop_run(FAR struct pnut_loop_s *loop)
 
       loop->dispatching = true;
 
-      for (i = 0; i < n && loop->running; i++)
+      for (i = 0; i < n && loop->running && !loop->stopping; i++)
         {
           watch = loop->events[i].data.ptr;
           if (watch->fd < 0 || watch->dead)
@@ -423,15 +508,49 @@ int pnut_loop_run(FAR struct pnut_loop_s *loop)
       loop_reap(loop);
     }
 
-  loop->running = false;
+  if (loop->finish != NULL)
+    {
+      pnut_timer_cancel(loop, loop->finish);
+      loop->finish = NULL;
+    }
+
+  loop->running   = false;
+  loop->finishing = false;
   pnut_module_stopall(loop);
   return loop->status;
 }
 
 void pnut_loop_stop(FAR struct pnut_loop_s *loop, int status)
 {
-  loop->status  = status;
-  loop->running = false;
+  if (loop->stopping || loop->finishing)
+    {
+      return;
+    }
+
+  loop->status = status;
+
+  if (loop->running && pnut_module_finishers(loop))
+    {
+      loop->stopping = true;
+    }
+  else
+    {
+      loop->running = false;
+    }
+}
+
+void pnut_loop_finished(FAR struct pnut_loop_s *loop)
+{
+  if (loop->finishing && !pnut_module_unfinished(loop))
+    {
+      if (loop->finish != NULL)
+        {
+          pnut_timer_cancel(loop, loop->finish);
+          loop->finish = NULL;
+        }
+
+      loop->running = false;
+    }
 }
 
 int pnut_loop_watch(FAR struct pnut_loop_s *loop, int fd, uint32_t events,
