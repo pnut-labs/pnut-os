@@ -182,6 +182,7 @@ struct telephony_s
   /* The network's time */
 
   bool nitz;                      /* The network sent it, this start */
+  bool left_on;                   /* Found running: its clock read once */
   uint64_t nitz_at;               /* When, in ms */
   uint64_t clock_at;              /* The modem's clock read last */
 
