@@ -126,14 +126,16 @@ message TelephonyInfo {
   Reason reason = 10;
 }
 
-// The PIN: sensitive (RFC 0026), never logged, never kept
+// The PIN: sensitive (RFC 0026), never logged, never kept.  Up to 8
+// digits; nanopb counts the string's end in max_size.
 message TelephonyPinRequest {
-  string pin = 1 [(nanopb).max_size = 8];
+  string pin = 1 [(nanopb).max_size = 9];
 }
 
+// The PUK, always 8 digits, and a new PIN
 message TelephonyPukRequest {
-  string puk = 1 [(nanopb).max_size = 8];
-  string pin = 2 [(nanopb).max_size = 8];
+  string puk = 1 [(nanopb).max_size = 9];
+  string pin = 2 [(nanopb).max_size = 9];
 }
 
 message TelephonyReply {

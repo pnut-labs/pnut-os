@@ -125,6 +125,7 @@ enum telephony_setup_e
 
 static void tel_power_down(FAR struct telephony_s *tel, uint8_t after);
 static void tel_power_up(FAR struct telephony_s *tel);
+static size_t tel_verb(FAR const char *cmd);
 static void tel_setup_next(FAR struct telephony_s *tel);
 static void tel_refresh(FAR struct telephony_s *tel);
 static void tel_publish(FAR struct telephony_s *tel);
@@ -339,8 +340,8 @@ static int tel_send(FAR struct telephony_s *tel, FAR const char *command,
   ret = at_command(&tel->at, command, prefix, timeout, 0, done, tel);
   if (ret < 0)
     {
-      pnut_log(&tel->module, PNUT_LOG_WARNING, "Cannot send %s: %d",
-               command, ret);
+      pnut_log(&tel->module, PNUT_LOG_WARNING, "Cannot send %.*s: %d",
+               (int)tel_verb(command), command, ret);
     }
 
   return ret;
@@ -385,6 +386,66 @@ static FAR const char *tel_find(FAR const char *reply, FAR char *line,
     }
 
   return NULL;
+}
+
+/****************************************************************************
+ * Name: tel_last
+ *
+ * Description:
+ *   An answer's last line, which says why a command failed, cut to size:
+ *   what is logged above debug.  The lines before may be ones the modem
+ *   sent unasked, a message's or a caller's among them (RFC 0026); the
+ *   debug log has them all.
+ *
+ ****************************************************************************/
+
+static FAR const char *tel_last(FAR const char *reply, FAR char *line,
+                                size_t size)
+{
+  FAR const char *start = reply;
+  FAR const char *p;
+  size_t n;
+
+  for (p = reply; *p != '\0'; p++)
+    {
+      if (*p == '\n' && p[1] != '\0')
+        {
+          start = p + 1;
+        }
+    }
+
+  n = strcspn(start, "\n");
+  if (n >= size)
+    {
+      n = size - 1;
+    }
+
+  memcpy(line, start, n);
+  line[n] = '\0';
+  return line;
+}
+
+/****************************************************************************
+ * Name: tel_why
+ *
+ * Description:
+ *   Why a command failed, for the log: an error's own line, or "no
+ *   answer".
+ *
+ ****************************************************************************/
+
+static FAR const char *tel_why(int result, FAR const char *reply,
+                               FAR char *line, size_t size)
+{
+  tel_last(reply, line, size);
+  if (result != -EIO || (strncmp(line, "ERROR", 5) != 0 &&
+                         strncmp(line, "+CME ERROR", 10) != 0 &&
+                         strncmp(line, "+CMS ERROR", 10) != 0))
+    {
+      strlcpy(line, result == -ETIMEDOUT ? "no answer" : "failed", size);
+    }
+
+  return line;
 }
 
 /****************************************************************************
@@ -1566,6 +1627,7 @@ static void tel_mux_event(FAR void *arg, uint8_t dlci, int event)
 static void tel_setup_done(FAR void *arg, int result, FAR const char *reply)
 {
   FAR struct telephony_s *tel = arg;
+  char last[96];
 
   if (!tel_setup_answered(tel, result))
     {
@@ -1576,7 +1638,8 @@ static void tel_setup_done(FAR void *arg, int result, FAR const char *reply)
     {
       pnut_log(&tel->module, PNUT_LOG_WARNING, "%s failed: %s",
                tel->setup > 0 && tel->setup <= TEL_SETUP_BASIC ?
-               g_tel_setup[tel->setup - 1] : "A setting", reply);
+               g_tel_setup[tel->setup - 1] : "A setting",
+               tel_why(result, reply, last, sizeof(last)));
     }
 
   tel_setup_next(tel);
@@ -1676,6 +1739,7 @@ static void tel_mode_read(FAR void *arg, int result, FAR const char *reply)
 static void tel_air_done(FAR void *arg, int result, FAR const char *reply)
 {
   FAR struct telephony_s *tel = arg;
+  char last[96];
 
   if (tel->step == STEP_SETUP)
     {
@@ -1684,7 +1748,8 @@ static void tel_air_done(FAR void *arg, int result, FAR const char *reply)
           if (result < 0)
             {
               pnut_log(&tel->module, PNUT_LOG_WARNING,
-                       "Airplane mode not applied: %s", reply);
+                       "Airplane mode not applied: %s",
+                       tel_why(result, reply, last, sizeof(last)));
             }
 
           tel_setup_next(tel);
@@ -1701,7 +1766,8 @@ static void tel_air_done(FAR void *arg, int result, FAR const char *reply)
   if (result < 0)
     {
       pnut_log(&tel->module, PNUT_LOG_WARNING,
-               "Airplane mode not applied: %s", reply);
+               "Airplane mode not applied: %s",
+               tel_why(result, reply, last, sizeof(last)));
     }
 
   tel_refresh(tel);
@@ -1921,11 +1987,12 @@ static void tel_sim_retry(FAR struct pnut_loop_s *loop,
 static void tel_mode_set(FAR void *arg, int result, FAR const char *reply)
 {
   FAR struct telephony_s *tel = arg;
+  char last[96];
 
   if (result != -ECANCELED && tel_answered(tel, result) && result < 0)
     {
       pnut_log(&tel->module, PNUT_LOG_WARNING, "The mode not set: %s",
-               reply);
+               tel_why(result, reply, last, sizeof(last)));
     }
 }
 
@@ -2222,8 +2289,9 @@ static void tel_clock_read(FAR void *arg, int result, FAR const char *reply)
   p = tel_find(reply, line, sizeof(line), "+CCLK:");
   if (p == NULL || tel_clock(p, &t) < 0)
     {
-      pnut_log(&tel->module, PNUT_LOG_WARNING, "The modem's clock: %s",
-               reply);
+      pnut_log(&tel->module, PNUT_LOG_WARNING,
+               "The modem's clock does not read: %s",
+               p != NULL ? p : "no +CCLK");
       return;
     }
 
@@ -2847,7 +2915,7 @@ static void tel_do_pin(FAR struct telephony_s *tel,
 
   ret = at_command(&tel->at, cmd, NULL, TEL_PIN_MS, AT_SECRET, tel_pin_done,
                    tel);
-  memset(cmd, 0, sizeof(cmd));
+  explicit_bzero(cmd, sizeof(cmd));
   if (ret < 0)
     {
       tel_fail(tel, req, PNUT_STATUS_BUSY, PNUT_TELEPHONY_ERROR_CODE_BUSY,
@@ -2890,25 +2958,80 @@ static void tel_prefix(FAR const char *cmd, FAR char *prefix, size_t size)
 }
 
 /****************************************************************************
- * Name: tel_holds
+ * Name: tel_verb
  *
  * Description:
- *   Whether a command holds a word, in either case.
+ *   The length of a command's name: "AT", a sign, then letters; "ATD"
+ *   of a number dialled, "AT+CMGS" of a message sent.
  *
  ****************************************************************************/
 
-static bool tel_holds(FAR const char *cmd, FAR const char *word)
+static size_t tel_verb(FAR const char *cmd)
 {
-  size_t n = strlen(word);
+  size_t n = 2;
 
-  for (; *cmd != '\0'; cmd++)
+  if (cmd[n] == '+' || cmd[n] == '*' || cmd[n] == '^' || cmd[n] == '&' ||
+      cmd[n] == '$')
     {
-      if (strncasecmp(cmd, word, n) == 0)
+      n++;
+    }
+
+  while (isalpha((unsigned char)cmd[n]))
+    {
+      n++;
+    }
+
+  /* A dial's name is its first letter: what follows is the number */
+
+  if (n > 2 && toupper((unsigned char)cmd[2]) == 'D')
+    {
+      n = 3;
+    }
+
+  return n;
+}
+
+/****************************************************************************
+ * Name: tel_secret
+ *
+ * Description:
+ *   Whether a command may carry a PIN or a PUK: the SIM's PIN commands,
+ *   and its raw ones, in either case, spaces aside (the modem ignores
+ *   them).
+ *
+ ****************************************************************************/
+
+static bool tel_secret(FAR const char *cmd)
+{
+  static FAR const char *const words[] =
+  {
+    "CPIN", "CPWD", "CLCK", "CSIM", "CRSM", "CPUC", "CAMM", "CACM",
+    "**04", "**05"                /* Dialled: change or unblock a PIN */
+  };
+
+  char compact[AT_COMMAND_MAX + 3];
+  size_t n = 0;
+  size_t i;
+
+  for (; *cmd != '\0' && n < sizeof(compact) - 1; cmd++)
+    {
+      if (*cmd != ' ')
         {
+          compact[n++] = toupper((unsigned char)*cmd);
+        }
+    }
+
+  compact[n] = '\0';
+  for (i = 0; i < sizeof(words) / sizeof(words[0]); i++)
+    {
+      if (strstr(compact, words[i]) != NULL)
+        {
+          explicit_bzero(compact, sizeof(compact));
           return true;
         }
     }
 
+  explicit_bzero(compact, sizeof(compact));
   return false;
 }
 
@@ -2994,6 +3117,7 @@ static void tel_do_command(FAR struct telephony_s *tel,
 
   if (strlen(cmd) > AT_COMMAND_MAX)
     {
+      explicit_bzero(cmd, sizeof(cmd));
       tel_fail(tel, req, PNUT_STATUS_INVALID,
                PNUT_TELEPHONY_ERROR_CODE_NONE, "too long");
       return;
@@ -3003,6 +3127,7 @@ static void tel_do_command(FAR struct telephony_s *tel,
     {
       if (iscntrl((unsigned char)cmd[i]))
         {
+          explicit_bzero(cmd, sizeof(cmd));
           tel_fail(tel, req, PNUT_STATUS_INVALID,
                    PNUT_TELEPHONY_ERROR_CODE_NONE, "a control character");
           return;
@@ -3011,6 +3136,7 @@ static void tel_do_command(FAR struct telephony_s *tel,
 
   if (tel->command_pending)
     {
+      explicit_bzero(cmd, sizeof(cmd));
       tel_fail(tel, req, PNUT_STATUS_BUSY, PNUT_TELEPHONY_ERROR_CODE_BUSY,
                "a command is on its way");
       return;
@@ -3022,24 +3148,28 @@ static void tel_do_command(FAR struct telephony_s *tel,
       timeout = TEL_COMMAND_MAX;
     }
 
-  /* A command that carries a PIN is never logged */
+  /* A command that may carry a PIN or a PUK is never logged */
 
-  secret = tel_holds(cmd, "+CPIN=") || tel_holds(cmd, "+CPWD=") ||
-           tel_holds(cmd, "+CLCK=");
+  secret = tel_secret(cmd);
 
   tel_prefix(cmd, prefix, sizeof(prefix));
   ret = at_command(&tel->at, cmd, prefix[0] != '\0' ? prefix : NULL,
                    timeout, secret ? AT_SECRET : 0, tel_command_done, tel);
   if (ret < 0)
     {
+      explicit_bzero(cmd, sizeof(cmd));
       tel_fail(tel, req, PNUT_STATUS_BUSY, PNUT_TELEPHONY_ERROR_CODE_BUSY,
                "too many commands wait");
       return;
     }
 
-  pnut_log(&tel->module, PNUT_LOG_INFO, "A command passed through: %s",
-           secret ? "(secret)" : cmd);
-  memset(cmd, 0, sizeof(cmd));
+  /* Its name alone: what follows may be a number or a message, which no
+   * log above debug shows (RFC 0026)
+   */
+
+  pnut_log(&tel->module, PNUT_LOG_INFO, "A command passed through: %.*s",
+           (int)tel_verb(cmd), cmd);
+  explicit_bzero(cmd, sizeof(cmd));
   tel->command_req     = *req;
   tel->command_pending = true;
 }

@@ -410,11 +410,19 @@ static int telephony_args(FAR struct telephony_cmd_s *cmd, int argc,
       return OK;
     }
 
+  /* A code too long is refused here, not cut: a wrong one costs a try */
+
   if (strcmp(argv[1], "pin") == 0 && argc == 3)
     {
       cmd->op   = TELEPHONY_PIN;
       cmd->wait = TELEPHONY_PIN_MS;
-      strlcpy(cmd->in.pin.pin, argv[2], sizeof(cmd->in.pin.pin));
+      if (strlcpy(cmd->in.pin.pin, argv[2], sizeof(cmd->in.pin.pin)) >=
+          sizeof(cmd->in.pin.pin))
+        {
+          fprintf(stderr, "telephony: a PIN is 4 to 8 digits\n");
+          return -E2BIG;
+        }
+
       return OK;
     }
 
@@ -422,8 +430,15 @@ static int telephony_args(FAR struct telephony_cmd_s *cmd, int argc,
     {
       cmd->op   = TELEPHONY_PUK;
       cmd->wait = TELEPHONY_PIN_MS;
-      strlcpy(cmd->in.puk.puk, argv[2], sizeof(cmd->in.puk.puk));
-      strlcpy(cmd->in.puk.pin, argv[3], sizeof(cmd->in.puk.pin));
+      if (strlcpy(cmd->in.puk.puk, argv[2], sizeof(cmd->in.puk.puk)) >=
+          sizeof(cmd->in.puk.puk) ||
+          strlcpy(cmd->in.puk.pin, argv[3], sizeof(cmd->in.puk.pin)) >=
+          sizeof(cmd->in.puk.pin))
+        {
+          fprintf(stderr, "telephony: a PUK is 8 digits, a PIN 4 to 8\n");
+          return -E2BIG;
+        }
+
       return OK;
     }
 
