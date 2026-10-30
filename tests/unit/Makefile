@@ -7,8 +7,8 @@
 ############################################################################
 
 # The unit tests: libpnut, the system program's modules and the telephony
-# program's built for the computer, tested with cmocka (RFC 0022).  `make test` at the top runs
-# them.
+# program's built for the computer, tested with cmocka (RFC 0022).
+# `make test` at the top runs them.
 #
 # CMOCKA_CFLAGS and CMOCKA_LIBS name cmocka where the compiler does not
 # find it by itself.

@@ -500,6 +500,7 @@ int main(int argc, FAR char *argv[])
           telephony_usage();
         }
 
+      explicit_bzero(cmd, sizeof(*cmd));
       free(cmd);
       return EXIT_FAILURE;
     }
@@ -524,6 +525,7 @@ int main(int argc, FAR char *argv[])
   if (ret < 0)
     {
       fprintf(stderr, "telephony: no loop: %d\n", ret);
+      explicit_bzero(cmd, sizeof(*cmd));
       free(cmd);
       return EXIT_FAILURE;
     }
