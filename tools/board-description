@@ -26,7 +26,14 @@ in lowercase:
     screen = { tech = "epaper", width = 240, height = 320, depth = 1 }
 
 A bytes field is a set of bits, given as the numbers of the bits set,
-counted from 1: a modem's lte_bands = [1, 3, 20].
+counted from 1: a modem's lte_bands = [1, 3, 20].  A part's control lines
+are listed apart, each naming its part by kind and name:
+
+    [[lines]]
+    kind = "modem"
+    part = "modem"
+    role = "power"
+    device = "/dev/modem_pwr"
 
 The build's target names the identity's target; the unit's own fields
 (revision, serial, provisioned) are its device data's, never the file's.
@@ -240,6 +247,30 @@ def check_parts(parts):
         seen.add(key)
 
 
+def check_lines(lines, parts):
+    """Every line names a part by its kind and name, and has a role: one
+    of each role a part."""
+    if not isinstance(lines, list):
+        raise DescriptionError("lines: a list")
+    keys = {(part.get("kind", "none"), part.get("name", ""))
+            for part in parts if isinstance(part, dict)}
+    seen = set()
+    for i, line in enumerate(lines):
+        if not isinstance(line, dict):
+            raise DescriptionError(f"lines[{i}]: a table")
+        key = (line.get("kind", "none"), line.get("part", ""))
+        if key[0] == "none" or key[1] == "" or key not in keys:
+            raise DescriptionError(f"lines[{i}]: no {key[0]} part is "
+                                   f"named {key[1]!r}")
+        role = line.get("role", "none")
+        if role == "none":
+            raise DescriptionError(f"lines[{i}].role: a line has one")
+        if (key, role) in seen:
+            raise DescriptionError(f"lines[{i}]: the {key[0]} {key[1]!r} "
+                                   f"has a {role} line already")
+        seen.add((key, role))
+
+
 def main(argv):
     if len(argv) != 5:
         sys.exit(f"usage: {argv[0]} <descriptors> <board.toml> <target> "
@@ -262,6 +293,7 @@ def main(argv):
         text = "\n".join(message("", messages["." + MESSAGE], toml,
                                  messages, enums)) + "\n"
         check_parts(toml.get("parts", []))
+        check_lines(toml.get("lines", []), toml.get("parts", []))
         encoded = subprocess.run(
             ["protoc", f"--descriptor_set_in={descriptors}",
              f"--encode={MESSAGE}", PROTO],

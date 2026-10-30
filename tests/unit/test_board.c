@@ -31,6 +31,7 @@
 #include <pnut/timer.h>
 
 #include "board.h"
+#include "settings.h"
 
 /****************************************************************************
  * Private Types
@@ -48,6 +49,18 @@ struct board_test_s
   char path[96];
   int status;                     /* The answer's; -1 none yet */
   pnut_board_description_t desc;  /* The answer's description */
+
+  /* Airplane mode: Settings in the loop, and the topic read */
+
+  struct settings_s settings;
+  struct pnut_settings_client_s other;
+  struct pnut_airplane_mode_reader_s airplanes;
+  char sdir[80];
+  char seen[8];                   /* The values announced, in order, a
+                                   * repeated one once */
+  int nseen;
+  int asked;                      /* Switches asked for */
+  bool connected;                 /* The Settings client is */
 };
 
 /****************************************************************************
@@ -163,8 +176,26 @@ static FAR struct board_test_s *board_test_new(void)
 
 static void board_test_free(FAR struct board_test_s *t)
 {
+  static FAR const char * const topics[] =
+  {
+    "airplane_mode", "settings"
+  };
+
+  char path[128];
+  size_t i;
+
+  /* The topics Board announces and reads: directories on the computer */
+
+  for (i = 0; i < sizeof(topics) / sizeof(topics[0]); i++)
+    {
+      snprintf(path, sizeof(path), "%s/topic.%s/last", t->dir, topics[i]);
+      unlink(path);
+      snprintf(path, sizeof(path), "%s/topic.%s", t->dir, topics[i]);
+      rmdir(path);
+    }
+
   unlink(t->path);
-  rmdir(t->dir);
+  assert_int_equal(rmdir(t->dir), 0);
   free(t);
 }
 
@@ -221,6 +252,12 @@ static void test_board_describe(void **state)
   part->detail.modem.gsm_bands[1]        = PNUT_BOARD_MODEM_GSM_DCS_1800;
   part->detail.modem.sims                = 1;
 
+  d->lines_count = 1;
+  d->lines[0].kind = PNUT_BOARD_PART_KIND_MODEM;
+  strlcpy(d->lines[0].part, "modem", sizeof(d->lines[0].part));
+  d->lines[0].role = PNUT_BOARD_LINE_ROLE_POWER;
+  strlcpy(d->lines[0].device, "/dev/modem_pwr", sizeof(d->lines[0].device));
+
   stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
   assert_true(pb_encode(&stream, PNUT_BOARD_DESCRIPTION_FIELDS, d));
   board_test_write(t->path, buffer, stream.bytes_written);
@@ -252,6 +289,11 @@ static void test_board_describe(void **state)
   assert_int_equal(t->desc.parts[2].detail.modem.gsm_bands[1],
                    PNUT_BOARD_MODEM_GSM_DCS_1800);
   assert_int_equal(t->desc.parts[2].detail.modem.sims, 1);
+  assert_int_equal(t->desc.lines_count, 1);
+  assert_int_equal(t->desc.lines[0].kind, PNUT_BOARD_PART_KIND_MODEM);
+  assert_string_equal(t->desc.lines[0].part, "modem");
+  assert_int_equal(t->desc.lines[0].role, PNUT_BOARD_LINE_ROLE_POWER);
+  assert_string_equal(t->desc.lines[0].device, "/dev/modem_pwr");
 
   free(d);
   board_test_free(t);
@@ -301,6 +343,164 @@ static void test_board_none(void **state)
   board_test_free(t);
 }
 
+/* Airplane mode: announced once Settings' value is read, then switched on
+ * and off again as the system UI would, through Settings.  Off at the
+ * end: on the simulator the topic outlives the test.
+ */
+
+static void board_test_switched(FAR struct pnut_settings_client_s *client,
+                                int status,
+                                FAR const pnut_settings_reply_t *out,
+                                FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct board_test_s *t = arg;
+
+  t->status = status;
+}
+
+static void board_test_other(FAR struct pnut_settings_client_s *client,
+                             bool connected, FAR void *arg)
+{
+  FAR struct board_test_s *t = arg;
+
+  t->connected = connected;
+}
+
+static void board_test_airplane(FAR struct pnut_airplane_mode_reader_s *r,
+                                FAR const pnut_airplane_mode_t *msg,
+                                FAR void *arg)
+{
+  FAR struct board_test_s *t = arg;
+  char c = msg->on ? '1' : '0';
+
+  /* A state's topic may give a value again (on the simulator, the first
+   * came twice): the changes are what count
+   */
+
+  if (t->nseen < (int)sizeof(t->seen) - 1 &&
+      (t->nseen == 0 || t->seen[t->nseen - 1] != c))
+    {
+      t->seen[t->nseen++] = c;
+    }
+}
+
+/* Each switch once the message before it came, and Settings is reached */
+
+static void board_test_tick(FAR struct pnut_loop_s *loop,
+                            FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct board_test_s *t = arg;
+  pnut_settings_set_request_t req;
+
+  if (t->nseen >= 3)
+    {
+      pnut_loop_stop(loop, 0);
+      return;
+    }
+
+  if (!t->connected || t->nseen != t->asked + 1)
+    {
+      return;
+    }
+
+  memset(&req, 0, sizeof(req));
+  strlcpy(req.owner, PNUT_BOARD_SETTINGS_OWNER, sizeof(req.owner));
+  strlcpy(req.key, "airplane", sizeof(req.key));
+  req.has_value           = true;
+  req.value.which_value   = PNUT_SETTING_VALUE_BOOLEAN_TAG;
+  req.value.value.boolean = t->asked == 0;
+  assert_int_equal(pnut_settings_set(&t->other, &req, 0,
+                                     board_test_switched, t), 0);
+  t->asked++;
+}
+
+static int board_test_start_airplane(FAR struct pnut_module_s *module,
+                                     FAR struct pnut_loop_s *loop)
+{
+  FAR struct board_test_s *t = (FAR struct board_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct board_test_s, module));
+
+  assert_int_equal(pnut_settings_connect(loop, SETTINGS_SERVICE,
+                                         board_test_other, t, &t->other),
+                   0);
+  assert_int_equal(pnut_airplane_mode_subscribe(loop, board_test_airplane,
+                                                t, &t->airplanes), 0);
+  assert_int_equal(pnut_timer_start(loop, 20, 20, board_test_tick, t, NULL),
+                   0);
+  pnut_module_ready(module);
+  return 0;
+}
+
+static void board_test_stop_airplane(FAR struct pnut_module_s *module,
+                                     FAR struct pnut_loop_s *loop)
+{
+  FAR struct board_test_s *t = (FAR struct board_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct board_test_s, module));
+
+  pnut_airplane_mode_unsubscribe(&t->airplanes);
+  pnut_settings_disconnect(&t->other);
+}
+
+static void test_board_airplane(void **state)
+{
+  static const struct settings_limits_s limits =
+  {
+    .owners   = 4,
+    .settings = 16,
+    .texts    = 4,
+    .choices  = 8,
+  };
+
+  FAR struct board_test_s *t = board_test_new();
+  struct pnut_loop_config_s config;
+  struct settings_config_s sconfig;
+  struct board_config_s bconfig;
+  char path[128];
+
+  snprintf(t->sdir, sizeof(t->sdir), "%s/s", t->dir);
+  assert_int_equal(mkdir(t->sdir, 0700), 0);
+
+  pnut_loop_defaults(&config);
+  config.rundir = t->dir;
+  assert_int_equal(pnut_loop_create(&config, &t->loop), 0);
+
+  memset(&sconfig, 0, sizeof(sconfig));
+  sconfig.dir    = t->sdir;
+  sconfig.limits = limits;
+  sconfig.delay  = 20;
+  settings_init(&t->settings, &sconfig);
+  assert_int_equal(pnut_module_add(t->loop, &t->settings.module), 0);
+
+  bconfig.path = NULL;
+  board_init(&t->board, &bconfig);
+  assert_int_equal(pnut_module_add(t->loop, &t->board.module), 0);
+
+  memset(&t->module, 0, sizeof(t->module));
+  t->module.name  = "test";
+  t->module.start = board_test_start_airplane;
+  t->module.stop  = board_test_stop_airplane;
+  assert_int_equal(pnut_module_add(t->loop, &t->module), 0);
+
+  /* Off once read, on and off as switched: no message before Settings'
+   * value
+   */
+
+  t->status = -1;
+  pnut_timer_start(t->loop, 3000, 0, board_test_stop, NULL, NULL);
+  assert_int_equal(pnut_loop_run(t->loop), 0);
+  assert_string_equal(t->seen, "010");
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  pnut_loop_destroy(t->loop);
+
+  settings_deinit(&t->settings);
+
+  snprintf(path, sizeof(path), "%s/%s.pb", t->sdir,
+           PNUT_BOARD_SETTINGS_OWNER);
+  unlink(path);
+  assert_int_equal(rmdir(t->sdir), 0);
+  board_test_free(t);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -311,6 +511,7 @@ int main(void)
   {
     cmocka_unit_test(test_board_describe),
     cmocka_unit_test(test_board_none),
+    cmocka_unit_test(test_board_airplane),
   };
 
   return cmocka_run_group_tests_name("board", tests, NULL, NULL);
