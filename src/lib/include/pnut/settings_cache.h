@@ -165,6 +165,12 @@ struct pnut_settings_cache_s
   bool ready;                     /* The values have been read */
   bool again;                     /* A change came while reading */
   bool level;                     /* Holds the module's log level */
+
+  /* Settings had no room, and the log was told: kept across a lost
+   * connection, so that the log hears when there is room
+   */
+
+  bool full;
   uint64_t touched;               /* The values that changed in a read */
   char after[sizeof(((FAR pnut_settings_page_request_t *)0)->after)];
 
