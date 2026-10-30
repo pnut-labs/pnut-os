@@ -2,15 +2,16 @@
 // Copyright 2026 Mateusz Pianka
 
 // Board (RFC 0024): the device's description, served by a module of the
-// system program.  The description is the target's file,
-// configs/<target>/board.toml, which the build checks and compiles into
-// /etc/pnut/board.pb, a BoardDescription; Board adds what differs per
-// unit, from the device data partition.  No device has that partition
-// yet, so every unit is described as unprovisioned, from the target's
-// file alone.
+// system program, which also keeps airplane mode (RFC 0030).  The
+// description is the target's file, configs/<target>/board.toml, which
+// the build checks and compiles into /etc/pnut/board.pb, a
+// BoardDescription; Board adds what differs per unit, from the device
+// data partition.  No device has that partition yet, so every unit is
+// described as unprovisioned, from the target's file alone.
 //
 // The description does not change while the device runs: a reader asks
-// once and keeps it.
+// once and keeps it.  The largest fits one answer: the counts below are
+// sized for it.
 
 syntax = "proto3";
 
@@ -214,7 +215,49 @@ message BoardPart {
   }
 }
 
+// A control line of a part's, besides the part's own device file: a
+// modem's supply and power key (RFC 0030).  The lines are listed apart
+// from the parts, so that a part's size, the largest of its kinds', stays
+// small for every part.
+message BoardLine {
+  enum Role {
+    NONE = 0;
+    POWER = 1;                    // Switches the part's supply
+    POWER_KEY = 2;                // Pressed to start or stop the part
+    RING = 3;                     // The part's ring indicator: an input
+                                  // that wakes the processor
+    DTR = 4;                      // Data terminal ready: an output
+  }
+
+  // The part's: its kind and name, which name it alone
+  BoardPart.Kind kind = 4;
+  string part = 1 [(nanopb).max_size = 16];
+  Role role = 2;
+  string device = 3 [(nanopb).max_size = 24];    // The line's device file
+}
+
 message BoardDescription {
   BoardIdentity identity = 1;
   repeated BoardPart parts = 2 [(nanopb).max_count = 32];
+  repeated BoardLine lines = 3 [(nanopb).max_count = 8];
+}
+
+// Board's settings (RFC 0024)
+message BoardSettings {
+  option (pnut.settings) = "board";
+
+  // Airplane mode (RFC 0030): every radio off the air.  The system UI
+  // switches it; Board announces it on the airplane_mode topic.
+  bool airplane = 1 [(pnut.setting) = { default: "false",
+                                        label: "board.airplane",
+                                        public: true }];
+}
+
+// Airplane mode, as Board's setting has it, on the airplane_mode topic:
+// the radios' owners take their radios off the air, or put them back.
+// Board announces it once its settings are read, and at each change.
+message AirplaneMode {
+  option (pnut.topic) = "airplane_mode";
+
+  bool on = 1;
 }
