@@ -162,7 +162,8 @@ static FAR const char *const g_tel_setup[] =
   "AT+COPS=3,0",                  /* The operator by its name */
   "AT+CEMODE=2",                  /* Combined attach: SMS without IMS */
   "AT+CTZU=1",                    /* The clock from the network's time */
-  "AT+CTZR=2",                    /* and the network's time reported */
+  "AT+CTZR=1",                    /* and the network's time reported: the
+                                   * A7682E takes 0 and 1 only */
   "AT+CFGRI=1",                   /* The ring indicator for SMS too */
   "AT+CSCLK=0",                   /* The modem's own sleep off */
 };

@@ -271,6 +271,7 @@ int64_t tel_utc(int year, int month, int day, int hour, int min, int sec)
 int tel_network_time(FAR const char *line, FAR struct tel_time_s *t)
 {
   FAR const char *args = tel_args(line);
+  FAR const char *rest;
   char field[32];
   long v[6];
   long dst;
@@ -311,7 +312,10 @@ int tel_network_time(FAR const char *line, FAR struct tel_time_s *t)
 
   if (parse_starts(line, "+CTZV:"))
     {
-      /* <tz>, and on some modems the local time after it */
+      /* <tz>, and on SIMCom's modems the time after it, in UTC, quoted or
+       * not: "yy/MM/dd,hh:mm:ss" holds a comma of its own.  The A7682E
+       * sends "+CTZV: +04,26/10/30,20:28:28" (seen 2026-10-30).
+       */
 
       if (!tel_field(args, 0, field, sizeof(field)) ||
           !parse_zone(field, &t->offset))
@@ -320,11 +324,19 @@ int tel_network_time(FAR const char *line, FAR struct tel_time_s *t)
         }
 
       t->has_offset = true;
-      if (tel_field(args, 1, field, sizeof(field)) && field[0] != '\0' &&
-          parse_datetime(field, &t->utc, NULL))
+      rest = strchr(args, ',');
+      if (rest != NULL)
         {
-          t->utc     -= t->offset;
-          t->has_time = true;
+          rest++;
+          while (*rest == '"' || *rest == ' ')
+            {
+              rest++;
+            }
+
+          if (parse_datetime(rest, &t->utc, NULL))
+            {
+              t->has_time = true;
+            }
         }
 
       return OK;

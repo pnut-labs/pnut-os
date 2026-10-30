@@ -91,6 +91,18 @@ static void test_telparse_time(void **state)
   assert_int_equal(tel_network_time("+CTZV: +32", &t), 0);
   assert_int_equal(t.offset, 28800);
 
+  /* SIMCom's, with the time in UTC after it, quoted or not, as the
+   * A7682E sends it
+   */
+
+  assert_int_equal(tel_network_time("+CTZV: +04,26/10/30,12:34:56", &t), 0);
+  assert_true(t.has_time);
+  assert_int_equal(t.utc, T_UTC);
+  assert_int_equal(t.offset, 3600);
+  assert_int_equal(tel_network_time("+CTZV: \"+04\",\"26/10/30,12:34:56\"",
+                                    &t), 0);
+  assert_int_equal(t.utc, T_UTC);
+
   /* SIMCom's older form: UTC */
 
   assert_int_equal(tel_network_time("*PSUTTZ: 2026,10,30,12,34,56,"
