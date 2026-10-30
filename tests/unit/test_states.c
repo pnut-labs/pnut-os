@@ -74,6 +74,7 @@ struct fake_s
   int ntable;
   int asks;                             /* "who" commands */
   char last[64];                        /* The last start or stop */
+  char stops[128];                      /* Every stop, ';' after each */
   bool silent;                          /* Leaves "who" unanswered */
   bool broken;                          /* A write failed */
 };
@@ -232,6 +233,12 @@ static void fake_line(FAR struct fake_s *fake, int i, FAR char *line)
   else if (strncmp(line, "start ", 6) == 0 || strncmp(line, "stop ", 5) == 0)
     {
       strlcpy(fake->last, line, sizeof(fake->last));
+      if (strncmp(line, "stop ", 5) == 0)
+        {
+          strlcat(fake->stops, line, sizeof(fake->stops));
+          strlcat(fake->stops, ";", sizeof(fake->stops));
+        }
+
       service = fake_find(fake, strchr(line, ' ') + 1);
       fake_send(fake, fd, service != NULL ? "ok\n" :
                                             "error 2 no such service\n");
@@ -617,6 +624,126 @@ static void send_events(FAR struct fixture_s *f)
   fake_set(&f->fake, "late", "starting", 12, true);
   f->until = late_seen;
   f->then  = NULL;
+}
+
+/****************************************************************************
+ * Name: test_states_halt
+ *
+ * Description:
+ *   The programs of the table that run, but the one named, are asked to
+ *   stop; a stopped one, and a service that is no program (a shell), are
+ *   not.  Told once they have stopped, or once the wait is over, with how
+ *   many still run.
+ *
+ ****************************************************************************/
+
+static void halted(FAR void *arg, int running)
+{
+  FAR struct fixture_s *f = arg;
+
+  f->rets[0] = running;
+  f->asks[0]++;
+}
+
+static bool told(FAR struct fixture_s *f)
+{
+  return f->asks[0] > 0;
+}
+
+static bool stops_sent(FAR struct fixture_s *f)
+{
+  bool sent;
+
+  pthread_mutex_lock(&f->fake.lock);
+  sent = strstr(f->fake.stops, "stop telephony;") != NULL &&
+         strstr(f->fake.stops, "stop ui;") != NULL;
+  pthread_mutex_unlock(&f->fake.lock);
+  return sent;
+}
+
+static void mark_stopped(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "telephony", "stopped", 0, true);
+  fake_set(&f->fake, "ui", "stopped", 0, true);
+  f->until = told;
+  f->then  = NULL;
+}
+
+static void halt_programs(FAR struct fixture_s *f)
+{
+  assert_int_equal(states_halt(&f->states, "system", 2000, halted, f), 0);
+  assert_int_equal(states_halt(&f->states, "system", 2000, halted, f),
+                   -EBUSY);
+  f->until = stops_sent;
+  f->then  = mark_stopped;
+}
+
+static void halt_briefly(FAR struct fixture_s *f)
+{
+  assert_int_equal(states_halt(&f->states, "system", 100, halted, f), 0);
+  f->until = told;
+  f->then  = NULL;
+}
+
+static void halt_setup(FAR struct fixture_s *f)
+{
+  fixture_setup(f, "system states\ntelephony telephony\nui ui\n"
+                   "radios radio\n");
+  fake_set(&f->fake, "system", "ready", 8, false);
+  fake_set(&f->fake, "telephony", "ready", 20, false);
+  fake_set(&f->fake, "ui", "ready", 21, false);
+  fake_set(&f->fake, "radios", "stopped", 0, false);
+  fake_set(&f->fake, "console", "ready", 7, false);
+}
+
+static void test_states_halt(void **state)
+{
+  struct fixture_s f;
+
+  /* Asked, and stopped: told with none running */
+
+  halt_setup(&f);
+  f.until = listed;
+  f.then  = halt_programs;
+  fixture_run(&f);
+
+  assert_int_equal(f.asks[0], 1);
+  assert_int_equal(f.rets[0], 0);
+  pthread_mutex_lock(&f.fake.lock);
+  assert_string_equal(f.fake.stops, "stop telephony;stop ui;");
+  pthread_mutex_unlock(&f.fake.lock);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+
+  /* Asked, and not stopped in time: told with both running */
+
+  halt_setup(&f);
+  f.until = listed;
+  f.then  = halt_briefly;
+  fixture_run(&f);
+
+  assert_int_equal(f.asks[0], 1);
+  assert_int_equal(f.rets[0], 2);
+  fixture_teardown(&f);
+
+  /* None to stop but the shell, which is no program: told at once, on
+   * the loop, NxInit asked nothing
+   */
+
+  fixture_setup(&f, "system states\ntelephony telephony\n");
+  fake_set(&f.fake, "system", "ready", 8, false);
+  fake_set(&f.fake, "telephony", "stopped", 0, false);
+  fake_set(&f.fake, "console", "ready", 7, false);
+  f.until = listed;
+  f.then  = halt_briefly;
+  fixture_run(&f);
+
+  assert_int_equal(f.asks[0], 1);
+  assert_int_equal(f.rets[0], 0);
+  pthread_mutex_lock(&f.fake.lock);
+  assert_string_equal(f.fake.stops, "");
+  pthread_mutex_unlock(&f.fake.lock);
+  fixture_teardown(&f);
 }
 
 static void test_states_watch(void **state)
@@ -1092,6 +1219,7 @@ int main(void)
   {
     cmocka_unit_test(test_states_programs),
     cmocka_unit_test(test_states_watch),
+    cmocka_unit_test(test_states_halt),
     cmocka_unit_test(test_states_who),
     cmocka_unit_test(test_states_who_unanswered),
     cmocka_unit_test(test_states_calls),

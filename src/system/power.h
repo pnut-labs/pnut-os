@@ -37,6 +37,8 @@
  * itself, and holds them while it reads.
  */
 
+struct power_s;
+
 struct power_config_s
 {
   uint32_t interval;              /* Between readings, in milliseconds */
@@ -75,6 +77,17 @@ struct power_config_s
    */
 
   CODE int (*sleep_rate)(FAR void *arg, int32_t ppb);
+
+  /* Stop the device's other programs before it powers off, so that each
+   * finishes what has to end in order (RFC 0030: the modem powered down);
+   * power_halted() is called once they have, or after halt_wait ms, later
+   * on the loop, never from within halt.  A negated errno value when they
+   * cannot be asked: the device powers off at once.  NULL: none to stop.
+   */
+
+  CODE int (*halt)(FAR void *arg, uint32_t wait, FAR struct power_s *power);
+  FAR void *halt_arg;
+  uint32_t halt_wait;
 };
 
 struct power_s
@@ -92,6 +105,7 @@ struct power_s
   uint8_t low;                    /* Readings in a row under the cutoff */
   bool failing;                   /* The last reading failed, logged */
   bool off;                       /* The program stopped to power off */
+  bool halting;                   /* The other programs stopping first */
 };
 
 /****************************************************************************
@@ -118,5 +132,16 @@ void power_init(FAR struct power_s *power,
  ****************************************************************************/
 
 bool power_wants_off(FAR const struct power_s *power);
+
+/****************************************************************************
+ * Name: power_halted
+ *
+ * Description:
+ *   The other programs have stopped, or the wait for them is over, with
+ *   running still running: the program stops, to power the device off.
+ *
+ ****************************************************************************/
+
+void power_halted(FAR struct power_s *power, int running);
 
 #endif /* __PNUT_OS_SYSTEM_POWER_H */
