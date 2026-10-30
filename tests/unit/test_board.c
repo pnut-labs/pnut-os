@@ -373,9 +373,15 @@ static void board_test_airplane(FAR struct pnut_airplane_mode_reader_s *r,
   FAR struct board_test_s *t = arg;
   char c = msg->on ? '1' : '0';
 
-  /* A state's topic may give a value again (on the simulator, the first
-   * came twice): the changes are what count
+  /* Board announces once its settings are read.  On the simulator a value
+   * came before that, as if published, and the first came twice: what
+   * counts is what comes once they are read, each change once.
    */
+
+  if (!pnut_settings_cache_ready(&t->board.settings.cache))
+    {
+      return;
+    }
 
   if (t->nseen < (int)sizeof(t->seen) - 1 &&
       (t->nseen == 0 || t->seen[t->nseen - 1] != c))
