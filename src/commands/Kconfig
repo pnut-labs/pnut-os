@@ -1,0 +1,27 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_COMMANDS
+	bool "The shell's commands"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB
+	---help---
+		pnut-os's commands for NSH, for developers (RFC 0012).  So far
+		settings: list, read, change and reset settings (RFC 0025).  A
+		command typed in the developer's shell may do what the system UI
+		may (PNUT_SETTINGS_SHELLS).
+
+if PNUT_COMMANDS
+
+config PNUT_COMMANDS_STACKSIZE
+	int "A command's stack, in bytes"
+	default 8192
+	---help---
+		Taken from the heap only while a command runs.  settings ran in
+		4096 bytes on the T-Deck Max, unmeasured; this leaves room.
+
+endif

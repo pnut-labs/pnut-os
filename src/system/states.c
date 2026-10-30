@@ -11,6 +11,8 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1202,6 +1204,64 @@ static void states_stop(FAR struct pnut_module_s *module,
 }
 
 /****************************************************************************
+ * Name: states_parent
+ *
+ * Description:
+ *   A task's parent, from its group's status in /proc: the line that
+ *   begins "Parent:", the second, of numbers only (the task's name is not
+ *   in that file).
+ *
+ ****************************************************************************/
+
+static pid_t states_parent(pid_t pid)
+{
+  char path[32];
+  char buf[64];
+  FAR char *line;
+  FAR char *end;
+  long parent;
+  ssize_t n;
+  int fd;
+
+  snprintf(path, sizeof(path), "/proc/%d/group/status", (int)pid);
+  fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    {
+      return -1;
+    }
+
+  n = read(fd, buf, sizeof(buf) - 1);
+  close(fd);
+  if (n <= 0)
+    {
+      return -1;
+    }
+
+  buf[n] = '\0';
+  for (line = buf; line != NULL; line = strchr(line, '\n'))
+    {
+      if (*line == '\n')
+        {
+          line++;
+        }
+
+      if (strncmp(line, "Parent:", 7) == 0)
+        {
+          parent = strtol(line + 7, &end, 10);
+          if (end == line + 7 || (*end != '\n' && *end != '\0') ||
+              parent < 0 || parent > INT_MAX)
+            {
+              return -1;
+            }
+
+          return (pid_t)parent;
+        }
+    }
+
+  return -1;
+}
+
+/****************************************************************************
  * Name: states_lookup
  *
  * Description:
@@ -1334,6 +1394,38 @@ int states_who(FAR struct states_s *states, pid_t pid,
                FAR const char **namep)
 {
   return states_lookup(states, pid, true, namep);
+}
+
+int states_origin(FAR struct states_s *states, pid_t pid,
+                  FAR const char **namep)
+{
+  states_parent_t parent = states->config.parent != NULL ?
+                           states->config.parent : states_parent;
+  uint8_t depth;
+  int ret;
+
+  *namep = NULL;
+
+  for (depth = 0; depth < STATES_ORIGIN_DEPTH; depth++)
+    {
+      pid = parent(pid);
+      if (pid <= 0)
+        {
+          return -ESRCH;
+        }
+
+      /* A parent from /proc is a task's, or was: unlike a pid another
+       * names, it is no program about to start
+       */
+
+      ret = states_lookup(states, pid, true, namep);
+      if (ret != -ESRCH)
+        {
+          return ret;
+        }
+    }
+
+  return -ESRCH;
 }
 
 bool states_runs(FAR struct states_s *states, FAR const char *program,

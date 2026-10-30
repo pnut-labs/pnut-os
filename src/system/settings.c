@@ -146,15 +146,55 @@ static void settings_fail(FAR struct settings_s *settings,
 }
 
 /****************************************************************************
+ * Name: settings_isshell
+ *
+ * Description:
+ *   Whether a program is among the shells, names separated by spaces.
+ *
+ ****************************************************************************/
+
+static bool settings_isshell(FAR const char *shells,
+                             FAR const char *program)
+{
+  size_t len = strlen(program);
+  FAR const char *end;
+
+  while (*shells != '\0')
+    {
+      while (*shells == ' ')
+        {
+          shells++;
+        }
+
+      end = shells;
+      while (*end != '\0' && *end != ' ')
+        {
+          end++;
+        }
+
+      if (end > shells && (size_t)(end - shells) == len &&
+          strncmp(shells, program, len) == 0)
+        {
+          return true;
+        }
+
+      shells = end;
+    }
+
+  return false;
+}
+
+/****************************************************************************
  * Name: settings_access
  *
  * Description:
  *   What the caller may do with the owner's settings: a program those of
- *   the services it runs, the system UI every owner's, and anyone those
- *   marked public (RFC 0025).  The runtime will mark an app's calls with
- *   its identity (RFC 0008); until then a caller is a program.  A request
- *   whose caller cannot be told now is answered unavailable, to be tried
- *   again: neither denied nor allowed.
+ *   the services it runs, the system UI every owner's, a command typed in
+ *   the developer's shell as much as the system UI (RFC 0012), and anyone
+ *   those marked public (RFC 0025).  The runtime will mark an app's calls
+ *   with its identity (RFC 0008); until then a caller is a program, or a
+ *   task one started.  A request whose caller cannot be told now is
+ *   answered unavailable, to be tried again: neither denied nor allowed.
  *
  ****************************************************************************/
 
@@ -172,6 +212,17 @@ static int settings_access(FAR struct settings_s *settings,
     }
 
   ret = config->who(config->identity, req->pid, &program);
+  if (ret == -ESRCH && config->origin != NULL && config->shells != NULL &&
+      config->shells[0] != '\0')
+    {
+      ret = config->origin(config->identity, req->pid, &program);
+      if (ret == OK)
+        {
+          return settings_isshell(config->shells, program) ?
+                 SETTINGS_ALL : SETTINGS_PUBLIC;
+        }
+    }
+
   if (ret == -ESRCH)
     {
       return SETTINGS_PUBLIC;
