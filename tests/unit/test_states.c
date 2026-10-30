@@ -101,9 +101,9 @@ struct fixture_s
   struct states_service_s services[4];
   uint32_t seq;
   bool runs[2];
-  char who[6][32];
-  int rets[6];
-  int asks[6];
+  char who[8][32];
+  int rets[8];
+  int asks[8];
   bool answered;
   FAR struct call_s *call;
   CODE void (*after)(FAR struct fixture_s *f);
@@ -432,6 +432,40 @@ static void check(FAR struct pnut_loop_s *loop,
     }
 }
 
+/* Each task's parent, for states_origin(): a command typed in the
+ * console (30); one typed in a shell adb's daemon started (41, in 40); a
+ * chain longer than the lookup goes (50 to 54); a task without a parent
+ * (60); one whose parent cannot be told (70)
+ */
+
+static pid_t fake_parent(pid_t pid)
+{
+  static const pid_t parents[][2] =
+    {
+      { 30, 7 },
+      { 41, 40 },
+      { 40, 20 },
+      { 50, 51 },
+      { 51, 52 },
+      { 52, 53 },
+      { 53, 54 },
+      { 54, 7 },
+      { 60, 0 },
+    };
+
+  size_t i;
+
+  for (i = 0; i < sizeof(parents) / sizeof(parents[0]); i++)
+    {
+      if (parents[i][0] == pid)
+        {
+          return parents[i][1];
+        }
+    }
+
+  return -1;
+}
+
 static void fixture_setup(FAR struct fixture_s *f, FAR const char *table)
 {
   struct pnut_loop_config_s config;
@@ -439,6 +473,7 @@ static void fixture_setup(FAR struct fixture_s *f, FAR const char *table)
   int fd;
 
   memset(f, 0, sizeof(*f));
+  memset(&sconfig, 0, sizeof(sconfig));
 
   /* On NuttX the directory is only a prefix of the sockets' names */
 
@@ -463,6 +498,7 @@ static void fixture_setup(FAR struct fixture_s *f, FAR const char *table)
   sconfig.initctl  = f->path;
   sconfig.programs = f->programs;
   sconfig.services = 8;
+  sconfig.parent   = fake_parent;
   states_init(&f->states, &sconfig);
   assert_int_equal(pnut_module_add(f->loop, &f->states.module), 0);
 }
@@ -1081,6 +1117,79 @@ static void test_states_who_named(void **state)
 }
 
 /****************************************************************************
+ * Name: test_states_origin
+ *
+ * Description:
+ *   The program that started a task: the console for a command typed in
+ *   it, adb's daemon for one typed in the shell it started; none past
+ *   STATES_ORIGIN_DEPTH parents, for a task without a parent, or for one
+ *   whose parent cannot be told.  NxInit is asked about a parent it has
+ *   not shown once only.
+ ****************************************************************************/
+
+static void ask_origin(FAR struct fixture_s *f)
+{
+  static const pid_t pids[7] =
+    {
+      30, 41, 41, 50, 60, 70, 7
+    };
+
+  FAR const char *name;
+  int i;
+
+  for (i = 0; i < 7; i++)
+    {
+      f->rets[i] = states_origin(&f->states, pids[i], &name);
+      strlcpy(f->who[i], name != NULL ? name : "(none)",
+              sizeof(f->who[i]));
+      f->asks[i] = fake_asks(&f->fake);
+    }
+
+  f->done = true;
+  pnut_loop_stop(f->loop, 0);
+}
+
+static void test_states_origin(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fake_set(&f.fake, "adbd", "ready", 20, false);
+
+  f.until = listed;
+  f.then  = ask_origin;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  assert_string_equal(f.who[0], "console");
+  assert_int_equal(f.asks[0], 0);
+
+  /* adb's shell is asked of NxInit the first time, then remembered */
+
+  assert_int_equal(f.rets[1], OK);
+  assert_string_equal(f.who[1], "adbd");
+  assert_int_equal(f.asks[1], 1);
+  assert_int_equal(f.rets[2], OK);
+  assert_string_equal(f.who[2], "adbd");
+  assert_int_equal(f.asks[2], 1);
+
+  assert_int_equal(f.rets[3], -ESRCH);
+  assert_string_equal(f.who[3], "(none)");
+  assert_int_equal(f.asks[3], 1 + STATES_ORIGIN_DEPTH);
+  assert_int_equal(f.rets[4], -ESRCH);
+  assert_int_equal(f.rets[5], -ESRCH);
+
+  /* The console itself has no parent among the programs */
+
+  assert_int_equal(f.rets[6], -ESRCH);
+  assert_int_equal(f.asks[6], 1 + STATES_ORIGIN_DEPTH);
+  assert_false(f.fake.broken);
+
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -1095,6 +1204,7 @@ int main(void)
     cmocka_unit_test(test_states_who_unanswered),
     cmocka_unit_test(test_states_calls),
     cmocka_unit_test(test_states_who_named),
+    cmocka_unit_test(test_states_origin),
   };
 
   return cmocka_run_group_tests_name("states", tests, NULL, NULL);

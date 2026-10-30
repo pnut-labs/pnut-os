@@ -66,10 +66,11 @@ int pnut_module_add(FAR struct pnut_loop_s *loop,
   module->level   = PNUT_LOG_INFO;
   module->levels  = NULL;
   memset(&module->rate, 0, sizeof(module->rate));
-  module->started = false;
-  module->ready   = false;
-  module->next    = NULL;
-  module->prev    = loop->last;
+  module->started   = false;
+  module->ready     = false;
+  module->finishing = false;
+  module->next      = NULL;
+  module->prev      = loop->last;
 
   if (loop->last != NULL)
     {
@@ -99,6 +100,15 @@ void pnut_module_ready(FAR struct pnut_module_s *module)
 bool pnut_loop_ready(FAR struct pnut_loop_s *loop)
 {
   return loop->ready;
+}
+
+void pnut_module_finished(FAR struct pnut_module_s *module)
+{
+  if (module->finishing)
+    {
+      module->finishing = false;
+      pnut_loop_finished(module->loop);
+    }
 }
 
 /****************************************************************************
@@ -139,6 +149,91 @@ int pnut_module_startall(FAR struct pnut_loop_s *loop)
 }
 
 /****************************************************************************
+ * Name: pnut_module_finishers
+ *
+ * Description:
+ *   Whether a module that started has a finish handler.
+ *
+ ****************************************************************************/
+
+bool pnut_module_finishers(FAR struct pnut_loop_s *loop)
+{
+  FAR struct pnut_module_s *module;
+
+  for (module = loop->first; module != NULL; module = module->next)
+    {
+      if (module->started && module->finish != NULL)
+        {
+          return true;
+        }
+    }
+
+  return false;
+}
+
+/****************************************************************************
+ * Name: pnut_module_finishall
+ *
+ * Description:
+ *   Ask every module that started, and has a finish handler, to finish, in
+ *   reverse order.  A module that finishes at once, or fails to, is done.
+ *
+ * Returned Value:
+ *   Whether a module still has work to finish.
+ *
+ ****************************************************************************/
+
+bool pnut_module_finishall(FAR struct pnut_loop_s *loop)
+{
+  FAR struct pnut_module_s *module;
+  int ret;
+
+  for (module = loop->last; module != NULL; module = module->prev)
+    {
+      if (module->started && module->finish != NULL)
+        {
+          module->finishing = true;
+          ret = module->finish(module, loop);
+          if (ret != -EINPROGRESS)
+            {
+              if (ret < 0)
+                {
+                  pnut_log(module, PNUT_LOG_WARNING, "Failed to finish: %d",
+                           ret);
+                }
+
+              module->finishing = false;
+            }
+        }
+    }
+
+  return pnut_module_unfinished(loop);
+}
+
+/****************************************************************************
+ * Name: pnut_module_unfinished
+ *
+ * Description:
+ *   Whether a module still has work to finish.
+ *
+ ****************************************************************************/
+
+bool pnut_module_unfinished(FAR struct pnut_loop_s *loop)
+{
+  FAR struct pnut_module_s *module;
+
+  for (module = loop->first; module != NULL; module = module->next)
+    {
+      if (module->finishing)
+        {
+          return true;
+        }
+    }
+
+  return false;
+}
+
+/****************************************************************************
  * Name: pnut_module_stopall
  *
  * Description:
@@ -166,7 +261,8 @@ void pnut_module_stopall(FAR struct pnut_loop_s *loop)
 
       pnut_log_dropped(&module->rate, module->name);
 
-      module->ready = false;
+      module->ready     = false;
+      module->finishing = false;
     }
 
   pnut_log_dropped(&loop->rate, loop->config.name);

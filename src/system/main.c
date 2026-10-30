@@ -61,6 +61,18 @@ static bool system_runs(FAR void *arg, FAR const char *program,
   return states_runs(arg, program, service);
 }
 
+/* And which program started a caller that is none: a command typed in a
+ * shell is the shell's (RFC 0012)
+ */
+
+#ifdef CONFIG_PNUT_SETTINGS_SHELLS
+static int system_origin(FAR void *arg, pid_t pid,
+                         FAR const char **programp)
+{
+  return states_origin(arg, pid, programp);
+}
+#endif
+
 /* Power reads the battery through the gauge's and the charger's devices,
  * which it opens.  Without a charger, a gauge that sees the battery
  * charge, or full, tells of external power.
@@ -213,6 +225,7 @@ int main(int argc, FAR char *argv[])
                  CONFIG_PNUT_BOARD_DESCRIPTION : NULL;
   board_init(board, &bconfig);
 
+  memset(&tconfig, 0, sizeof(tconfig));
   tconfig.initctl  = config.initctl;
   tconfig.programs = CONFIG_PNUT_PROGRAMS_PATH;
   tconfig.services = CONFIG_PNUT_STATES_SERVICES;
@@ -230,6 +243,10 @@ int main(int argc, FAR char *argv[])
   sconfig.who             = system_who;
   sconfig.runs            = system_runs;
   sconfig.identity        = states;
+#ifdef CONFIG_PNUT_SETTINGS_SHELLS
+  sconfig.origin          = system_origin;
+  sconfig.shells          = CONFIG_PNUT_SETTINGS_SHELLS;
+#endif
   settings_init(settings, &sconfig);
 
   memset(&wconfig, 0, sizeof(wconfig));

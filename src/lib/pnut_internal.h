@@ -64,6 +64,10 @@
 #  define CONFIG_PNUT_LIB_BUDGET            10
 #endif
 
+#ifndef CONFIG_PNUT_LIB_FINISH
+#  define CONFIG_PNUT_LIB_FINISH            2000
+#endif
+
 #ifndef CONFIG_PNUT_LIB_LOG_LINE
 #  define CONFIG_PNUT_LIB_LOG_LINE          160
 #endif
@@ -190,6 +194,14 @@ struct pnut_loop_s
   struct pnut_loop_config_s config;
   bool running;
   int status;
+  bool stopping;                  /* Asked to stop: the modules finish
+                                   * once the batch of events is handled */
+  bool finishing;                 /* Waiting for the modules to finish */
+
+  /* The finish time's timer, while the modules finish */
+
+  FAR struct pnut_timer_s *finish;
+
   bool sigblocked;                /* create blocked SIGTERM and SIGINT */
   sigset_t sigprev;               /* The mask before, to restore them */
 
@@ -349,6 +361,19 @@ void pnut_conn_recheck(FAR struct pnut_conn_s *conn);
 
 int pnut_module_startall(FAR struct pnut_loop_s *loop);
 void pnut_module_stopall(FAR struct pnut_loop_s *loop);
+
+/* Whether a module that started has a finish handler; ask those to finish,
+ * in reverse order, which says whether one still has work to finish; and
+ * whether one has.
+ */
+
+bool pnut_module_finishers(FAR struct pnut_loop_s *loop);
+bool pnut_module_finishall(FAR struct pnut_loop_s *loop);
+bool pnut_module_unfinished(FAR struct pnut_loop_s *loop);
+
+/* loop.c: a module has finished; the loop stops once none is left */
+
+void pnut_loop_finished(FAR struct pnut_loop_s *loop);
 
 /* settings_cache.c: with the loop's levels, a cache of the log level
  * alone for each module whose owner no cache holds, once they have

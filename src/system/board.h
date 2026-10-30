@@ -18,6 +18,8 @@
 #include <pnut/module.h>
 
 #include "pnut/board.pnut.h"
+#include "pnut/board.settings.h"
+#include "pnut/board.topics.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -31,12 +33,14 @@
  * Public Types
  ****************************************************************************/
 
-/* Board (RFC 0024), so far the description: a module of the system
- * program that reads the target's description, which the build compiled
- * from configs/<target>/board.toml, as it starts, and serves it.  Device
- * data, the backlights, the lights and the USB port's mode come later; no
- * unit is provisioned yet.  Without a description it serves none, and the
- * program goes on.
+/* Board (RFC 0024), so far the description and airplane mode: a module
+ * of the system program that reads the target's description, which the
+ * build compiled from configs/<target>/board.toml, as it starts, and
+ * serves it.  It keeps airplane mode (RFC 0030) as a setting of its own,
+ * which the system UI switches, and announces it on the airplane_mode
+ * topic.  Device data, the backlights, the lights, the privacy switches
+ * and the USB port's mode come later; no unit is provisioned yet.
+ * Without a description it serves none, and the program goes on.
  */
 
 struct board_config_s
@@ -52,6 +56,14 @@ struct board_s
   pnut_board_description_t desc;
   bool loaded;                    /* desc holds the description */
   bool serving;
+
+  /* Airplane mode: the setting, and the topic it is announced on */
+
+  struct pnut_board_settings_s settings;
+  bool settings_open;
+  FAR struct pnut_publisher_s *airplanes;
+  bool announced;                 /* airplane has been announced */
+  bool airplane;
 };
 
 /****************************************************************************

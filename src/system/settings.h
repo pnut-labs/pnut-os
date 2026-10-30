@@ -48,7 +48,9 @@
 /* Who calls (RFC 0006): which program a task is: zero (OK) with the
  * program's name, -ESRCH for a task that is none, another negated errno
  * when it cannot be told now; and whether a program runs a service, whose
- * settings it owns.  Without who, every caller may do everything.
+ * settings it owns.  Without who, every caller may do everything.  The
+ * origin, of the same kind as who, is the program that started a task
+ * which is none: a command typed in a shell is the shell's.
  */
 
 typedef CODE int (*settings_who_t)(FAR void *arg, pid_t pid,
@@ -65,7 +67,15 @@ struct settings_config_s
   uint32_t delay;                 /* Milliseconds from a change to its write */
   settings_who_t who;
   settings_runs_t runs;
-  FAR void *identity;             /* Passed to who and runs */
+  settings_who_t origin;          /* NULL: none is asked */
+  FAR void *identity;             /* Passed to who, runs and origin */
+
+  /* The developer's shells, by their programs' names, separated by
+   * spaces: the commands typed in them may do what the system UI may
+   * (RFC 0012).  NULL for none.
+   */
+
+  FAR const char *shells;
 };
 
 /* A write of an owner's file, on a worker.  The module does not touch it,

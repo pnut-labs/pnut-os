@@ -1,0 +1,11 @@
+############################################################################
+# pnut-os/src/commands/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+ifneq ($(CONFIG_PNUT_COMMANDS),)
+CONFIGURED_APPS += $(APPDIR)/external/commands
+endif

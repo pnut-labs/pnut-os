@@ -54,6 +54,13 @@
 
 #define STATES_ASK_MS     1000
 
+/* How many of a task's ancestors the lookup of the program that started
+ * it goes through, from its parent up: for a command, the shell it was
+ * typed in, adb's daemon that started that shell, and two more
+ */
+
+#define STATES_ORIGIN_DEPTH 4
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -69,12 +76,16 @@
  */
 
 typedef CODE void (*states_halted_t)(FAR void *arg, int running);
+/* A task's parent, or -1 when it cannot be told */
+
+typedef CODE pid_t (*states_parent_t)(pid_t pid);
 
 struct states_config_s
 {
   FAR const char *initctl;        /* NxInit's control socket, or NULL */
   FAR const char *programs;       /* The programs' table (programs.h) */
   uint8_t services;               /* NxInit's services, at most */
+  states_parent_t parent;         /* NULL: from /proc */
 };
 
 struct states_service_s
@@ -195,6 +206,26 @@ void states_deinit(FAR struct states_s *states);
 
 int states_who(FAR struct states_s *states, pid_t pid,
                FAR const char **namep);
+
+/****************************************************************************
+ * Name: states_origin
+ *
+ * Description:
+ *   The program that started a task which is no service itself: the
+ *   first among its parent, the parent's parent and so on, at most
+ *   STATES_ORIGIN_DEPTH, that is a program.  A command typed in a shell
+ *   is the shell's.  Parents that are no program are remembered as
+ *   strangers, as callers are.
+ *
+ * Returned Value:
+ *   As states_who(): zero (OK), with *namep valid until the next call or
+ *   until the loop runs on; -ESRCH when no parent is a program, or one
+ *   cannot be told; -EAGAIN when NxInit cannot tell now.
+ *
+ ****************************************************************************/
+
+int states_origin(FAR struct states_s *states, pid_t pid,
+                  FAR const char **namep);
 
 /****************************************************************************
  * Name: states_runs

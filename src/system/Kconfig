@@ -156,6 +156,19 @@ config PNUT_SETTINGS_DELAY
 	---help---
 		A burst of changes makes one write (RFC 0025).
 
+config PNUT_SETTINGS_SHELLS
+	string "The developer's shells"
+	default "console adbd"
+	depends on FS_PROCFS && !FS_PROCFS_EXCLUDE_PROCESS && SCHED_HAVE_PARENT
+	---help---
+		NxInit's services, by name, separated by spaces, whose commands
+		may do with settings what the system UI may: read and change
+		every one, but never learn a secret (RFC 0012, RFC 0025).  A
+		command is the shell's when Service states finds the shell among
+		its parents, theirs, and so on (/proc's group status, hence the
+		dependencies).  Empty for none: a command then reads the public
+		settings only.
+
 config PNUT_POWER_INTERVAL
 	int "Between readings of the battery, in milliseconds"
 	default 10000

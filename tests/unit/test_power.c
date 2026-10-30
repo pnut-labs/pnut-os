@@ -291,6 +291,17 @@ static bool run_board(FAR struct battery_s *battery, int empty_mv,
   free(board);
 
   unlink(path);
+
+  /* Board's topics, directories on the computer */
+
+  snprintf(path, sizeof(path), "%s/topic.airplane_mode/last", dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.airplane_mode", dir);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/topic.settings/last", dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.settings", dir);
+  rmdir(path);
   assert_int_equal(rmdir(dir), 0);
   return off;
 }

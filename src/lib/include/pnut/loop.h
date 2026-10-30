@@ -48,6 +48,10 @@ struct pnut_loop_config_s
   FAR const char *initctl;        /* NxInit's control socket, told when
                                    * the program is ready (RFC 0006), or
                                    * NULL */
+  uint32_t finish;                /* The most the modules may take to
+                                   * finish once the loop is asked to
+                                   * stop, in ms (module.h): one of the
+                                   * loop's timers times it */
   bool levels;                    /* Each module's log level is a setting
                                    * (RFC 0026): an owner named as the
                                    * module holds it, opened by the library
@@ -120,7 +124,8 @@ void pnut_loop_destroy(FAR struct pnut_loop_s *loop);
  *
  * Description:
  *   Start the modules, in the order they were added, and run the loop until
- *   pnut_loop_stop() or a SIGTERM; then stop the modules, in reverse order.
+ *   pnut_loop_stop() or a SIGTERM; then, once the modules have finished
+ *   (module.h), stop them, in reverse order.
  *
  * Returned Value:
  *   The status given to pnut_loop_stop(); zero after a signal; a negated
@@ -134,7 +139,11 @@ int pnut_loop_run(FAR struct pnut_loop_s *loop);
  * Name: pnut_loop_stop
  *
  * Description:
- *   Make pnut_loop_run() return status, once the current handler returns.
+ *   Make pnut_loop_run() return status.  Without a module to finish, the
+ *   loop stops once the current handler returns.  Otherwise the modules'
+ *   finish handlers are called then, and the loop runs on until they have
+ *   finished, or for the program's finish time; another stop meanwhile
+ *   changes nothing.
  *
  ****************************************************************************/
 
