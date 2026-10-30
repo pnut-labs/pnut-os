@@ -24,6 +24,7 @@
 #include <pnut/msg.h>
 #include <pnut/worker.h>
 
+#include "programs.h"
 #include "settings.h"
 
 /****************************************************************************
@@ -146,45 +147,6 @@ static void settings_fail(FAR struct settings_s *settings,
 }
 
 /****************************************************************************
- * Name: settings_isshell
- *
- * Description:
- *   Whether a program is among the shells, names separated by spaces.
- *
- ****************************************************************************/
-
-static bool settings_isshell(FAR const char *shells,
-                             FAR const char *program)
-{
-  size_t len = strlen(program);
-  FAR const char *end;
-
-  while (*shells != '\0')
-    {
-      while (*shells == ' ')
-        {
-          shells++;
-        }
-
-      end = shells;
-      while (*end != '\0' && *end != ' ')
-        {
-          end++;
-        }
-
-      if (end > shells && (size_t)(end - shells) == len &&
-          strncmp(shells, program, len) == 0)
-        {
-          return true;
-        }
-
-      shells = end;
-    }
-
-  return false;
-}
-
-/****************************************************************************
  * Name: settings_access
  *
  * Description:
@@ -218,7 +180,7 @@ static int settings_access(FAR struct settings_s *settings,
       ret = config->origin(config->identity, req->pid, &program);
       if (ret == OK)
         {
-          return settings_isshell(config->shells, program) ?
+          return programs_listed(config->shells, program) ?
                  SETTINGS_ALL : SETTINGS_PUBLIC;
         }
     }

@@ -229,6 +229,9 @@ int main(int argc, FAR char *argv[])
   tconfig.initctl  = config.initctl;
   tconfig.programs = CONFIG_PNUT_PROGRAMS_PATH;
   tconfig.services = CONFIG_PNUT_STATES_SERVICES;
+#ifdef CONFIG_PNUT_SETTINGS_SHELLS
+  tconfig.shells   = CONFIG_PNUT_SETTINGS_SHELLS;
+#endif
   states_init(states, &tconfig);
 
   memset(&sconfig, 0, sizeof(sconfig));

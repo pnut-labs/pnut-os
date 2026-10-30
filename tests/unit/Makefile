@@ -6,9 +6,9 @@
 #
 ############################################################################
 
-# The unit tests: libpnut and the system program's modules built for the
-# computer, tested with cmocka (RFC 0022).  `make test` at the top runs
-# them.
+# The unit tests: libpnut, the system program's modules and the telephony
+# program's built for the computer, tested with cmocka (RFC 0022).
+# `make test` at the top runs them.
 #
 # CMOCKA_CFLAGS and CMOCKA_LIBS name cmocka where the compiler does not
 # find it by itself.
@@ -16,6 +16,7 @@
 ROOT   := $(abspath ../..)
 LIB    := $(ROOT)/src/lib
 SYSTEM := $(ROOT)/src/system
+TELEPHONY := $(ROOT)/src/telephony
 BUILD  := $(ROOT)/build/unit
 
 # The interfaces' code and nanopb: the top-level Makefile names them
@@ -28,17 +29,19 @@ CMOCKA_CFLAGS ?=
 CMOCKA_LIBS   ?= -lcmocka
 
 CFLAGS  := -std=gnu11 -O1 -g -Wall -Werror -I$(LIB)/include -I$(LIB)
-CFLAGS  += -I$(SYSTEM)
+CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY)
 CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
 LDLIBS  := $(CMOCKA_LIBS) -lpthread
 
-# libpnut, the system program's modules, the interfaces' generated code
+# libpnut, the programs' modules, the interfaces' generated code
 # (make gen) and nanopb
 
 SRCS    := $(wildcard $(LIB)/*.c) $(wildcard $(NANOPB)/pb_*.c)
 SRCS    += $(shell find $(GEN) -name '*.c' 2> /dev/null)
 SRCS    += $(filter-out %/main.c,$(wildcard $(SYSTEM)/*.c))
+SRCS    += $(filter-out %/main.c,$(wildcard $(TELEPHONY)/*.c))
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
+HDRS    += $(wildcard $(TELEPHONY)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)
 TESTS   := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 

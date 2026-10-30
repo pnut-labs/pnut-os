@@ -10,10 +10,11 @@ config PNUT_COMMANDS
 	default n
 	depends on PNUT_LIB && NETUTILS_NANOPB
 	---help---
-		pnut-os's commands for NSH, for developers (RFC 0012).  So far
-		settings: list, read, change and reset settings (RFC 0025).  A
-		command typed in the developer's shell may do what the system UI
-		may (PNUT_SETTINGS_SHELLS).
+		pnut-os's commands for NSH, for developers (RFC 0012): settings,
+		to list, read, change and reset settings (RFC 0025); telephony,
+		the modem's state, the SIM's PIN and an AT command passed
+		through (RFC 0030).  A command typed in the developer's shell may
+		do what the system UI may (PNUT_SETTINGS_SHELLS).
 
 if PNUT_COMMANDS
 

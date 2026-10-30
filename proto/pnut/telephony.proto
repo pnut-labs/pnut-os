@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Telephony (RFC 0030): the cellular modem, owned by the telephony
+// program.  It announces the modem's and the network's state on the
+// telephony topic, and the network's time on network_time (time.proto).
+// A SIM that needs its PIN waits for EnterPin.  SMS, calls and mobile data
+// come in the RFC's later steps.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Telephony {
+  option (pnut.iface) = 5;
+
+  // The state, as on the topic
+  rpc Status (TelephonyStatusRequest) returns (TelephonyInfo) {
+    option (pnut.method) = 1;
+  }
+
+  // Hand the SIM its PIN; done when the SIM has taken or refused it.  Only
+  // the system UI and the developer's shell may.
+  rpc EnterPin (TelephonyPinRequest) returns (TelephonyReply) {
+    option (pnut.method) = 2;
+  }
+
+  // Hand the SIM its PUK, with a new PIN.  The same.
+  rpc EnterPuk (TelephonyPukRequest) returns (TelephonyReply) {
+    option (pnut.method) = 3;
+  }
+
+  // The system interface (RFC 0004): one AT command passed through, for
+  // diagnosis, and the modem's answer.  Only the system UI and the
+  // developer's shell may.
+  rpc Command (TelephonyCommandRequest) returns (TelephonyCommandReply) {
+    option (pnut.method) = 4;
+  }
+}
+
+// The detail of an error answer (pnut.Error's code)
+message TelephonyError {
+  enum Code {
+    NONE = 0;
+    NO_MODEM = 1;                 // The modem is not on, or not answering
+    NOT_NEEDED = 2;               // The SIM asks for no PIN, or no PUK, now
+    REFUSED = 3;                  // The SIM refused it
+    BUSY = 4;                     // Too many commands wait: try again
+    DENIED = 5;                   // Not for this caller
+  }
+}
+
+message TelephonyStatusRequest {
+}
+
+// The modem's and the network's state, on the telephony topic.  It names
+// no number (RFC 0005): any native program reads topics.
+message TelephonyInfo {
+  option (pnut.topic) = "telephony";
+
+  enum Modem {
+    OFF = 0;
+    STARTING = 1;
+    ON = 2;
+    STOPPING = 3;
+    FAILED = 4;
+  }
+
+  enum Sim {
+    SIM_UNKNOWN = 0;              // Not read yet, or the modem is off
+    ABSENT = 1;
+    NEEDS_PIN = 2;
+    NEEDS_PUK = 3;
+    READY = 4;
+    BLOCKED = 5;                  // The PUK used up
+    SIM_FAILED = 6;
+  }
+
+  enum Registration {
+    NOT_REGISTERED = 0;
+    SEARCHING = 1;
+    HOME = 2;
+    ROAMING = 3;
+    DENIED = 4;
+  }
+
+  enum Tech {
+    NO_TECH = 0;
+    LTE = 1;
+    GSM = 2;
+  }
+
+  enum Data {
+    DATA_OFF = 0;
+    CONNECTING = 1;
+    DATA_ON = 2;
+    DATA_FAILED = 3;
+  }
+
+  // Why the modem is off, failed, or off the air
+  enum Reason {
+    NO_REASON = 0;
+    DISABLED = 1;                 // The enabled setting is off
+    AIRPLANE = 2;                 // Airplane mode: on, off the air
+    NO_SIM = 3;                   // No SIM: the modem went off
+    NO_ANSWER = 4;                // It did not answer after power-up
+    RESTARTS = 5;                 // It stopped too often: left off
+    GSM_TURNED_OFF = 6;           // GSM found no network, or stopped the
+                                  // modem: the gsm setting went off
+    NO_MODEM = 7;                 // The device's description has none
+  }
+
+  Modem modem = 1;
+  Sim sim = 2;
+  Registration registration = 3;
+  string operator_name = 4 [(nanopb).max_size = 24];
+  Tech tech = 5;
+  uint32 bars = 6;                // 0 to 4
+  sint32 dbm = 7;                 // The signal; 0 when not known
+  Data data = 8;
+  uint32 tries = 9;               // For the PIN, or for the PUK when it
+                                  // needs that; 0 when not known
+  Reason reason = 10;
+}
+
+// The PIN: sensitive (RFC 0026), never logged, never kept.  Up to 8
+// digits; nanopb counts the string's end in max_size.
+message TelephonyPinRequest {
+  string pin = 1 [(nanopb).max_size = 9];
+}
+
+// The PUK, always 8 digits, and a new PIN
+message TelephonyPukRequest {
+  string puk = 1 [(nanopb).max_size = 9];
+  string pin = 2 [(nanopb).max_size = 9];
+}
+
+message TelephonyReply {
+}
+
+message TelephonyCommandRequest {
+  string command = 1 [(nanopb).max_size = 256];  // "AT+CSQ"; the "AT" may
+                                                 // be left out
+  uint32 timeout = 2;             // In ms; 0 for the default
+}
+
+message TelephonyCommandReply {
+  bool ok = 1;                    // The modem answered OK
+  string reply = 2 [(nanopb).max_size = 1024];   // Its lines, the error's
+                                                 // among them
+}
+
+// Telephony's settings (RFC 0030)
+message TelephonySettings {
+  option (pnut.settings) = "telephony";
+
+  // The modem on; off shuts it down in order and cuts its supply
+  bool enabled = 1 [(pnut.setting) = { default: "true",
+                                       label: "telephony.enabled",
+                                       public: true }];
+
+  // GSM allowed besides LTE.  Off by default: on GSM the T-Deck Max's
+  // modem switches itself off.  A device whose modem copes with it turns
+  // it on in its target's defaults (RFC 0025).
+  bool gsm = 2 [(pnut.setting) = { default: "false",
+                                   label: "telephony.gsm" }];
+}

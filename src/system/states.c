@@ -1180,6 +1180,27 @@ static void states_who_is(FAR struct pnut_services_server_s *server,
    */
 
   ret = states_lookup(states, (pid_t)in->pid, false, &name);
+  if (ret == -ESRCH && states->config.shells != NULL &&
+      states->config.shells[0] != '\0')
+    {
+      /* No program's: a command typed in a shell is the shell's */
+
+      ret = states_origin(states, (pid_t)in->pid, &name);
+      if (ret == OK)
+        {
+          memset(&states->out.who, 0, sizeof(states->out.who));
+          if (programs_listed(states->config.shells, name))
+            {
+              states->out.who.shell = true;
+              pnut_services_who_reply(server, req, PNUT_STATUS_OK,
+                                      &states->out.who);
+              return;
+            }
+
+          ret = -ESRCH;
+        }
+    }
+
   if (ret < 0)
     {
       pnut_services_fail(server, req,

@@ -37,3 +37,21 @@ service system pnut_system
 on init
    start system
 #endif
+
+#ifdef CONFIG_PNUT_TELEPHONY
+
+/* The telephony program (RFC 0030), once the system program is ready: it
+ * reads Board's description, its settings and Service states.  Asked to
+ * stop, it powers the modem down in order first, which takes up to
+ * CONFIG_PNUT_TELEPHONY_FINISH ms of the gentle kill time.
+ */
+
+service telephony pnut_telephony
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on property:svc.system.state=ready
+   start telephony
+#endif

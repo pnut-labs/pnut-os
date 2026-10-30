@@ -87,6 +87,13 @@ struct states_config_s
   FAR const char *programs;       /* The programs' table (programs.h) */
   uint8_t services;               /* NxInit's services, at most */
   states_parent_t parent;         /* NULL: from /proc */
+
+  /* The developer's shells, by their programs' names, separated by
+   * spaces: Who tells a command typed in one as the shell's (RFC 0025).
+   * NULL or empty: none.
+   */
+
+  FAR const char *shells;
 };
 
 struct states_service_s
