@@ -59,6 +59,17 @@ struct pnut_module_s
   CODE void (*stop)(FAR struct pnut_module_s *module,
                     FAR struct pnut_loop_s *loop);
 
+  /* Called on the loop when it is asked to stop, before any module stops,
+   * for work that has to end in order first: a modem powered down
+   * (RFC 0030).  It returns zero (OK) with nothing to finish, or
+   * -EINPROGRESS and calls pnut_module_finished() once done; the loop
+   * runs on meanwhile, for the program's finish time at most
+   * (pnut_loop_config_s).  NULL for none.
+   */
+
+  CODE int (*finish)(FAR struct pnut_module_s *module,
+                     FAR struct pnut_loop_s *loop);
+
   /* Kept by the library */
 
   FAR struct pnut_module_s *next;
@@ -72,6 +83,7 @@ struct pnut_module_s
   FAR struct pnut_settings_cache_s *levels;
   bool started;
   bool ready;
+  bool finishing;                 /* Its finish has not ended yet */
 };
 
 /****************************************************************************
@@ -113,5 +125,16 @@ void pnut_module_ready(FAR struct pnut_module_s *module);
  ****************************************************************************/
 
 bool pnut_loop_ready(FAR struct pnut_loop_s *loop);
+
+/****************************************************************************
+ * Name: pnut_module_finished
+ *
+ * Description:
+ *   Say that the module has finished what its finish handler began: the
+ *   loop stops once every module has.
+ *
+ ****************************************************************************/
+
+void pnut_module_finished(FAR struct pnut_module_s *module);
 
 #endif /* __PNUT_OS_LIB_PNUT_MODULE_H */

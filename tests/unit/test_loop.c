@@ -315,6 +315,227 @@ static void test_loop_module_fails(void **state)
   pnut_loop_destroy(loop);
 }
 
+static int start_ready(FAR struct pnut_module_s *m,
+                       FAR struct pnut_loop_s *l)
+{
+  trace(g_trace, m->name[0] - 'a' + 'A');
+  pnut_module_ready(m);
+  return 0;
+}
+
+static int finish_now(FAR struct pnut_module_s *m, FAR struct pnut_loop_s *l)
+{
+  trace(g_trace, 'f');
+  return 0;
+}
+
+static void finished_later(FAR struct pnut_loop_s *loop,
+                           FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  trace(g_trace, 'd');
+  pnut_module_finished(arg);
+}
+
+static void stop_eio(FAR struct pnut_loop_s *loop,
+                     FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  trace(g_trace, 's');
+  pnut_loop_stop(loop, -EIO);
+}
+
+static int finish_later(FAR struct pnut_module_s *m,
+                        FAR struct pnut_loop_s *l)
+{
+  trace(g_trace, 'g');
+
+  /* Another stop while finishing changes nothing, its status neither */
+
+  assert_int_equal(pnut_timer_start(l, 5, 0, stop_eio, NULL, NULL), 0);
+  assert_int_equal(pnut_timer_start(l, 30, 0, finished_later, m, NULL), 0);
+  return -EINPROGRESS;
+}
+
+static int finish_never(FAR struct pnut_module_s *m,
+                        FAR struct pnut_loop_s *l)
+{
+  trace(g_trace, 'g');
+  return -EINPROGRESS;
+}
+
+static int finish_at_once(FAR struct pnut_module_s *m,
+                          FAR struct pnut_loop_s *l)
+{
+  /* A stop from a finish handler changes nothing */
+
+  trace(g_trace, 'h');
+  pnut_loop_stop(l, -EIO);
+  pnut_module_finished(m);
+  return -EINPROGRESS;
+}
+
+static int finish_fails(FAR struct pnut_module_s *m,
+                        FAR struct pnut_loop_s *l)
+{
+  trace(g_trace, 'x');
+  return -EIO;
+}
+
+static int start_stops(FAR struct pnut_module_s *m,
+                       FAR struct pnut_loop_s *l)
+{
+  trace(g_trace, 'B');
+  pnut_loop_stop(l, 7);
+  return 0;
+}
+
+static void test_loop_finish(void **state)
+{
+  FAR struct pnut_loop_s *loop;
+  struct pnut_module_s a;
+  struct pnut_module_s b;
+  struct trace_s t;
+  uint64_t start;
+
+  memset(&t, 0, sizeof(t));
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
+  g_trace = &t;
+
+  a.name = "a";
+  a.start = start_ready;
+  a.stop = stop_a;
+  a.finish = finish_now;
+  b.name = "b";
+  b.start = start_ready;
+  b.stop = stop_b;
+  b.finish = finish_later;
+
+  assert_int_equal(pnut_loop_create(NULL, &loop), 0);
+  assert_int_equal(pnut_module_add(loop, &a), 0);
+  assert_int_equal(pnut_module_add(loop, &b), 0);
+  assert_int_equal(pnut_timer_start(loop, 10, 0, sigterm_timer, NULL, NULL),
+                   0);
+
+  /* The modules are asked to finish in reverse order; the loop runs on,
+   * its timers too, until b has finished, well before the finish time;
+   * then they stop, and every timer is back
+   */
+
+  start = pnut_now();
+  assert_int_equal(pnut_loop_run(loop), 0);
+  assert_true(pnut_now() - start < 1000);
+  assert_string_equal(t.log, "ABgfsdba");
+  assert_int_equal(loop->timers.avail, loop->config.timers);
+
+  /* Without a module to finish, a stop is at once */
+
+  memset(&t, 0, sizeof(t));
+  a.finish = NULL;
+  b.finish = NULL;
+  assert_int_equal(pnut_timer_start(loop, 10, 0, stop_eio, NULL, NULL), 0);
+  assert_int_equal(pnut_loop_run(loop), -EIO);
+  assert_string_equal(t.log, "ABsba");
+  assert_int_equal(loop->timers.avail, loop->config.timers);
+  pnut_loop_destroy(loop);
+}
+
+static void test_loop_finish_edges(void **state)
+{
+  FAR struct pnut_loop_s *loop;
+  struct pnut_module_s a;
+  struct pnut_module_s b;
+  struct trace_s t;
+  uint64_t start;
+
+  memset(&t, 0, sizeof(t));
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
+  g_trace = &t;
+
+  a.name = "a";
+  a.start = start_ready;
+  a.stop = stop_a;
+  a.finish = finish_fails;
+  b.name = "b";
+  b.start = start_ready;
+  b.stop = stop_b;
+  b.finish = finish_at_once;
+
+  assert_int_equal(pnut_loop_create(NULL, &loop), 0);
+  assert_int_equal(pnut_module_add(loop, &a), 0);
+  assert_int_equal(pnut_module_add(loop, &b), 0);
+  assert_int_equal(pnut_timer_start(loop, 10, 0, sigterm_timer, NULL, NULL),
+                   0);
+
+  /* b finishes within its handler, a fails to: the loop stops at once,
+   * each asked once, with the signal's status
+   */
+
+  start = pnut_now();
+  assert_int_equal(pnut_loop_run(loop), 0);
+  assert_true(pnut_now() - start < 1000);
+  assert_string_equal(t.log, "ABhxba");
+  assert_int_equal(loop->timers.avail, loop->config.timers);
+
+  /* A stop as the modules start, with one started that finishes: no
+   * waiting for an event first
+   */
+
+  memset(&t, 0, sizeof(t));
+  a.finish = finish_now;
+  b.start  = start_stops;
+  b.finish = NULL;
+
+  start = pnut_now();
+  assert_int_equal(pnut_loop_run(loop), 7);
+  assert_true(pnut_now() - start < 1000);
+  assert_string_equal(t.log, "ABfba");
+  assert_int_equal(loop->timers.avail, loop->config.timers);
+  pnut_loop_destroy(loop);
+}
+
+static void test_loop_finish_timeout(void **state)
+{
+  FAR struct pnut_loop_s *loop;
+  struct pnut_loop_config_s config;
+  struct pnut_module_s a;
+  struct pnut_module_s b;
+  struct trace_s t;
+  uint64_t start;
+
+  memset(&t, 0, sizeof(t));
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
+  g_trace = &t;
+
+  a.name = "a";
+  a.start = start_ready;
+  a.stop = stop_a;
+  b.name = "b";
+  b.start = start_ready;
+  b.stop = stop_b;
+  b.finish = finish_never;
+
+  pnut_loop_defaults(&config);
+  config.finish = 50;
+  assert_int_equal(pnut_loop_create(&config, &loop), 0);
+  assert_int_equal(pnut_module_add(loop, &a), 0);
+  assert_int_equal(pnut_module_add(loop, &b), 0);
+  assert_int_equal(pnut_timer_start(loop, 10, 0, sigterm_timer, NULL, NULL),
+                   0);
+
+  /* b never finishes: the loop stops at the finish time */
+
+  start = pnut_now();
+  assert_int_equal(pnut_loop_run(loop), 0);
+  assert_true(pnut_now() - start >= 50);
+  assert_true(pnut_now() - start < 1000);
+  assert_string_equal(t.log, "ABgba");
+  assert_false(b.finishing);
+  assert_int_equal(loop->timers.avail, loop->config.timers);
+  pnut_loop_destroy(loop);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -330,6 +551,9 @@ int main(void)
     cmocka_unit_test(test_loop_unwatch_in_batch),
     cmocka_unit_test(test_loop_modules_and_sigterm),
     cmocka_unit_test(test_loop_module_fails),
+    cmocka_unit_test(test_loop_finish),
+    cmocka_unit_test(test_loop_finish_edges),
+    cmocka_unit_test(test_loop_finish_timeout),
   };
 
   return cmocka_run_group_tests_name("loop", tests, NULL, NULL);
