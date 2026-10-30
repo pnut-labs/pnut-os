@@ -120,6 +120,23 @@ static int system_sleep_rate(FAR void *arg, int32_t ppb)
 }
 #endif
 
+/* Power stops the other programs before it powers the device off: through
+ * Service states, which asks NxInit, and tells it once they have stopped
+ */
+
+#ifdef CONFIG_BOARDCTL_POWEROFF
+static void system_halted(FAR void *arg, int running)
+{
+  power_halted(arg, running);
+}
+
+static int system_halt(FAR void *arg, uint32_t wait,
+                       FAR struct power_s *power)
+{
+  return states_halt(arg, "system", wait, system_halted, power);
+}
+#endif
+
 /* Called once the program has stopped for Power: the settings are written
  * by now.  Returns only if the device could not be powered off, when the
  * program exits and NxInit starts it again.
@@ -260,9 +277,12 @@ int main(int argc, FAR char *argv[])
 
   memset(&pconfig, 0, sizeof(pconfig));
 #ifdef CONFIG_BOARDCTL_POWEROFF
-  pconfig.interval = CONFIG_PNUT_POWER_INTERVAL;
-  pconfig.reads    = CONFIG_PNUT_POWER_READS;
-  pconfig.board    = BOARD_SERVICE;
+  pconfig.interval  = CONFIG_PNUT_POWER_INTERVAL;
+  pconfig.reads     = CONFIG_PNUT_POWER_READS;
+  pconfig.board     = BOARD_SERVICE;
+  pconfig.halt      = system_halt;
+  pconfig.halt_arg  = states;
+  pconfig.halt_wait = CONFIG_PNUT_POWER_HALT_WAIT;
 #endif
   pconfig.measure  = system_measure;
 #ifdef CONFIG_BOARDCTL_SLEEP_RATE

@@ -120,7 +120,28 @@ static void power_read(FAR struct pnut_loop_s *loop,
 
   pnut_timer_cancel(loop, power->timer);
   power->timer = NULL;
-  power->off   = true;
+
+  /* The others first, each finishing in order; then this program.  Off
+   * only once this program stops for it: stopped meanwhile by NxInit, it
+   * starts again, and powers off in order then.
+   */
+
+  if (power->config.halt != NULL)
+    {
+      power->halting = true;
+      ret = power->config.halt(power->config.halt_arg,
+                               power->config.halt_wait, power);
+      if (ret >= 0)
+        {
+          return;
+        }
+
+      power->halting = false;
+      pnut_log(&power->module, PNUT_LOG_WARNING,
+               "Cannot stop the other programs: %d", ret);
+    }
+
+  power->off = true;
   pnut_loop_stop(loop, 0);
 }
 
@@ -481,4 +502,26 @@ void power_init(FAR struct power_s *power,
 bool power_wants_off(FAR const struct power_s *power)
 {
   return power->off;
+}
+
+/****************************************************************************
+ * Name: power_halted
+ ****************************************************************************/
+
+void power_halted(FAR struct power_s *power, int running)
+{
+  if (!power->halting)
+    {
+      return;
+    }
+
+  power->halting = false;
+  if (running > 0)
+    {
+      pnut_log(&power->module, PNUT_LOG_WARNING,
+               "%d programs still run: powering off", running);
+    }
+
+  power->off = true;
+  pnut_loop_stop(power->module.loop, 0);
 }

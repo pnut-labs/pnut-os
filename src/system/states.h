@@ -45,7 +45,7 @@
  * service's, remembered so as not to ask again
  */
 
-#define STATES_PENDING    8
+#define STATES_PENDING    (PROGRAMS_MAX + 8)
 #define STATES_STRANGERS  8
 
 /* How long the caller lookup waits for NxInit, in milliseconds; after it
@@ -70,6 +70,12 @@
  * services topic, serves pnut.Services, and tells the program's other
  * modules which program a task is.
  */
+
+/* The programs asked to stop have stopped, or the wait is over: how many
+ * still run
+ */
+
+typedef CODE void (*states_halted_t)(FAR void *arg, int running);
 
 /* A task's parent, or -1 when it cannot be told */
 
@@ -97,6 +103,7 @@ enum states_command_e
   STATES_LIST,
   STATES_START,
   STATES_STOP,
+  STATES_HALT,                    /* A stop of its own: states_halt() */
 };
 
 /* A command sent to NxInit: its answers come in the commands' order */
@@ -145,6 +152,13 @@ struct states_s
   bool serving;
   FAR struct pnut_publisher_s *changes;
   uint32_t seq;
+
+  /* The programs stopping: states_halt() */
+
+  states_halted_t halted;
+  FAR void *halted_arg;
+  FAR const char *halt_except;
+  FAR struct pnut_timer_s *halt_timer;
 
   union
   {
@@ -224,5 +238,25 @@ int states_origin(FAR struct states_s *states, pid_t pid,
 
 bool states_runs(FAR struct states_s *states, FAR const char *program,
                  FAR const char *service);
+
+/****************************************************************************
+ * Name: states_halt
+ *
+ * Description:
+ *   Ask NxInit to stop every program of the programs' table that runs,
+ *   except one, and call done once they have stopped, or once wait ms are
+ *   over: Power stops them before it powers the device off, so that each
+ *   finishes what has to end in order (RFC 0030: the modem powered down).
+ *   Services that are no program, the shells among them, are left.  except
+ *   is kept, not copied.
+ *
+ * Returned Value:
+ *   Zero (OK), and done is called later; -EBUSY while one is under way;
+ *   -ENOTCONN without NxInit; -EBUSY with no timer left.
+ *
+ ****************************************************************************/
+
+int states_halt(FAR struct states_s *states, FAR const char *except,
+                uint32_t wait, states_halted_t done, FAR void *arg);
 
 #endif /* __PNUT_OS_SYSTEM_STATES_H */

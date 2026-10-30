@@ -109,4 +109,15 @@ int programs_load(FAR struct programs_s *programs, FAR const char *path,
 bool programs_runs(FAR const struct programs_s *programs,
                    FAR const char *program, FAR const char *service);
 
+/****************************************************************************
+ * Name: programs_has
+ *
+ * Description:
+ *   Whether the table has the program.
+ *
+ ****************************************************************************/
+
+bool programs_has(FAR const struct programs_s *programs,
+                  FAR const char *program);
+
 #endif /* __PNUT_OS_SYSTEM_PROGRAMS_H */
