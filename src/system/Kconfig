@@ -181,6 +181,18 @@ config PNUT_POWER_READS
 		So that a dip under a burst of current, a radio sending, does not
 		power the device off.
 
+config PNUT_POWER_HALT_WAIT
+	int "The wait for the other programs to stop, in ms"
+	default 12000
+	range 1000 60000
+	depends on BOARDCTL_POWEROFF
+	---help---
+		Before the device powers off, Power asks NxInit to stop the other
+		programs, so that each finishes what has to end in order: the
+		telephony program powers the modem down (RFC 0030).  Longer than
+		CONFIG_SYSTEM_NXINIT_SERVICE_GENTLE_KILL_TIMEOUT, after which
+		NxInit kills a program that has not stopped.
+
 config PNUT_TIME_STATE
 	string "Time's state file"
 	default "/tmp/time"

@@ -270,6 +270,85 @@ static void states_publish(FAR struct states_s *states,
 }
 
 /****************************************************************************
+ * Name: states_halting
+ *
+ * Description:
+ *   How many of the programs states_halt() stops still run.
+ *
+ ****************************************************************************/
+
+static int states_halting(FAR struct states_s *states)
+{
+  FAR struct states_service_s *service;
+  int running = 0;
+  uint8_t i;
+
+  for (i = 0; i < states->nservices; i++)
+    {
+      service = &states->services[i];
+      if (service->state != PNUT_SERVICE_STATE_STATE_STOPPED &&
+          strcmp(service->name, states->halt_except) != 0 &&
+          programs_has(&states->programs, service->name))
+        {
+          running++;
+        }
+    }
+
+  return running;
+}
+
+/****************************************************************************
+ * Name: states_halt_end
+ *
+ * Description:
+ *   The programs have stopped, or the wait is over: tell.
+ *
+ ****************************************************************************/
+
+static void states_halt_end(FAR struct states_s *states)
+{
+  states_halted_t done = states->halted;
+  FAR void *arg = states->halted_arg;
+
+  if (states->halt_timer != NULL)
+    {
+      pnut_timer_cancel(states->module.loop, states->halt_timer);
+      states->halt_timer = NULL;
+    }
+
+  states->halted = NULL;
+  if (done != NULL)
+    {
+      done(arg, states_halting(states));
+    }
+}
+
+/****************************************************************************
+ * Name: states_halt_check
+ ****************************************************************************/
+
+static void states_halt_check(FAR struct states_s *states)
+{
+  if (states->halted != NULL && states_halting(states) == 0)
+    {
+      states_halt_end(states);
+    }
+}
+
+/****************************************************************************
+ * Name: states_halt_over
+ ****************************************************************************/
+
+static void states_halt_over(FAR struct pnut_loop_s *loop,
+                             FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct states_s *states = arg;
+
+  states->halt_timer = NULL;
+  states_halt_end(states);
+}
+
+/****************************************************************************
  * Name: states_update
  *
  * Description:
@@ -330,6 +409,8 @@ static void states_update(FAR struct states_s *states, FAR char *line)
         {
           states_publish(states, service);
         }
+
+      states_halt_check(states);
     }
 }
 
@@ -369,6 +450,8 @@ static void states_listed(FAR struct states_s *states)
     {
       pnut_module_ready(&states->module);
     }
+
+  states_halt_check(states);
 }
 
 /****************************************************************************
@@ -383,6 +466,19 @@ static void states_answer(FAR struct states_s *states,
                           FAR const struct states_command_s *command,
                           int status, uint32_t code, FAR const char *text)
 {
+  /* A stop of its own is answered to no one: its result is the state */
+
+  if (command->kind == STATES_HALT)
+    {
+      if (status != PNUT_STATUS_OK)
+        {
+          pnut_log(&states->module, PNUT_LOG_WARNING,
+                   "NxInit would not stop a program: %s", text);
+        }
+
+      return;
+    }
+
   if (!states->serving)
     {
       return;
@@ -1181,6 +1277,13 @@ static void states_stop(FAR struct pnut_module_s *module,
       states->timer = NULL;
     }
 
+  if (states->halt_timer != NULL)
+    {
+      pnut_timer_cancel(loop, states->halt_timer);
+      states->halt_timer = NULL;
+    }
+
+  states->halted = NULL;
   states_close(states);
 
   if (states->serving)
@@ -1340,4 +1443,79 @@ bool states_runs(FAR struct states_s *states, FAR const char *program,
                  FAR const char *service)
 {
   return programs_runs(&states->programs, program, service);
+}
+
+int states_halt(FAR struct states_s *states, FAR const char *except,
+                uint32_t wait, states_halted_t done, FAR void *arg)
+{
+  FAR struct states_service_s *service;
+  char line[STATES_NAME_MAX + 8];
+  int running;
+  uint8_t i;
+  int ret;
+
+  if (states->halted != NULL)
+    {
+      return -EBUSY;
+    }
+
+  if (states->fd < 0 || !states->listed)
+    {
+      return -ENOTCONN;
+    }
+
+  states->halt_except = except;
+  running = states_halting(states);
+
+  /* None to wait for: told on the loop all the same */
+
+  ret = pnut_timer_start(states->module.loop, running > 0 ? wait : 0, 0,
+                         states_halt_over, states, &states->halt_timer);
+  if (ret < 0)
+    {
+      states->halt_timer = NULL;
+      return ret;
+    }
+
+  states->halted     = done;
+  states->halted_arg = arg;
+
+  if (running == 0)
+    {
+      pnut_log(&states->module, PNUT_LOG_INFO, "No other program runs");
+      return OK;
+    }
+
+  for (i = 0; i < states->nservices; i++)
+    {
+      service = &states->services[i];
+      if (service->state == PNUT_SERVICE_STATE_STATE_STOPPED ||
+          strcmp(service->name, except) == 0 ||
+          !programs_has(&states->programs, service->name))
+        {
+          continue;
+        }
+
+      /* One stopping already is waited for, not asked again */
+
+      if (service->state == PNUT_SERVICE_STATE_STATE_STOPPING)
+        {
+          continue;
+        }
+
+      snprintf(line, sizeof(line), "stop %s\n", service->name);
+      ret = states_send(states, STATES_HALT, line, NULL);
+      if (ret < 0)
+        {
+          pnut_log(&states->module, PNUT_LOG_WARNING,
+                   "Cannot ask NxInit to stop %s: %d", service->name, ret);
+        }
+      else
+        {
+          pnut_log(&states->module, PNUT_LOG_INFO, "Stopping %s",
+                   service->name);
+        }
+    }
+
+  return OK;
 }

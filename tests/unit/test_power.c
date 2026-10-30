@@ -31,6 +31,7 @@
 #include <pnut/timer.h>
 
 #include "board.h"
+#include "pnut_internal.h"
 #include "power.h"
 
 /****************************************************************************
@@ -313,6 +314,122 @@ static void test_power_cutoff(void **state)
   assert_true(run(&battery, TEST_CUTOFF, 1000));
   assert_int_equal(battery.calls, 1 + TEST_READS);
   assert_int_equal(battery.chargers, battery.calls);
+}
+
+/* Powering off, the other programs are stopped first: the program stops
+ * only once they have, or the wait is over; one that cannot be asked
+ * stops it at once
+ */
+
+struct halt_s
+{
+  int ret;                        /* What halt returns */
+  int calls;
+  uint32_t wait;
+  FAR struct power_s *power;
+  FAR struct battery_s *battery;
+  int readings;                   /* Readings when it was called */
+};
+
+static void halt_done(FAR struct pnut_loop_s *loop,
+                      FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct halt_s *halt = arg;
+
+  /* Not off until this program stops for it */
+
+  assert_false(power_wants_off(halt->power));
+  power_halted(halt->power, 1);
+}
+
+static int halt(FAR void *arg, uint32_t wait, FAR struct power_s *power)
+{
+  FAR struct halt_s *halt = arg;
+
+  halt->calls++;
+  halt->wait     = wait;
+  halt->power    = power;
+  halt->readings = halt->battery->calls;
+  if (halt->ret < 0)
+    {
+      return halt->ret;
+    }
+
+  assert_int_equal(pnut_timer_start(power->module.loop, 100, 0, halt_done,
+                                    halt, NULL), 0);
+  return 0;
+}
+
+static uint64_t run_halt(FAR struct battery_s *battery,
+                         FAR struct halt_s *h)
+{
+  FAR struct power_s *power = calloc(1, sizeof(*power));
+  struct power_config_s config;
+  FAR struct pnut_loop_s *loop;
+  uint64_t start;
+
+  assert_non_null(power);
+  memset(&config, 0, sizeof(config));
+  config.interval  = TEST_INTERVAL;
+  config.cutoff    = TEST_CUTOFF;
+  config.reads     = TEST_READS;
+  config.gauge     = TEST_DEVICE;
+  config.measure   = measure;
+  config.arg       = battery;
+  config.halt      = halt;
+  config.halt_arg  = h;
+  config.halt_wait = 1234;
+  power_init(power, &config);
+
+  assert_int_equal(pnut_loop_create(NULL, &loop), 0);
+  assert_int_equal(pnut_module_add(loop, &power->module), 0);
+  assert_int_equal(pnut_timer_start(loop, 2000, 0, stop_handler, NULL,
+                                    NULL), 0);
+  start = pnut_now();
+  assert_int_equal(pnut_loop_run(loop), 0);
+  start = pnut_now() - start;
+
+  assert_true(power_wants_off(power));
+  pnut_loop_destroy(loop);
+  free(power);
+  return start;
+}
+
+static void test_power_halt(void **state)
+{
+  static const int mv[] =
+  {
+    3290
+  };
+
+  struct battery_s battery =
+  {
+    mv, NULL, 1, 0, 0
+  };
+
+  struct halt_s h;
+  uint64_t took;
+
+  /* Asked, then told: the readings stop, and the program after */
+
+  memset(&h, 0, sizeof(h));
+  h.battery = &battery;
+  took = run_halt(&battery, &h);
+  assert_int_equal(h.calls, 1);
+  assert_int_equal(h.wait, 1234);
+  assert_int_equal(battery.calls, h.readings);
+  assert_true(took >= TEST_INTERVAL * TEST_READS + 100);
+  assert_true(took < 1500);
+
+  /* Cannot be asked: at once */
+
+  memset(&h, 0, sizeof(h));
+  battery.calls = 0;
+  h.battery = &battery;
+  h.ret     = -ENOTCONN;
+  took = run_halt(&battery, &h);
+  assert_int_equal(h.calls, 1);
+  assert_true(took < TEST_INTERVAL * TEST_READS + 100);
 }
 
 /* A reading over the cutoff starts the count again */
@@ -657,6 +774,7 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test(test_power_cutoff),
+    cmocka_unit_test(test_power_halt),
     cmocka_unit_test(test_power_dip),
     cmocka_unit_test(test_power_external),
     cmocka_unit_test(test_power_external_arrives),

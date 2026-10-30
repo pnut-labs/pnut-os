@@ -260,3 +260,9 @@ bool programs_runs(FAR const struct programs_s *programs,
 
   return false;
 }
+
+bool programs_has(FAR const struct programs_s *programs,
+                  FAR const char *program)
+{
+  return programs_find(programs, program) != NULL;
+}
