@@ -85,6 +85,8 @@ struct tel_test_s
   uint64_t ready_at;              /* When its SIM answered ready */
   bool airplane;                  /* Airplane mode on, from the start */
   FAR struct pnut_publisher_s *airplanes;
+  FAR const char *clock;          /* Its clock, as +CCLK gives it */
+  uint64_t clock_at;              /* When its clock was read */
   FAR const char *ignore;         /* A command left unanswered, once */
   bool no_ua;                     /* Opens no channel */
   bool off_seen;                  /* The rail went off with the modem off */
@@ -259,6 +261,12 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
   else if (strcmp(cmd, "AT+CFUN?") == 0)
     {
       tel_test_say(t, t->cfun == 4 ? "+CFUN: 4" : "+CFUN: 1");
+    }
+  else if (strcmp(cmd, "AT+CCLK?") == 0)
+    {
+      tel_test_say(t, t->clock != NULL ? t->clock :
+                   "+CCLK: \"26/10/30,13:34:56+04\"");
+      t->clock_at = pnut_now();
     }
 
   tel_test_say(t, "OK");
@@ -512,6 +520,7 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
       ((t->was_on && t->times_seen > 0) ||
        (t->airplane && t->ready_at != 0 &&
         pnut_now() - t->ready_at > 500) ||
+       (t->was_on && t->clock_at != 0 && pnut_now() - t->clock_at > 200) ||
        (t->no_sim && t->info.reason ==
         PNUT_TELEPHONY_INFO_REASON_NO_SIM &&
         t->info.modem == PNUT_TELEPHONY_INFO_MODEM_OFF)))
@@ -738,7 +747,11 @@ static void test_telephony_life(void **state)
   assert_null(strstr(t->commands, "AT+CNBP=0x"));
   assert_non_null(strstr(t->commands, "AT+CNMP=38;"));
 
-  /* The network's time, as the message came */
+  /* The network's time, as the message came; no clock read, the modem
+   * started here
+   */
+
+  assert_null(strstr(t->commands, "AT+CCLK?;"));
 
   assert_int_equal(t->times_seen, 1);
   assert_int_equal(t->time.utc, T_UTC);
@@ -821,6 +834,66 @@ static void test_telephony_airplane(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telephony_clock_before
+ *
+ * Description:
+ *   A modem found running, whose network sent its time before this start
+ *   and does not again: its clock is read once, as the modem's, the
+ *   network's time from an unknown time before.
+ *
+ ****************************************************************************/
+
+static void test_telephony_clock_before(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->rail  = true;
+  t->on    = true;
+  t->mux   = true;
+  t->timed = true;                /* Sent before: not again */
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_true(t->was_on);
+  assert_non_null(strstr(t->commands, "AT+CCLK?;"));
+  assert_int_equal(t->times_seen, 1);
+  assert_int_equal(t->time.utc, T_UTC);
+  assert_true(t->time.has_offset);
+  assert_int_equal(t->time.offset, 3600);
+  assert_false(t->time.dst);
+  assert_int_equal(t->time.uncertainty, 60000);
+  assert_int_equal(t->time.kind, PNUT_NETWORK_TIME_KIND_MODEM_CLOCK);
+
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_clock_unset
+ *
+ * Description:
+ *   A modem found running whose clock is in +00, as the A7682E's is until
+ *   the network sends its time: read, and left aside.
+ *
+ ****************************************************************************/
+
+static void test_telephony_clock_unset(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->rail  = true;
+  t->on    = true;
+  t->mux   = true;
+  t->timed = true;
+  t->clock = "+CCLK: \"26/10/30,13:34:56+00\"";
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_true(t->was_on);
+  assert_non_null(strstr(t->commands, "AT+CCLK?;"));
+  assert_int_equal(t->times_seen, 0);
+
+  tel_test_free(t);
+}
+
+/****************************************************************************
  * Name: test_telephony_slow
  *
  * Description:
@@ -878,6 +951,8 @@ int main(void)
     cmocka_unit_test(test_telephony_life),
     cmocka_unit_test(test_telephony_left_on),
     cmocka_unit_test(test_telephony_airplane),
+    cmocka_unit_test(test_telephony_clock_before),
+    cmocka_unit_test(test_telephony_clock_unset),
     cmocka_unit_test(test_telephony_slow),
     cmocka_unit_test(test_telephony_no_channels),
   };
