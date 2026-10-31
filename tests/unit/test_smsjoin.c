@@ -195,8 +195,9 @@ static void test_smsjoin_copies(void **state)
  * Name: test_smsjoin_wait
  *
  * Description:
- *   No room for another long message while SMSJOIN_MESSAGES are joined;
- *   after a day, one delivered with a mark where its part is missing.
+ *   After a day, a long message delivered with a mark where its part is
+ *   missing; with SMSJOIN_MESSAGES joined, the oldest given up for a new
+ *   one.
  *
  ****************************************************************************/
 
@@ -221,13 +222,17 @@ static void test_smsjoin_wait(void **state)
       assert_int_equal(smsjoin_add(j, &d, (int16_t)(10 + i), 300, m), 0);
     }
 
-  sj_part(&d, "+48444", 99, 2, 1, "no room");
-  assert_int_equal(smsjoin_add(j, &d, 50, 300, m), -ENOSPC);
-
-  /* Not yet a day; then the oldest, with its gap */
+  /* Not yet a day: none */
 
   assert_int_equal(smsjoin_expired(j, 100 + SMSJOIN_WAIT - 1, m), 0);
-  assert_int_equal(smsjoin_expired(j, 100 + SMSJOIN_WAIT, m), 1);
+
+  /* No room for another: the one that has waited longest goes, with its
+   * gap, and the new part takes its place; parts that never complete
+   * cannot keep long messages out
+   */
+
+  sj_part(&d, "+48444", 99, 2, 1, "no room ");
+  assert_int_equal(smsjoin_add(j, &d, 50, 400, m), SMSJOIN_EVICTED);
   assert_string_equal(m->text, "first " SMSJOIN_GAP " last");
   assert_true(m->gaps);
   assert_int_equal(m->nslots, 2);
@@ -235,9 +240,27 @@ static void test_smsjoin_wait(void **state)
   assert_int_equal(m->slots[1], 3);
   smsjoin_free(m);
 
-  /* Its room taken by the next */
+  sj_part(&d, "+48444", 99, 2, 2, "after all");
+  assert_int_equal(smsjoin_add(j, &d, 51, 401, m), 1);
+  assert_string_equal(m->text, "no room after all");
+  smsjoin_free(m);
 
-  assert_int_equal(smsjoin_add(j, &d, 50, 300, m), 0);
+  /* Full again, every one in the same second: the one that came first
+   * goes
+   */
+
+  sj_part(&d, "+48555", 1, 2, 1, "newer");
+  assert_int_equal(smsjoin_add(j, &d, 60, 300, m), 0);
+  sj_part(&d, "+48666", 1, 2, 1, "newest");
+  assert_int_equal(smsjoin_add(j, &d, 61, 300, m), SMSJOIN_EVICTED);
+  assert_string_equal(m->text, "waiting" SMSJOIN_GAP);
+  assert_int_equal(m->slots[0], 12);
+  smsjoin_free(m);
+
+  /* The others, a day after they came */
+
+  assert_int_equal(smsjoin_expired(j, 300 + SMSJOIN_WAIT, m), 1);
+  smsjoin_free(m);
 
   smsjoin_clear(j);
   free(m);

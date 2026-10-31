@@ -36,9 +36,14 @@
 #define SMSJOIN_WAIT      86400     /* Seconds a part waits for the rest */
 #define SMSJOIN_KEY       32        /* The key's characters (RFC 0029) */
 
-/* smsjoin_add(): a copy of a part already in */
+/* smsjoin_add(): a copy of a part already in; an older long message given
+ * up to make room, in out, and the part in its place; or given up, and
+ * the part not in (no memory)
+ */
 
-#define SMSJOIN_COPY      2
+#define SMSJOIN_COPY         2
+#define SMSJOIN_EVICTED      3
+#define SMSJOIN_EVICTED_ONLY 4
 
 /* Where a part is missing */
 
@@ -84,12 +89,14 @@ struct smsjoin_long_s
   uint8_t count;                    /* Parts in */
   bool binary;
   uint64_t first;                   /* When its first part came, in s */
+  uint32_t seq;                     /* Its place among them, the order */
   struct smsjoin_part_s parts[SMSJOIN_PARTS];
 };
 
 struct smsjoin_s
 {
   struct smsjoin_long_s longs[SMSJOIN_MESSAGES];
+  uint32_t seq;                     /* The next long message's */
 };
 
 /****************************************************************************
@@ -113,14 +120,20 @@ struct smsjoin_s
  *   other's when their texts do not tell them apart: nothing in the parts
  *   does.
  *
+ *   With SMSJOIN_MESSAGES long messages being joined already, the one
+ *   that has waited longest is given up, as a day's wait would, with a
+ *   mark for each part missing: parts never sent the rest of, as a flood
+ *   may, cannot keep other long messages out.
+ *
  * Returned Value:
  *   1 when out holds a message to deliver; 0 when the part waits for the
- *   rest; SMSJOIN_COPY when it is a copy, its slot to delete; -ENOSPC
- *   when SMSJOIN_MESSAGES long messages are being joined already, and the
- *   part stays in the modem; -ENOMEM: a whole message or a lone part to
- *   read again later, and a long one complete but not joined, which
- *   smsjoin_expired() gives next; -EINVAL for a part numbered 0, or beyond
- *   its message's parts.
+ *   rest; SMSJOIN_COPY when it is a copy, its slot to delete;
+ *   SMSJOIN_EVICTED when out holds an older long message given up to make
+ *   room, and the part waits in its place; SMSJOIN_EVICTED_ONLY when out
+ *   holds that message, but the part, out of memory, is to be read again
+ *   later; -ENOMEM: the part to read again later (and a long message
+ *   complete but not joined, if any, smsjoin_expired() gives next);
+ *   -EINVAL for a part numbered 0, or beyond its message's parts.
  *
  ****************************************************************************/
 

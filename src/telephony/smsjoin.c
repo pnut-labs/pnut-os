@@ -191,6 +191,7 @@ int smsjoin_add(FAR struct smsjoin_s *join,
   FAR struct smsjoin_long_s *l = NULL;
   FAR struct smsjoin_long_s *free_long = NULL;
   FAR struct smsjoin_part_s *p;
+  bool evicted = false;
   int i;
 
   /* A whole message: delivered as it is */
@@ -234,13 +235,38 @@ int smsjoin_add(FAR struct smsjoin_s *join,
         }
     }
 
-  if (l == NULL)
+  /* No room: the long message that has waited longest is given up, as a
+   * day's wait would, so that parts never sent the rest of, as a flood
+   * may, cannot keep every other long message out
+   */
+
+  if (l == NULL && free_long == NULL)
     {
-      if (free_long == NULL)
+      free_long = &join->longs[0];
+      for (i = 1; i < SMSJOIN_MESSAGES; i++)
         {
-          return -ENOSPC;
+          /* The oldest by its first part's time, then by when it came
+           * (parts read at start come in the same second)
+           */
+
+          if (join->longs[i].first < free_long->first ||
+              (join->longs[i].first == free_long->first &&
+               (int32_t)(join->longs[i].seq - free_long->seq) < 0))
+            {
+              free_long = &join->longs[i];
+            }
         }
 
+      if (smsjoin_make(free_long, out) < 0)
+        {
+          return -ENOMEM;
+        }
+
+      evicted = true;
+    }
+
+  if (l == NULL)
+    {
       l = free_long;
       memset(l, 0, sizeof(*l));
       l->used  = true;
@@ -248,6 +274,7 @@ int smsjoin_add(FAR struct smsjoin_s *join,
       l->ref   = part->ref;
       l->total = part->total;
       l->first = now;
+      l->seq   = join->seq++;
       strlcpy(l->sender, part->sender, sizeof(l->sender));
     }
 
@@ -280,7 +307,7 @@ int smsjoin_add(FAR struct smsjoin_s *join,
           smsjoin_drop(l);
         }
 
-      return -ENOMEM;
+      return evicted ? SMSJOIN_EVICTED_ONLY : -ENOMEM;
     }
 
   p->in   = true;
@@ -288,6 +315,11 @@ int smsjoin_add(FAR struct smsjoin_s *join,
   p->sent = part->sent;
   l->binary = l->binary || part->binary;
   l->count++;
+
+  if (evicted)
+    {
+      return SMSJOIN_EVICTED;     /* A new long one, of 2 parts or more */
+    }
 
   if (l->count < l->total)
     {
