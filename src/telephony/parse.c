@@ -555,3 +555,48 @@ int tel_tries(FAR const char *line, FAR uint32_t *pin, FAR uint32_t *puk)
   *puk = (uint32_t)b;
   return OK;
 }
+
+int tel_sms_slot(FAR const char *line)
+{
+  char mem[8];
+  long slot;
+
+  if (!parse_starts(line, "+CMTI:") ||
+      !tel_field(tel_args(line), 0, mem, sizeof(mem)) ||
+      !parse_int(tel_args(line), 1, &slot) || slot < 0 ||
+      slot > INT16_MAX)
+    {
+      return -EINVAL;
+    }
+
+  return strcmp(mem, "ME") == 0 ? (int)slot : -ENODEV;
+}
+
+int tel_sms_listed(FAR const char *line)
+{
+  long slot;
+  long length;
+
+  if (!parse_starts(line, "+CMGL:") || !parse_int(tel_args(line), 0, &slot)
+      || !parse_int(tel_args(line), 3, &length) || slot < 0 ||
+      slot > INT16_MAX || length <= 0)
+    {
+      return -EINVAL;
+    }
+
+  return (int)slot;
+}
+
+int tel_sms_length(FAR const char *line)
+{
+  long length;
+
+  if (!parse_starts(line, "+CMGR:") ||
+      !parse_int(tel_args(line), 2, &length) || length <= 0 ||
+      length > 255)
+    {
+      return -EINVAL;
+    }
+
+  return (int)length;
+}

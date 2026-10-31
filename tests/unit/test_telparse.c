@@ -196,6 +196,35 @@ static void test_telparse_state(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telparse_sms
+ *
+ * Description:
+ *   SMS in the modem's memory: the slot one was stored in, one listed,
+ *   the length of one read; lines of other kinds, or broken, refused.
+ *
+ ****************************************************************************/
+
+static void test_telparse_sms(void **state)
+{
+  assert_int_equal(tel_sms_slot("+CMTI: \"ME\",3"), 3);
+  assert_int_equal(tel_sms_slot("+CMTI: \"SM\",12"), -ENODEV);
+  assert_int_equal(tel_sms_slot("+CMTI: \"ME\",40000"), -EINVAL);
+  assert_int_equal(tel_sms_slot("+CMTI: \"ME\""), -EINVAL);
+  assert_int_equal(tel_sms_slot("+CMGL: 3,1,,24"), -EINVAL);
+
+  assert_int_equal(tel_sms_listed("+CMGL: 3,1,,24"), 3);
+  assert_int_equal(tel_sms_listed("+CMGL: 0,0,\"\",160"), 0);
+  assert_int_equal(tel_sms_listed("+CMGL: 3,1"), -EINVAL);
+  assert_int_equal(tel_sms_listed("+CMGL: x,1,,24"), -EINVAL);
+
+  assert_int_equal(tel_sms_length("+CMGR: 1,,24"), 24);
+  assert_int_equal(tel_sms_length("+CMGR: 0,\"\",159"), 159);
+  assert_int_equal(tel_sms_length("+CMGR: 1,,0"), -EINVAL);
+  assert_int_equal(tel_sms_length("+CMGR: 1,,300"), -EINVAL);
+  assert_int_equal(tel_sms_length("+CSQ: 20,99"), -EINVAL);
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -206,6 +235,7 @@ int main(void)
     cmocka_unit_test(test_telparse_fields),
     cmocka_unit_test(test_telparse_time),
     cmocka_unit_test(test_telparse_state),
+    cmocka_unit_test(test_telparse_sms),
   };
 
   return cmocka_run_group_tests_name("telparse", tests, NULL, NULL);

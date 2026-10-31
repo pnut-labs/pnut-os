@@ -175,4 +175,24 @@ int tel_sim(FAR const char *line);
 
 int tel_tries(FAR const char *line, FAR uint32_t *pin, FAR uint32_t *puk);
 
+/****************************************************************************
+ * Name: tel_sms_slot, tel_sms_listed, tel_sms_length
+ *
+ * Description:
+ *   SMS in the modem's memory, in PDU mode: the slot an SMS was stored in
+ *   (+CMTI: "ME",<slot>), the slot of one listed (+CMGL: <slot>,<stat>,,
+ *   <length>), and the length of one read (+CMGR: <stat>,,<length>), its
+ *   TPDU's octets; the PDU follows on the next line.
+ *
+ * Returned Value:
+ *   The slot, or the length; -EINVAL; for tel_sms_slot(), -ENODEV for an
+ *   SMS stored elsewhere than the modem's memory ("SM", the SIM): the
+ *   storage setting went, to be given again, and the memory listed.
+ *
+ ****************************************************************************/
+
+int tel_sms_slot(FAR const char *line);
+int tel_sms_listed(FAR const char *line);
+int tel_sms_length(FAR const char *line);
+
 #endif /* __PNUT_OS_TELEPHONY_PARSE_H */
