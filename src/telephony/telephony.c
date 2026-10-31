@@ -1798,6 +1798,35 @@ static void tel_air_read(FAR void *arg, int result, FAR const char *reply)
            tel_air_done);
 }
 
+/* The A7682E leaves AT+CFUN=4 on its own once its SIM is ready after a
+ * start (seen on 2026-10-30): airplane mode is given again then, and
+ * whenever the modem reports itself on the air in it
+ */
+
+static void tel_air_kept(FAR void *arg, int result, FAR const char *reply)
+{
+  FAR struct telephony_s *tel = arg;
+
+  tel->air_keeping = false;
+  tel_air_done(arg, result, reply);
+}
+
+static void tel_air_keep(FAR struct telephony_s *tel, bool on_air)
+{
+  if (tel->step != STEP_ON || !tel->airplane || tel->air_keeping)
+    {
+      return;
+    }
+
+  tel->air_keeping = tel_send(tel, "AT+CFUN=4", NULL, 10000,
+                              tel_air_kept) >= 0;
+  if (tel->air_keeping && on_air)
+    {
+      pnut_log(&tel->module, PNUT_LOG_WARNING,
+               "On the air in airplane mode: off again");
+    }
+}
+
 static void tel_air(FAR struct telephony_s *tel)
 {
   tel_publish(tel);
@@ -1864,6 +1893,7 @@ static void tel_sim_state(FAR struct telephony_s *tel, int sim)
         if (was != sim)
           {
             pnut_log(&tel->module, PNUT_LOG_INFO, "The SIM is ready");
+            tel_air_keep(tel, false);
             tel_refresh(tel);
           }
         break;
@@ -2142,6 +2172,12 @@ static void tel_registered(FAR struct telephony_s *tel)
                "searching" :
                reg == PNUT_TELEPHONY_INFO_REGISTRATION_DENIED ?
                "denied" : "none");
+
+      if (tel->airplane &&
+          reg != PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED)
+        {
+          tel_air_keep(tel, true);
+        }
     }
 
   s->registration = reg;
