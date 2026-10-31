@@ -32,6 +32,7 @@ JOBS    ?= $(shell nproc 2> /dev/null || echo 1)
 
 NANOPB_VERSION := 0.4.9.1
 NANOPB_SHA256  := 882cd8473ad932b24787e676a808e4fb29c12e086d20bcbfbacc66c183094b5c
+NANOPB_GH_SHA256 := 4575944a468718ef25f05eb01d994364650b581563089a9841986bb1e460eac3
 NANOPB_TARBALL := $(BUILD)/dl/nanopb-$(NANOPB_VERSION).tar.gz
 NANOPB         := $(BUILD)/nanopb-$(NANOPB_VERSION)
 NANOPB_LINK    := $(APPS)/netutils/nanopb/nanopb
@@ -183,15 +184,25 @@ nanopb: $(NANOPB)/pb.h | submodules
 	$(nanopb_link)
 
 # nanopb's server breaks HTTP/2 transfers off now and then ("stream not
-# closed cleanly"), which failed CI jobs: HTTP/1.1, tried again on any error
+# closed cleanly"), which failed CI jobs: HTTP/1.1, tried again on any
+# error, for a minute at most.  When it is down (503 for hours,
+# 2026-10-31) or its file fails the hash, the tag's archive from nanopb's
+# GitHub is fetched instead: the same files, checked against their own
+# hash.
+
+NANOPB_CURL := curl -fsSL --http1.1 --retry 5 --retry-all-errors \
+               --retry-delay 5 --retry-max-time 60 -o $(NANOPB_TARBALL)
 
 $(NANOPB)/pb.h:
 	rm -rf $(NANOPB) $(NANOPB).tmp
 	mkdir -p $(BUILD)/dl $(NANOPB).tmp
-	curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 \
-	  -o $(NANOPB_TARBALL) \
-	  https://jpa.kapsi.fi/nanopb/download/nanopb-$(NANOPB_VERSION).tar.gz
-	echo "$(NANOPB_SHA256)  $(NANOPB_TARBALL)" | sha256sum -c -
+	if $(NANOPB_CURL) https://jpa.kapsi.fi/nanopb/download/nanopb-$(NANOPB_VERSION).tar.gz && \
+	   echo "$(NANOPB_SHA256)  $(NANOPB_TARBALL)" | sha256sum -c -; then :; \
+	else \
+	  echo "nanopb: trying GitHub's archive" >&2; \
+	  $(NANOPB_CURL) https://github.com/nanopb/nanopb/archive/refs/tags/$(NANOPB_VERSION).tar.gz && \
+	  echo "$(NANOPB_GH_SHA256)  $(NANOPB_TARBALL)" | sha256sum -c -; \
+	fi
 	tar xzf $(NANOPB_TARBALL) -C $(NANOPB).tmp --strip-components=1
 	mv $(NANOPB).tmp $(NANOPB)
 
