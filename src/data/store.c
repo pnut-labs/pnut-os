@@ -423,6 +423,15 @@ static int store_apply(FAR struct store_s *store, uint64_t conversation,
     {
       FAR const pnut_messages_record_head_t *head = &rec->kind.head;
 
+      /* Ids never go back, though the newest message is gone: a read
+       * record would cover a new message under an id used before
+       */
+
+      if (head->next > store->next_msg)
+        {
+          store->next_msg = head->next;
+        }
+
       if (idx < 0)
         {
           if (store_grow((FAR void **)&store->convs, &store->convs_cap,
@@ -902,6 +911,7 @@ static int store_plan_into(FAR struct store_s *store,
   head->which_kind = PNUT_MESSAGES_RECORD_HEAD_TAG;
   head->kind.head.version      = STORE_VERSION;
   head->kind.head.conversation = conv->id;
+  head->kind.head.next         = store->next_msg;
   strlcpy(head->kind.head.transport, conv->transport,
           sizeof(head->kind.head.transport));
   strlcpy(head->kind.head.peer, conv->peer, sizeof(head->kind.head.peer));
@@ -1022,6 +1032,7 @@ static int store_plan_rewrite(FAR struct store_s *store, uint32_t idx,
   memset(rw, 0, sizeof(*rw));
   rw->conversation = conv->id;
   rw->segment      = segment;
+  rw->next         = store->next_msg;
   ret = store_path(store, conv->id, segment, rw->path);
   if (ret < 0 ||
       snprintf(rw->temp, sizeof(rw->temp), "%s" STORE_TEMP, rw->path) >=
@@ -1358,26 +1369,29 @@ int store_plan_message(FAR struct store_s *store, FAR const char *transport,
   uint32_t i;
   int ret;
 
-  /* Over the limit still: no room could be made (RFC 0029) */
-
-  if (store->bytes > store->limit)
-    {
-      return -ENOSPC;
-    }
+  /* A key stored already, even deleted since: the transport delivers
+   * again what it was not let go of, also into a full store
+   */
 
   conv = store_find_peer(store, transport, peer);
   if (conv != NULL && key != 0)
     {
       for (i = 0; i < conv->nmsgs; i++)
         {
-          if (conv->msgs[i].key == key &&
-              (conv->msgs[i].flags & STORE_DELETED) == 0)
+          if (conv->msgs[i].key == key)
             {
               w->conversation = conv->id;
               w->message      = conv->msgs[i].id;
               return -EEXIST;
             }
         }
+    }
+
+  /* Over the limit still: no room could be made (RFC 0029) */
+
+  if (store->bytes > store->limit)
+    {
+      return -ENOSPC;
     }
 
   /* A new conversation is planned under its id to come; it joins the
@@ -1438,10 +1452,12 @@ int store_plan_status(FAR struct store_s *store, uint64_t message,
 }
 
 int store_plan_read(FAR struct store_s *store, uint64_t conversation,
-                    FAR struct store_write_s *w)
+                    uint64_t upto, FAR struct store_write_s *w)
 {
   FAR pnut_messages_record_t *rec = &store->rec;
   FAR struct store_conv_s *conv;
+  uint64_t newest;
+  uint32_t i;
 
   conv = store_find(store, conversation);
   if (conv == NULL)
@@ -1454,9 +1470,28 @@ int store_plan_read(FAR struct store_s *store, uint64_t conversation,
       return -EALREADY;
     }
 
+  newest = conv->msgs[conv->nmsgs - 1].id;
+  if (upto == 0 || upto > newest)
+    {
+      upto = newest;
+    }
+
+  for (i = 0; i < conv->nmsgs; i++)
+    {
+      if (conv->msgs[i].id <= upto && store_is_unread(&conv->msgs[i]))
+        {
+          break;
+        }
+    }
+
+  if (i == conv->nmsgs)
+    {
+      return -EALREADY;           /* Those unread came after upto */
+    }
+
   memset(rec, 0, sizeof(*rec));
   rec->which_kind   = PNUT_MESSAGES_RECORD_READ_TAG;
-  rec->kind.read.id = conv->msgs[conv->nmsgs - 1].id;
+  rec->kind.read.id = upto;
   w->message = rec->kind.read.id;
   return store_plan_into(store, conv, rec, w);
 }
@@ -2083,8 +2118,28 @@ void store_rewrite_run(FAR struct store_rewrite_s *rw)
       n = store_unframe(data + pos, len - pos, rec);
       switch (rec->which_kind)
         {
+          /* The head, with the next id now: the newest messages may go
+           * here
+           */
+
           case PNUT_MESSAGES_RECORD_HEAD_TAG:
-            keep = pos == 0;
+            if (pos == 0)
+              {
+                if (rec->kind.head.next < rw->next)
+                  {
+                    rec->kind.head.next = rw->next;
+                  }
+
+                n = store_frame(rec, out + olen, cap - olen);
+                if (n < 0)
+                  {
+                    rw->ret = n;
+                    goto done;
+                  }
+
+                olen += (size_t)n;
+                n = store_unframe(data + pos, len - pos, rec);
+              }
             break;
 
           case PNUT_MESSAGES_RECORD_MESSAGE_TAG:

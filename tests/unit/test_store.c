@@ -332,8 +332,8 @@ static void test_store_statuses(void **state)
   assert_int_equal(store_plan_status(&s->store, 999,
                    PNUT_MESSAGES_MESSAGE_STATUS_SENT, "", &s->w), -ENOENT);
 
-  assert_int_equal(st_run(s, store_plan_read(&s->store, c, &s->w)), 0);
-  assert_int_equal(store_plan_read(&s->store, c, &s->w), -EALREADY);
+  assert_int_equal(st_run(s, store_plan_read(&s->store, c, 0, &s->w)), 0);
+  assert_int_equal(store_plan_read(&s->store, c, 0, &s->w), -EALREADY);
 
   st_reload(s);
   conv = store_find(&s->store, c);
@@ -518,13 +518,13 @@ static void test_store_room(void **state)
 
   assert_int_equal(st_run(s, store_plan_status(&s->store, queued,
                    PNUT_MESSAGES_MESSAGE_STATUS_SENDING, "", &s->w)), 0);
-  assert_int_equal(st_run(s, store_plan_read(&s->store, c, &s->w)), 0);
+  assert_int_equal(st_run(s, store_plan_read(&s->store, c, 0, &s->w)), 0);
 
   /* Another conversation, all read, then one unread */
 
   assert_int_equal(st_message(s, "sms", "+2", "read too", false, NULL), 0);
   d = s->w.conversation;
-  assert_int_equal(st_run(s, store_plan_read(&s->store, d, &s->w)), 0);
+  assert_int_equal(st_run(s, store_plan_read(&s->store, d, 0, &s->w)), 0);
 
   while ((ret = st_message(s, "sms", "+3", "unread, stays", false, NULL))
          == 0)
@@ -683,6 +683,80 @@ static void test_store_records(void **state)
 }
 
 /****************************************************************************
+ * Name: test_store_ids
+ *
+ * Description:
+ *   A conversation read, the messages of its second segment deleted and
+ *   compacted away, the read record kept there: after a restart, ids go
+ *   on from the highest given, and a new message is not covered by the
+ *   read record.
+ *
+ ****************************************************************************/
+
+static void test_store_ids(void **state)
+{
+  FAR struct st_s *s = st_new(S_LIMIT, 6000);
+  FAR struct store_conv_s *conv;
+  struct store_rewrite_s rw;
+  uint64_t gone[160];
+  uint64_t newest = 0;
+  uint64_t c = 0;
+  uint32_t last;
+  uint32_t i;
+  int n = 0;
+
+  for (i = 0; i < 160; i++)
+    {
+      assert_int_equal(st_message(s, "sms", "+1",
+                                  "a message long enough to count, read "
+                                  "and deleted", false, NULL), 0);
+      newest = s->w.message;
+      c = s->w.conversation;
+    }
+
+  assert_int_equal(st_run(s, store_plan_read(&s->store, c, 0, &s->w)), 0);
+  conv = store_find(&s->store, c);
+  assert_true(conv->nsegs >= 2);
+  last = conv->segs[conv->nsegs - 1].number;
+  for (i = 0; i < conv->nmsgs; i++)
+    {
+      if (conv->msgs[i].segment == last)
+        {
+          gone[n++] = conv->msgs[i].id;
+        }
+    }
+
+  for (i = 0; i < (uint32_t)n; i++)
+    {
+      assert_int_equal(st_run(s, store_plan_delete(&s->store, c, gone[i],
+                                                   &s->w)), 0);
+    }
+
+  /* The segment rewritten: its head and the read record, which covers
+   * messages in the first
+   */
+
+  assert_int_equal(store_plan_compact(&s->store, &rw), 0);
+  assert_int_equal(rw.segment, last);
+  store_rewrite_run(&rw);
+  assert_int_equal(rw.ret, 0);
+  assert_true(rw.size > 0);
+  store_rewritten(&s->store, &rw);
+
+  st_reload(s);
+  conv = store_find(&s->store, c);
+  assert_int_equal(conv->read, newest);
+  assert_true(s->store.next_msg > newest);
+  assert_int_equal(st_message(s, "sms", "+1", "new", false, NULL), 0);
+  assert_true(s->w.message > newest);
+  assert_int_equal(store_find(&s->store, c)->unread, 1);
+  st_reload(s);
+  assert_int_equal(store_find(&s->store, c)->unread, 1);
+
+  st_free(s);
+}
+
+/****************************************************************************
  * Name: test_store_compact
  *
  * Description:
@@ -767,6 +841,7 @@ int main(void)
     cmocka_unit_test(test_store_broken),
     cmocka_unit_test(test_store_records),
     cmocka_unit_test(test_store_compact),
+    cmocka_unit_test(test_store_ids),
   };
 
   return cmocka_run_group_tests_name("store", tests, NULL, NULL);

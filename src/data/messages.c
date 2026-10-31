@@ -7,10 +7,11 @@
  ****************************************************************************/
 
 /* Messages (RFC 0029): the device's one store of text messages, served to
- * the system UI and the developer's shell.  The store's files are read at
- * start on a worker; every change after that goes to the workers one at a
- * time, and is answered once it is on flash.  Message texts and peers are
- * never logged (RFC 0026).
+ * the system UI and the developer's shell, and filled by the transports
+ * (sms, Telephony's).  The store's files are read at start on a worker;
+ * every change after that goes to the workers one at a time, and is
+ * answered once it is on flash.  Message texts and peers are never logged
+ * (RFC 0026).
  */
 
 /****************************************************************************
@@ -477,6 +478,7 @@ static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg)
   FAR struct messages_s *m = msg_from_work(arg);
   FAR struct store_write_s *w = &m->work.write;
   FAR struct messages_job_s *job = &m->current;
+  pnut_messages_delivered_t delivered;
   pnut_messages_reply_t reply;
   pnut_messages_sent_t sent;
 
@@ -517,6 +519,14 @@ static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg)
             sent.message      = w->message;
             pnut_messages_send_reply(&m->server, &job->req,
                                      PNUT_STATUS_OK, &sent);
+            break;
+
+          case MESSAGES_DELIVER:
+            memset(&delivered, 0, sizeof(delivered));
+            delivered.conversation = w->conversation;
+            delivered.message      = w->message;
+            pnut_messages_deliver_reply(&m->server, &job->req,
+                                        PNUT_STATUS_OK, &delivered);
             break;
 
           case MESSAGES_MARK_READ:
@@ -837,7 +847,7 @@ static bool msg_start_job(FAR struct messages_s *m)
 
       case MESSAGES_MARK_READ:
         ret = store_plan_read(&m->store, job->in.mark_read.conversation,
-                              &m->work.write);
+                              job->in.mark_read.upto, &m->work.write);
         if (ret == -EALREADY)
           {
             pnut_messages_mark_read_reply(&m->server, &job->req,
@@ -898,6 +908,60 @@ static bool msg_start_job(FAR struct messages_s *m)
         if (ret == -ENOSPC)
           {
             m->room = true;         /* Perhaps there is room by now */
+          }
+
+        if (ret < 0)
+          {
+            break;
+          }
+
+        return msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run,
+                          msg_written, &m->work.write);
+
+      case MESSAGES_DELIVER:
+        rec = calloc(1, sizeof(*rec));
+        if (rec == NULL)
+          {
+            ret = -ENOMEM;
+            break;
+          }
+
+        rec->status = PNUT_MESSAGES_MESSAGE_STATUS_UNREAD;
+        rec->stored = (int64_t)time(NULL);
+        rec->sent   = job->in.deliver.sent;
+        strlcpy(rec->text, job->in.deliver.text, sizeof(rec->text));
+        strlcpy(rec->sender, job->in.deliver.sender, sizeof(rec->sender));
+        strlcpy(rec->key, job->in.deliver.key, sizeof(rec->key));
+        ret = store_plan_message(&m->store, job->transport,
+                                 job->in.deliver.peer, rec, &m->work.write);
+        free(rec);
+        if (ret == -EEXIST)
+          {
+            /* Stored already, as before a reset: the transport may let
+             * go of it
+             */
+
+            pnut_messages_delivered_t delivered;
+
+            memset(&delivered, 0, sizeof(delivered));
+            delivered.conversation = m->work.write.conversation;
+            delivered.message      = m->work.write.message;
+            delivered.again        = true;
+            pnut_messages_deliver_reply(&m->server, &job->req,
+                                        PNUT_STATUS_OK, &delivered);
+            return false;
+          }
+
+        if (ret == -ENOSPC)
+          {
+            /* The transport keeps it: the log is all the owner has until
+             * Notifications (RFC 0029)
+             */
+
+            pnut_log(&m->module, PNUT_LOG_WARNING,
+                     "A message from %s refused: the store is full",
+                     job->transport);
+            m->room = true;
           }
 
         if (ret < 0)
@@ -1037,13 +1101,82 @@ static void msg_next(FAR struct messages_s *m)
 }
 
 /****************************************************************************
+ * Name: msg_register, msg_transport
+ *
+ * Description:
+ *   A transport registered on the caller's connection, in place of one
+ *   of its name before (its program started again); the transport a
+ *   connection carries, or NULL.
+ *
+ ****************************************************************************/
+
+static void msg_register(FAR struct messages_s *m,
+                         FAR const struct pnut_request_s *req,
+                         FAR const char *name)
+{
+  FAR struct messages_transport_s *t = NULL;
+  pnut_messages_reply_t reply;
+  int i;
+
+  for (i = 0; i < MESSAGES_TRANSPORTS; i++)
+    {
+      if (m->transports[i].used &&
+          strcmp(m->transports[i].name, name) == 0)
+        {
+          t = &m->transports[i];
+          break;
+        }
+
+      if (!m->transports[i].used && t == NULL)
+        {
+          t = &m->transports[i];
+        }
+    }
+
+  if (t == NULL)
+    {
+      msg_fail(m, req, PNUT_STATUS_BUSY, PNUT_MESSAGES_ERROR_CODE_NONE,
+               "too many transports");
+      return;
+    }
+
+  t->used = true;
+  t->from = req->from;
+  strlcpy(t->name, name, sizeof(t->name));
+  pnut_log(&m->module, PNUT_LOG_INFO, "Transport %s registered", name);
+
+  memset(&reply, 0, sizeof(reply));
+  pnut_messages_register_transport_reply(&m->server, req, PNUT_STATUS_OK,
+                                         &reply);
+}
+
+static FAR struct messages_transport_s *
+msg_transport(FAR struct messages_s *m, FAR const struct pnut_request_s *req)
+{
+  int i;
+
+  for (i = 0; i < MESSAGES_TRANSPORTS; i++)
+    {
+      if (m->transports[i].used &&
+          m->transports[i].from.conn == req->from.conn &&
+          m->transports[i].from.gen == req->from.gen)
+        {
+          return &m->transports[i];
+        }
+    }
+
+  return NULL;
+}
+
+/****************************************************************************
  * Name: msg_allowed
  *
  * Description:
  *   A caller allowed, now that Service states said who it is: here, the
- *   system UI and the developer's shell (RFC 0029); apps come with the
- *   runtime.  Its request waits for the store's files to be read, and for
- *   the jobs before it.
+ *   system UI and the developer's shell (RFC 0029), and the telephony
+ *   program registering sms; apps come with the runtime.  A registration
+ *   is done at once; another request waits for the store's files to be
+ *   read, and for the jobs before it.
  *
  ****************************************************************************/
 
@@ -1053,6 +1186,13 @@ static void msg_allowed(FAR struct messages_s *m,
 {
   FAR pnut_messages_conversations_t *out;
   FAR struct messages_job_s *job;
+
+  if (kind == MESSAGES_REGISTER)
+    {
+      msg_register(m, req, ((FAR const pnut_messages_register_request_t *)
+                            in)->transport);
+      return;
+    }
 
   /* The conversations come from memory: at once, once it holds them */
 
@@ -1106,12 +1246,23 @@ static void msg_who(FAR struct pnut_services_client_s *client, int status,
       return;
     }
 
+  /* A transport is its program's; the rest the system UI's and the
+   * developer's shell's (RFC 0029)
+   */
+
   if (status != PNUT_STATUS_OK || out == NULL ||
-      (strcmp(out->name, MESSAGES_UI) != 0 && !out->shell))
+      (ask->job.kind == MESSAGES_REGISTER ?
+       strcmp(out->name, MESSAGES_SMS_OWNER) != 0 :
+       strcmp(out->name, MESSAGES_UI) != 0 && !out->shell))
     {
-      msg_fail(m, &ask->job.req, status == PNUT_STATUS_UNAVAILABLE ||
-               status == PNUT_STATUS_TIMEOUT ? PNUT_STATUS_UNAVAILABLE :
+      bool unknown = status == PNUT_STATUS_UNAVAILABLE ||
+                     status == PNUT_STATUS_TIMEOUT;
+
+      msg_fail(m, &ask->job.req, unknown ? PNUT_STATUS_UNAVAILABLE :
                PNUT_STATUS_DENIED, PNUT_MESSAGES_ERROR_CODE_DENIED,
+               unknown ? "who calls cannot be told now" :
+               ask->job.kind == MESSAGES_REGISTER ?
+               "sms is the telephony program's" :
                "for the system UI and the developer's shell");
     }
   else
@@ -1204,7 +1355,7 @@ static void msg_read(FAR struct pnut_messages_server_s *server,
 
 static void msg_mark_read(FAR struct pnut_messages_server_s *server,
                           FAR const struct pnut_request_s *req,
-                          FAR const pnut_messages_conversation_request_t *in,
+                          FAR const pnut_messages_mark_read_request_t *in,
                           FAR void *arg)
 {
   msg_ask(arg, req, MESSAGES_MARK_READ, in, sizeof(*in));
@@ -1244,13 +1395,91 @@ static void msg_send(FAR struct pnut_messages_server_s *server,
   msg_ask(m, req, MESSAGES_SEND, in, sizeof(*in));
 }
 
+static void msg_register_transport(FAR struct pnut_messages_server_s *server,
+                                   FAR const struct pnut_request_s *req,
+                                   FAR const pnut_messages_register_request_t
+                                   *in, FAR void *arg)
+{
+  FAR struct messages_s *m = arg;
+
+  if (in->transport[0] == '\0')
+    {
+      msg_fail(m, req, PNUT_STATUS_INVALID,
+               PNUT_MESSAGES_ERROR_CODE_INVALID, "a transport");
+      return;
+    }
+
+  /* sms alone: apps' transports come with the runtime and Packages (RFC
+   * 0029).  Without Service states, as in the tests, any name: a test
+   * transport.
+   */
+
+  if (m->config.services != NULL && strcmp(in->transport, MESSAGES_SMS) != 0)
+    {
+      msg_fail(m, req, PNUT_STATUS_DENIED, PNUT_MESSAGES_ERROR_CODE_DENIED,
+               "no such transport");
+      return;
+    }
+
+  msg_ask(m, req, MESSAGES_REGISTER, in, sizeof(*in));
+}
+
+static void msg_deliver(FAR struct pnut_messages_server_s *server,
+                        FAR const struct pnut_request_s *req,
+                        FAR const pnut_messages_deliver_request_t *in,
+                        FAR void *arg)
+{
+  FAR struct messages_s *m = arg;
+  FAR struct messages_transport_s *t;
+  FAR struct messages_job_s *job;
+
+  /* The connection the transport registered on vouches for it */
+
+  t = msg_transport(m, req);
+  if (t == NULL)
+    {
+      msg_fail(m, req, PNUT_STATUS_DENIED,
+               PNUT_MESSAGES_ERROR_CODE_UNREGISTERED,
+               "no transport on this connection");
+      return;
+    }
+
+  /* Without a key, a delivery repeated after a reset would be stored
+   * twice
+   */
+
+  if (in->peer[0] == '\0' || in->key[0] == '\0')
+    {
+      msg_fail(m, req, PNUT_STATUS_INVALID,
+               PNUT_MESSAGES_ERROR_CODE_INVALID, "a peer and a key");
+      return;
+    }
+
+  job = msg_slot(m, false);
+  if (job == NULL)
+    {
+      msg_fail(m, req, PNUT_STATUS_BUSY, PNUT_MESSAGES_ERROR_CODE_NONE,
+               "too many requests wait");
+      return;
+    }
+
+  job->kind       = MESSAGES_DELIVER;
+  job->answer     = true;
+  job->req        = *req;
+  job->in.deliver = *in;
+  strlcpy(job->transport, t->name, sizeof(job->transport));
+  msg_next(m);
+}
+
 static const struct pnut_messages_handlers_s g_msg_handlers =
 {
-  .conversations = msg_conversations,
-  .read          = msg_read,
-  .mark_read     = msg_mark_read,
-  .delete        = msg_delete,
-  .send          = msg_send,
+  .conversations      = msg_conversations,
+  .read               = msg_read,
+  .mark_read          = msg_mark_read,
+  .delete             = msg_delete,
+  .send               = msg_send,
+  .register_transport = msg_register_transport,
+  .deliver            = msg_deliver,
 };
 
 /****************************************************************************

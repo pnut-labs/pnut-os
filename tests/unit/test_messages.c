@@ -51,6 +51,7 @@ struct msgt_s
   struct messages_s messages;
   struct pnut_module_s module;
   struct pnut_messages_client_s client;
+  struct pnut_messages_client_s other;   /* A second connection */
   struct pnut_messages_change_reader_s changes;
   char dir[64];
   char store[80];
@@ -70,6 +71,7 @@ struct msgt_s
   pnut_messages_conversations_t convs;
   pnut_messages_page_t page;
   pnut_messages_sent_t sent;
+  pnut_messages_delivered_t delivered;
   uint64_t a;                     /* The first conversation */
   uint64_t b;                     /* The second */
   uint64_t second;                /* A message of a */
@@ -182,6 +184,22 @@ static void msgt_sent_done(FAR struct pnut_messages_client_s *client,
   msgt_got(t, status, err);
 }
 
+static void msgt_delivered_done(FAR struct pnut_messages_client_s *client,
+                                int status,
+                                FAR const pnut_messages_delivered_t *out,
+                                FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct msgt_s *t = arg;
+
+  memset(&t->delivered, 0, sizeof(t->delivered));
+  if (out != NULL)
+    {
+      t->delivered = *out;
+    }
+
+  msgt_got(t, status, err);
+}
+
 static void msgt_done(FAR struct pnut_messages_client_s *client,
                       int status, FAR const pnut_messages_reply_t *out,
                       FAR const pnut_error_t *err, FAR void *arg)
@@ -202,6 +220,34 @@ static void msgt_send(FAR struct msgt_s *t, FAR const char *peer,
   strlcpy(in.text, text, sizeof(in.text));
   assert_int_equal(pnut_messages_send(&t->client, &in, 0, msgt_sent_done,
                                       t), 0);
+}
+
+static void msgt_register(FAR struct msgt_s *t,
+                          FAR struct pnut_messages_client_s *client,
+                          FAR const char *name)
+{
+  pnut_messages_register_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  strlcpy(in.transport, name, sizeof(in.transport));
+  assert_int_equal(pnut_messages_register_transport(client, &in, 0,
+                                                    msgt_done, t), 0);
+}
+
+static void msgt_deliver(FAR struct msgt_s *t,
+                         FAR struct pnut_messages_client_s *client,
+                         FAR const char *peer, FAR const char *text,
+                         FAR const char *key)
+{
+  pnut_messages_deliver_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  strlcpy(in.peer, peer, sizeof(in.peer));
+  strlcpy(in.text, text, sizeof(in.text));
+  strlcpy(in.key, key, sizeof(in.key));
+  in.sent = 1000;
+  assert_int_equal(pnut_messages_deliver(client, &in, 0,
+                                         msgt_delivered_done, t), 0);
 }
 
 static void msgt_convs(FAR struct msgt_s *t)
@@ -380,6 +426,196 @@ static void again_end(FAR struct msgt_s *t)
 static const msgt_step_t g_again[] =
 {
   again_list, again_end, NULL
+};
+
+/* A transport: delivers once registered, on its connection alone, and a
+ * key once
+ */
+
+static void tr_deliver0(FAR struct msgt_s *t)
+{
+  msgt_deliver(t, &t->client, "+5", "hi", "k1");
+}
+
+static void tr_register(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_DENIED);
+  assert_int_equal(t->code, PNUT_MESSAGES_ERROR_CODE_UNREGISTERED);
+  msgt_register(t, &t->client, "test");
+}
+
+static void tr_deliver1(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_deliver(t, &t->client, "+5", "hi", "k1");
+}
+
+static void tr_deliver2(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_false(t->delivered.again);
+  t->a      = t->delivered.conversation;
+  t->second = t->delivered.message;
+  msgt_deliver(t, &t->client, "+5", "hi", "k1");
+}
+
+static void tr_other(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_true(t->delivered.again);
+  assert_int_equal(t->delivered.conversation, t->a);
+  assert_int_equal(t->delivered.message, t->second);
+  msgt_deliver(t, &t->other, "+5", "not mine to give", "k2");
+}
+
+static void tr_nopeer(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_DENIED);
+  assert_int_equal(t->code, PNUT_MESSAGES_ERROR_CODE_UNREGISTERED);
+  msgt_deliver(t, &t->client, "", "no one's", "k3");
+}
+
+static void tr_nokey(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_INVALID);
+  msgt_deliver(t, &t->client, "+5", "keyless", "");
+}
+
+static void tr_list(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_INVALID);
+  msgt_convs(t);
+}
+
+static void tr_read(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_int_equal(t->convs.conversations_count, 1);
+  assert_string_equal(t->convs.conversations[0].transport, "test");
+  assert_string_equal(t->convs.conversations[0].peer, "+5");
+  assert_int_equal(t->convs.conversations[0].unread, 1);
+  msgt_read(t, t->a);
+}
+
+static void tr_later(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_int_equal(t->page.messages_count, 1);
+  assert_string_equal(t->page.messages[0].text, "hi");
+  assert_false(t->page.messages[0].out);
+  assert_int_equal(t->page.messages[0].sent, 1000);
+  assert_int_equal(t->page.messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_UNREAD);
+  assert_int_equal(t->change.unread, 1);
+  msgt_deliver(t, &t->client, "+5", "later", "k2");
+}
+
+/* Read up to the first, shown: the one come since stays unread */
+
+static void tr_delivered(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_wait(t);                   /* The topic told */
+}
+
+static void tr_mark(FAR struct msgt_s *t)
+{
+  pnut_messages_mark_read_request_t in;
+
+  assert_int_equal(t->change.unread, 2);
+  memset(&in, 0, sizeof(in));
+  in.conversation = t->a;
+  in.upto         = t->second;
+  assert_int_equal(pnut_messages_mark_read(&t->client, &in, 0, msgt_done,
+                                           t), 0);
+}
+
+static void tr_marked(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_wait(t);
+}
+
+static void tr_unread(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->change.unread, 1);
+  msgt_delete(t, t->a, t->second);
+}
+
+/* Deleted, then delivered again, as after a reset before the transport
+ * let go of it: not back
+ */
+
+static void tr_redeliver(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_deliver(t, &t->client, "+5", "hi", "k1");
+}
+
+static void tr_move(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_true(t->delivered.again);
+  assert_int_equal(t->delivered.message, t->second);
+  msgt_register(t, &t->other, "test");
+}
+
+/* Registered again on another connection, as by its program started
+ * again: the new one delivers, the old one no longer
+ */
+
+static void tr_moved(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_deliver(t, &t->other, "+5", "from the new one", "k5");
+}
+
+static void tr_old(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_false(t->delivered.again);
+  msgt_deliver(t, &t->client, "+5", "from the old one", "k6");
+}
+
+static void tr_end(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_DENIED);
+  assert_int_equal(t->code, PNUT_MESSAGES_ERROR_CODE_UNREGISTERED);
+  msgt_next(t);
+}
+
+static const msgt_step_t g_transport[] =
+{
+  tr_deliver0, tr_register, tr_deliver1, tr_deliver2, tr_other, tr_nopeer,
+  tr_nokey, tr_list, tr_read, tr_later, tr_delivered, tr_mark, tr_marked,
+  tr_unread, tr_redeliver, tr_move, tr_moved, tr_old, tr_end, NULL
+};
+
+/* After a restart: registered anew, the same key still known */
+
+static void tr_again_register(FAR struct msgt_s *t)
+{
+  msgt_register(t, &t->client, "test");
+}
+
+static void tr_again_deliver(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_deliver(t, &t->client, "+5", "hi", "k1");
+}
+
+static void tr_again_end(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_true(t->delivered.again);
+  assert_int_equal(t->delivered.conversation, t->a);
+  assert_int_equal(t->delivered.message, t->second);
+  msgt_next(t);
+}
+
+static const msgt_step_t g_transport_again[] =
+{
+  tr_again_register, tr_again_deliver, tr_again_end, NULL
 };
 
 /* A store too small: queued messages never go to make room */
@@ -593,6 +829,11 @@ static void msgt_change(FAR struct pnut_messages_change_reader_s *reader,
   t->changes_seen++;
 }
 
+static void msgt_other_state(FAR struct pnut_messages_client_s *client,
+                             bool connected, FAR void *arg)
+{
+}
+
 static void msgt_state(FAR struct pnut_messages_client_s *client,
                        bool connected, FAR void *arg)
 {
@@ -614,6 +855,8 @@ static int msgt_start(FAR struct pnut_module_s *module,
 
   assert_int_equal(pnut_messages_change_subscribe(loop, msgt_change, t,
                                                   &t->changes), 0);
+  assert_int_equal(pnut_messages_connect(loop, MESSAGES_SERVICE,
+                                         msgt_other_state, t, &t->other), 0);
   assert_int_equal(pnut_messages_connect(loop, MESSAGES_SERVICE, msgt_state,
                                          t, &t->client), 0);
   pnut_module_ready(module);
@@ -627,6 +870,7 @@ static void msgt_stop(FAR struct pnut_module_s *module,
     ((FAR uint8_t *)module - offsetof(struct msgt_s, module));
 
   pnut_messages_disconnect(&t->client);
+  pnut_messages_disconnect(&t->other);
   pnut_messages_change_unsubscribe(&t->changes);
 }
 
@@ -715,6 +959,26 @@ static void test_messages_life(void **state)
 
   assert_int_equal(msgt_run(t, g_again), 0);
 
+  msgt_free(t);
+}
+
+/****************************************************************************
+ * Name: test_messages_transport
+ *
+ * Description:
+ *   A transport delivers once registered, on the connection it registered
+ *   on alone, the newest one; a key is stored once, also deleted since and
+ *   after a restart; a delivery without a key or a peer refused; an unread
+ *   message counts on the topic, and one come since a read stays unread.
+ *
+ ****************************************************************************/
+
+static void test_messages_transport(void **state)
+{
+  FAR struct msgt_s *t = msgt_new(64 * 1024, STORE_SEGMENT_MAX);
+
+  assert_int_equal(msgt_run(t, g_transport), 0);
+  assert_int_equal(msgt_run(t, g_transport_again), 0);
   msgt_free(t);
 }
 
@@ -900,6 +1164,7 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test(test_messages_life),
+    cmocka_unit_test(test_messages_transport),
     cmocka_unit_test(test_messages_full),
     cmocka_unit_test(test_messages_unfull),
     cmocka_unit_test(test_messages_retry),

@@ -214,6 +214,7 @@ struct store_rewrite_s
   FAR uint64_t *live;             /* The conversation's messages in its
                                    * other segments, sorted: records about
                                    * them stay */
+  uint64_t next;                  /* The next message's id, for its head */
   uint32_t size;                  /* The new file's; 0 when removed */
   int ret;
 };
@@ -320,8 +321,8 @@ int store_plan_message(FAR struct store_s *store, FAR const char *transport,
  * Name: store_plan_status, store_plan_read, store_plan_delete
  *
  * Description:
- *   A message's new status; a conversation read up to its newest message;
- *   a message deleted.
+ *   A message's new status; a conversation read up to message upto (0,
+ *   or past its newest: its newest); a message deleted.
  *
  * Returned Value:
  *   Zero (OK) when planned; -ENOENT for no such conversation or message;
@@ -333,7 +334,7 @@ int store_plan_status(FAR struct store_s *store, uint64_t message,
                       uint8_t status, FAR const char *reason,
                       FAR struct store_write_s *w);
 int store_plan_read(FAR struct store_s *store, uint64_t conversation,
-                    FAR struct store_write_s *w);
+                    uint64_t upto, FAR struct store_write_s *w);
 int store_plan_delete(FAR struct store_s *store, uint64_t conversation,
                       uint64_t message, FAR struct store_write_s *w);
 
