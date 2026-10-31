@@ -55,6 +55,8 @@
 #define TEL_SETTINGS_MS   3000      /* For Settings' values, at start */
 #define TEL_TRIAL_MS      120000    /* For GSM to find a network */
 #define TEL_HOUR_MS       3600000   /* Between readings of its clock */
+#define TEL_BEFORE_MS     60000     /* A clock the network set before this
+                                     * start: 100 ppm over a week */
 #define TEL_FRESH_MS      30000     /* A state that old is read again */
 #define TEL_PIN_MS        15000     /* For the SIM to take a PIN */
 #define TEL_COMMAND_MS    10000     /* A command passed through */
@@ -128,6 +130,7 @@ static void tel_power_up(FAR struct telephony_s *tel);
 static size_t tel_verb(FAR const char *cmd);
 static void tel_setup_next(FAR struct telephony_s *tel);
 static void tel_refresh(FAR struct telephony_s *tel);
+static void tel_hourly(FAR struct telephony_s *tel);
 static void tel_publish(FAR struct telephony_s *tel);
 static void tel_flush(FAR struct telephony_s *tel);
 static void tel_status(FAR struct pnut_telephony_server_s *server,
@@ -846,10 +849,11 @@ static void tel_rebooted(FAR struct telephony_s *tel, FAR const char *why,
   tel_untime(tel);
   mux_reset(&tel->mux);
   at_cancel(&tel->at, -ECANCELED);
-  tel->silent = 0;
-  tel->nitz   = false;
-  tel->cereg  = PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED;
-  tel->creg   = PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED;
+  tel->silent  = 0;
+  tel->nitz    = false;
+  tel->left_on = false;
+  tel->cereg   = PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED;
+  tel->creg    = PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED;
   tel_step(tel, STEP_BOOT);
   tel_timer(tel, TEL_POLL_MS, tel_boot_poll);
 }
@@ -909,6 +913,7 @@ static void tel_boot_answer(FAR void *arg, int result,
           return;
         }
 
+      tel->left_on = tel->step == STEP_PROBE;
       tel_cmux(tel);
     }
 }
@@ -988,6 +993,7 @@ static void tel_power_up(FAR struct telephony_s *tel)
   at_cancel(&tel->at, -ECANCELED);
   tel->silent   = 0;
   tel->nitz     = false;
+  tel->left_on  = false;
   tel->down_key = false;
   tel->cereg    = PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED;
   tel->creg     = PNUT_TELEPHONY_INFO_REGISTRATION_NOT_REGISTERED;
@@ -1961,6 +1967,7 @@ static void tel_sim_read(FAR void *arg, int result, FAR const char *reply)
   if (tel->step == STEP_ON)
     {
       tel_sim_state(tel, sim);
+      tel_hourly(tel);
     }
 }
 
@@ -2265,24 +2272,35 @@ static void tel_refresh(FAR struct telephony_s *tel)
 }
 
 /****************************************************************************
- * Name: tel_clock_read
+ * Name: tel_clock_read, tel_clock_before, tel_hourly
  *
  * Description:
  *   The modem's clock, read hourly while registered, once the network has
  *   sent its time this start (RFC 0030): marked as the modem's clock, its
  *   uncertainty a second and 100 ppm of its age since the network's.
  *
+ *   Read once too from a modem found running, whose clock the network set
+ *   at a time not known: its uncertainty a minute, its offset with it,
+ *   since Time has none yet.  The system's clock does not survive the
+ *   processor's full reset, as in flashing, and the network sends its time
+ *   again only when the modem attaches.  The A7682E starts with its last
+ *   time and the zone +00 until the network sends the time (seen on
+ *   2026-10-30): a reading in +00 is left aside, as one the network may
+ *   not have set.
+ *
  ****************************************************************************/
 
-static void tel_clock_read(FAR void *arg, int result, FAR const char *reply)
+static void tel_clock_answer(FAR struct telephony_s *tel, int result,
+                             FAR const char *reply, bool before)
 {
-  FAR struct telephony_s *tel = arg;
   char line[128];
   struct tel_time_s t;
   FAR const char *p;
   uint64_t now = tel_now();
+  uint32_t uncertainty;
 
-  if (result == -ECANCELED || !tel_answered(tel, result) || result < 0)
+  if (result == -ECANCELED || !tel_answered(tel, result) || result < 0 ||
+      (before && tel->nitz))      /* The network's own came meanwhile */
     {
       return;
     }
@@ -2296,15 +2314,51 @@ static void tel_clock_read(FAR void *arg, int result, FAR const char *reply)
       return;
     }
 
-  t.has_offset = false;           /* Its summer time is not known */
-  tel_publish_time(tel, &t, 1000 + (uint32_t)((now - tel->nitz_at) / 10000),
-                   now, PNUT_NETWORK_TIME_KIND_MODEM_CLOCK);
+  if (before)
+    {
+      if (t.offset == 0)
+        {
+          pnut_log(&tel->module, PNUT_LOG_INFO,
+                   "The modem's clock, in +00: maybe not the network's");
+          return;
+        }
+
+      pnut_log(&tel->module, PNUT_LOG_INFO,
+               "The modem's clock, as the network set it before");
+      uncertainty = TEL_BEFORE_MS;
+    }
+  else
+    {
+      uncertainty  = 1000 + (uint32_t)((now - tel->nitz_at) / 10000);
+      t.has_offset = false;       /* Time has the message's */
+    }
+
+  tel_publish_time(tel, &t, uncertainty, now,
+                   PNUT_NETWORK_TIME_KIND_MODEM_CLOCK);
+}
+
+static void tel_clock_read(FAR void *arg, int result, FAR const char *reply)
+{
+  tel_clock_answer(arg, result, reply, false);
+}
+
+static void tel_clock_before(FAR void *arg, int result,
+                             FAR const char *reply)
+{
+  tel_clock_answer(arg, result, reply, true);
 }
 
 static void tel_hourly(FAR struct telephony_s *tel)
 {
   uint64_t now = tel_now();
   uint32_t reg = tel->state.registration;
+
+  if (tel->step == STEP_ON && tel->left_on && !tel->nitz)
+    {
+      tel->left_on = false;
+      tel_send(tel, "AT+CCLK?", "+CCLK:", 0, tel_clock_before);
+      return;
+    }
 
   if (tel->step != STEP_ON || !tel->nitz ||
       (reg != PNUT_TELEPHONY_INFO_REGISTRATION_HOME &&
@@ -2389,6 +2443,7 @@ static void tel_urc(FAR void *arg, FAR const char *line)
       if (t.has_time)
         {
           tel->nitz     = true;
+          tel->left_on  = false;
           tel->nitz_at  = now;
           tel->clock_at = now;
         }
