@@ -55,3 +55,19 @@ service telephony pnut_telephony
 on property:svc.system.state=ready
    start telephony
 #endif
+
+#ifdef CONFIG_PNUT_DATA
+/* The data program (RFC 0007): Messages (RFC 0029), once the system
+ * program is ready.  It reads its store's files on a worker, and says it
+ * is ready once they are read.
+ */
+
+service data pnut_data
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on property:svc.system.state=ready
+   start data
+#endif

@@ -1,0 +1,49 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_DATA
+	bool "The data program"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB && PNUT_SYSTEM
+	---help---
+		The data program (RFC 0007): Messages, the device's one store
+		of text messages (RFC 0029), kept in files appended to in
+		/var/lib/messages.  Contacts, Packages and Storage come later.
+
+if PNUT_DATA
+
+config PNUT_DATA_STACKSIZE
+	int "The program's stack, in bytes"
+	default 8192
+
+config PNUT_DATA_WORKER_STACKSIZE
+	int "A worker's stack, in bytes"
+	default 6144
+	---help---
+		The workers read and write the store's files: littlefs, and
+		nanopb's decoding of a record, deep under them.
+
+config PNUT_MESSAGES_DIR
+	string "Where the messages store's files are"
+	default "/tmp/messages"
+	---help---
+		A log for each conversation, in segments: /var/lib/messages on
+		a device with a file system in flash there (RFC 0010).  In
+		/tmp, messages are lost at a restart.
+
+config PNUT_MESSAGES_LIMIT
+	int "The messages store's limit, in KB"
+	default 1024
+	range 64 65536
+	---help---
+		Past it, Messages deletes the oldest messages read or done
+		with, a segment at a time; with none left that may go, it
+		takes no more.  The device's fact, in Board's description once
+		its schema has it (RFC 0029): the system partition also holds
+		the settings, Time's state and the log.
+
+endif
