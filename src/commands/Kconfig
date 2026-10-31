@@ -13,8 +13,10 @@ config PNUT_COMMANDS
 		pnut-os's commands for NSH, for developers (RFC 0012): settings,
 		to list, read, change and reset settings (RFC 0025); telephony,
 		the modem's state, the SIM's PIN and an AT command passed
-		through (RFC 0030).  A command typed in the developer's shell may
-		do what the system UI may (PNUT_SETTINGS_SHELLS).
+		through (RFC 0030); messages, the messages store's
+		conversations, read, sent and deleted (RFC 0029).  A command
+		typed in the developer's shell may do what the system UI may
+		(PNUT_SETTINGS_SHELLS).
 
 if PNUT_COMMANDS
 

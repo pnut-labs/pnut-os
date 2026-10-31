@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Messages (RFC 0029): the device's one store of text messages, in the
+// data program.  Transports deliver into it and take what is to be sent:
+// Telephony is `sms`, an app is its own id.  The system UI reads the
+// conversations and sends; the messages topic says what changed.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Messages {
+  option (pnut.iface) = 6;
+
+  // The conversations, the one with the newest message first, a page at a
+  // time
+  rpc Conversations (MessagesPageRequest) returns (MessagesConversations) {
+    option (pnut.method) = 1;
+  }
+
+  // A conversation's messages, newest first, a page at a time
+  rpc Read (MessagesReadRequest) returns (MessagesPage) {
+    option (pnut.method) = 2;
+  }
+
+  // Mark a conversation read
+  rpc MarkRead (MessagesConversationRequest) returns (MessagesReply) {
+    option (pnut.method) = 3;
+  }
+
+  // Delete a message, or a whole conversation with its queued messages
+  rpc Delete (MessagesDeleteRequest) returns (MessagesReply) {
+    option (pnut.method) = 4;
+  }
+
+  // Send a text to a peer over a transport: answered once it is stored,
+  // queued, without waiting for the network
+  rpc Send (MessagesSendRequest) returns (MessagesSent) {
+    option (pnut.method) = 5;
+  }
+
+  // Methods 6 to 9 are the transports' own: Register, Deliver, Take and
+  // Report, which come with them
+}
+
+// The detail of an error answer (pnut.Error's code)
+message MessagesError {
+  enum Code {
+    NONE = 0;
+    FULL = 1;                     // No room left
+    NOT_FOUND = 2;                // No such message or conversation
+    TOO_LONG = 3;                 // A text over the limit
+    STORE = 4;                    // The store failed: the flash
+    DENIED = 5;                   // Not for this caller
+    INVALID = 6;                  // An empty text, peer or transport
+  }
+}
+
+message MessagesReply {
+}
+
+message MessagesPageRequest {
+  uint64 after = 1;               // The last id of the page before; 0 for
+                                  // the first
+}
+
+// A conversation: one for each transport and peer
+message MessagesConversation {
+  uint64 id = 1;
+  string transport = 2 [(nanopb).max_size = 65];
+  string peer = 3 [(nanopb).max_size = 33];
+  uint32 count = 4;               // Its messages
+  uint32 unread = 5;
+  string latest = 6 [(nanopb).max_size = 49];    // The start of the newest
+                                                 // text
+  int64 stored = 7;               // The newest's, by the device's clock
+}
+
+message MessagesConversations {
+  repeated MessagesConversation conversations = 1 [(nanopb).max_count = 8];
+  bool more = 2;
+}
+
+message MessagesReadRequest {
+  uint64 conversation = 1;
+  uint64 after = 2;               // The last id of the page before; 0 for
+                                  // the newest
+}
+
+message MessagesMessage {
+  // Also what the store's records keep (MessagesRecordHead.version): a
+  // value never changes its meaning
+  enum Status {
+    UNREAD = 0;                   // Coming in
+    READ = 1;
+    QUEUED = 2;                   // Going out
+    SENDING = 3;
+    SENT = 4;
+    DELIVERED = 5;
+    FAILED = 6;
+    UNCONFIRMED = 7;              // Left sending at a restart: not known
+                                  // to be sent
+  }
+
+  uint64 id = 1;
+  bool out = 2;
+  string text = 3 [(nanopb).max_size = 1531];
+  string sender = 4 [(nanopb).max_size = 33];    // In a group, when not the
+                                                 // peer
+  int64 stored = 5;               // By the device's clock
+  int64 sent = 6;                 // When the network gives it; 0 none
+  Status status = 7;
+  string reason = 8 [(nanopb).max_size = 65];    // A failure's
+}
+
+message MessagesPage {
+  repeated MessagesMessage messages = 1 [(nanopb).max_count = 2];
+  bool more = 2;
+}
+
+message MessagesConversationRequest {
+  uint64 conversation = 1;
+}
+
+message MessagesDeleteRequest {
+  uint64 conversation = 1;        // The whole conversation, when message
+                                  // is 0
+  uint64 message = 2;
+}
+
+message MessagesSendRequest {
+  string transport = 1 [(nanopb).max_size = 65];
+  string peer = 2 [(nanopb).max_size = 33];
+  string text = 3 [(nanopb).max_size = 1531];
+
+  // Kept for a caller's key, so that a send tried again after a timeout
+  // is stored once
+  reserved 4;
+}
+
+message MessagesSent {
+  uint64 conversation = 1;
+  uint64 message = 2;
+}
+
+// That a conversation changed, on the messages topic: no text, no peer
+// (RFC 0005)
+message MessagesChange {
+  option (pnut.topic) = "messages";
+  option (pnut.depth) = 4;
+
+  uint64 conversation = 1;        // 0 for none in particular
+  uint32 unread = 2;              // In all conversations
+  bool full = 3;
+  uint32 seq = 4;
+}
+
+// The store's records (RFC 0029): each conversation's log, in segments,
+// is these, each framed by its length and a checksum
+
+message MessagesRecord {
+  oneof kind {
+    MessagesRecordHead head = 1;
+    MessagesMessageRecord message = 2;
+    MessagesStatusRecord status = 3;
+    MessagesReadRecord read = 4;
+    MessagesDeletedRecord deleted = 5;
+  }
+}
+
+// A segment's first record: the conversation it belongs to
+message MessagesRecordHead {
+  uint32 version = 1;             // The records' format, 1
+  uint64 conversation = 2;
+  string transport = 3 [(nanopb).max_size = 65];
+  string peer = 4 [(nanopb).max_size = 33];
+}
+
+message MessagesMessageRecord {
+  uint64 id = 1;
+  bool out = 2;
+  string text = 3 [(nanopb).max_size = 1531];
+  string sender = 4 [(nanopb).max_size = 33];
+  int64 stored = 5;
+  int64 sent = 6;
+  MessagesMessage.Status status = 7;
+  string reason = 8 [(nanopb).max_size = 65];
+  string key = 9 [(nanopb).max_size = 65];       // A delivered one's, on
+                                                 // its network
+}
+
+message MessagesStatusRecord {
+  uint64 id = 1;
+  MessagesMessage.Status status = 2;
+  string reason = 3 [(nanopb).max_size = 65];
+}
+
+// The conversation is read up to this message, and the ones before it
+message MessagesReadRecord {
+  uint64 id = 1;
+}
+
+message MessagesDeletedRecord {
+  uint64 id = 1;
+}
