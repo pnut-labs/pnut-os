@@ -618,6 +618,62 @@ static const msgt_step_t g_transport_again[] =
   tr_again_register, tr_again_deliver, tr_again_end, NULL
 };
 
+/* A store too small for unread messages, which never go to make room:
+ * a delivery refused once it is full, and a key stored already answered
+ * all the same
+ */
+
+static void dfull_register(FAR struct msgt_s *t)
+{
+  msgt_register(t, &t->client, "test");
+}
+
+static void dfull_deliver(FAR struct msgt_s *t)
+{
+  char key[16];
+
+  if (t->sends > 0 && t->status != PNUT_STATUS_OK)
+    {
+      msgt_next(t);
+      return;
+    }
+
+  if (t->sends == 1)
+    {
+      t->a      = t->delivered.conversation;
+      t->second = t->delivered.message;
+    }
+
+  snprintf(key, sizeof(key), "k%d", t->sends);
+  t->sends++;
+  assert_true(t->sends < 100);
+  t->step--;                      /* This step again */
+  msgt_deliver(t, &t->client, "+1", "a message unread, which may never go",
+               key);
+}
+
+static void dfull_again(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(t->code, PNUT_MESSAGES_ERROR_CODE_FULL);
+  msgt_deliver(t, &t->client, "+1", "a message unread, which may never go",
+               "k0");
+}
+
+static void dfull_end(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_true(t->delivered.again);
+  assert_int_equal(t->delivered.conversation, t->a);
+  assert_int_equal(t->delivered.message, t->second);
+  msgt_next(t);
+}
+
+static const msgt_step_t g_dfull[] =
+{
+  dfull_register, dfull_deliver, dfull_again, dfull_end, NULL
+};
+
 /* A store too small: queued messages never go to make room */
 
 static void full_send(FAR struct msgt_s *t)
@@ -969,7 +1025,9 @@ static void test_messages_life(void **state)
  *   A transport delivers once registered, on the connection it registered
  *   on alone, the newest one; a key is stored once, also deleted since and
  *   after a restart; a delivery without a key or a peer refused; an unread
- *   message counts on the topic, and one come since a read stays unread.
+ *   message counts on the topic, and one come since a read stays unread;
+ *   a store full of unread messages refuses a delivery, and answers one
+ *   whose key it holds.
  *
  ****************************************************************************/
 
@@ -979,6 +1037,14 @@ static void test_messages_transport(void **state)
 
   assert_int_equal(msgt_run(t, g_transport), 0);
   assert_int_equal(msgt_run(t, g_transport_again), 0);
+  msgt_free(t);
+
+  /* Full: refused, and a key stored already answered "again" */
+
+  t = msgt_new(600, 300);
+  assert_int_equal(msgt_run(t, g_dfull), 0);
+  assert_true(t->sends > 1);
+  assert_true(t->change.full);
   msgt_free(t);
 }
 
