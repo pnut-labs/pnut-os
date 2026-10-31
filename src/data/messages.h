@@ -34,6 +34,9 @@
 
 #define MESSAGES_SERVICE   "messages"
 #define MESSAGES_UI        "ui"        /* The system UI's program */
+#define MESSAGES_SMS       "sms"       /* SMS's transport, and its program */
+#define MESSAGES_SMS_OWNER "telephony"
+#define MESSAGES_TRANSPORTS 4          /* Transports registered at once */
 #define MESSAGES_ASKS      4           /* Callers waiting to be told apart */
 #define MESSAGES_QUEUE     8           /* Jobs waiting for the store */
 #define MESSAGES_RETRY     30000       /* ms before the store is read again,
@@ -53,6 +56,8 @@ enum messages_kind_e
   MESSAGES_MARK_READ,
   MESSAGES_DELETE,                /* A message, or a whole conversation */
   MESSAGES_SEND,
+  MESSAGES_DELIVER,               /* From a transport */
+  MESSAGES_REGISTER,              /* A transport, which needs no store */
   MESSAGES_ROOM,                  /* Room made, over the limit */
   MESSAGES_COMPACT,               /* Deleted messages' segment rewritten */
   MESSAGES_LATEST,                /* A conversation's newest text read */
@@ -82,15 +87,27 @@ struct messages_job_s
   uint8_t kind;                   /* enum messages_kind_e */
   bool answer;                    /* A caller waits for it */
   struct pnut_request_s req;
+  char transport[65];             /* DELIVER's */
   union
     {
       pnut_messages_page_request_t list;
       pnut_messages_read_request_t read;
-      pnut_messages_conversation_request_t mark_read;
+      pnut_messages_mark_read_request_t mark_read;
       pnut_messages_delete_request_t delete;
       pnut_messages_send_request_t send;
+      pnut_messages_register_request_t reg;
+      pnut_messages_deliver_request_t deliver;
       uint64_t conversation;      /* LATEST and EMPTY */
     } in;
+};
+
+/* A transport, and the connection it registered on */
+
+struct messages_transport_s
+{
+  bool used;
+  char name[65];
+  struct pnut_endpoint_s from;
 };
 
 /* The store's files read at start, on a worker */
@@ -164,6 +181,10 @@ struct messages_s
   struct pnut_services_client_s services;
   bool services_open;
   struct messages_ask_s asks[MESSAGES_ASKS];
+
+  /* The transports */
+
+  struct messages_transport_s transports[MESSAGES_TRANSPORTS];
 
   /* What it serves and announces */
 

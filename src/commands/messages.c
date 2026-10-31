@@ -323,7 +323,7 @@ static void messages_done(FAR struct pnut_messages_client_s *client,
 
 static void messages_ask(FAR struct messages_cmd_s *cmd)
 {
-  pnut_messages_conversation_request_t conv;
+  pnut_messages_mark_read_request_t conv;
   pnut_messages_delete_request_t del;
   int ret = OK;
 

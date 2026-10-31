@@ -27,8 +27,8 @@ service Messages {
     option (pnut.method) = 2;
   }
 
-  // Mark a conversation read
-  rpc MarkRead (MessagesConversationRequest) returns (MessagesReply) {
+  // Mark a conversation read, up to the newest message shown
+  rpc MarkRead (MessagesMarkReadRequest) returns (MessagesReply) {
     option (pnut.method) = 3;
   }
 
@@ -43,8 +43,30 @@ service Messages {
     option (pnut.method) = 5;
   }
 
-  // Methods 6 to 9 are the transports' own: Register, Deliver, Take and
-  // Report, which come with them
+  // A transport's own: this connection carries the transport from now
+  // on.  `sms` is the telephony program's alone (RFC 0029).
+  rpc RegisterTransport (MessagesRegisterRequest) returns (MessagesReply) {
+    option (pnut.method) = 6;
+  }
+
+  // A transport hands over a message it received, on the connection it
+  // registered on: answered once it is on flash, so that the transport
+  // may let go of it then.  Its text may be empty (a binary SMS); its key
+  // may not.  A message whose key is stored already, even deleted since
+  // (until a compaction drops it), is not stored again.  With no room
+  // left, it is refused, and the transport keeps it.
+  //
+  // For the transport: deliver once RegisterTransport is answered, and
+  // register again at each connection (Messages' program may start
+  // again); one delivery at a time, as the queue is shared with the
+  // system UI; TIMEOUT is "not known", and the same key delivered again
+  // is safe.
+  rpc Deliver (MessagesDeliverRequest) returns (MessagesDelivered) {
+    option (pnut.method) = 7;
+  }
+
+  // Methods 8 and 9 are kept for Take and Report, the queue sent to a
+  // transport and its statuses, which come with the streams
 }
 
 // The detail of an error answer (pnut.Error's code)
@@ -56,7 +78,9 @@ message MessagesError {
     TOO_LONG = 3;                 // A text over the limit
     STORE = 4;                    // The store failed: the flash
     DENIED = 5;                   // Not for this caller
-    INVALID = 6;                  // An empty text, peer or transport
+    INVALID = 6;                  // An empty peer, transport, key, or
+                                  // text to send
+    UNREGISTERED = 7;             // No transport on this connection
   }
 }
 
@@ -122,8 +146,10 @@ message MessagesPage {
   bool more = 2;
 }
 
-message MessagesConversationRequest {
+message MessagesMarkReadRequest {
   uint64 conversation = 1;
+  uint64 upto = 2;                // The newest message shown, so that one
+                                  // come since stays unread; 0 for all
 }
 
 message MessagesDeleteRequest {
@@ -145,6 +171,26 @@ message MessagesSendRequest {
 message MessagesSent {
   uint64 conversation = 1;
   uint64 message = 2;
+}
+
+message MessagesRegisterRequest {
+  string transport = 1 [(nanopb).max_size = 65];
+}
+
+message MessagesDeliverRequest {
+  string peer = 1 [(nanopb).max_size = 33];
+  string sender = 2 [(nanopb).max_size = 33];    // In a group, when not the
+                                                 // peer
+  string text = 3 [(nanopb).max_size = 1531];
+  int64 sent = 4;                 // When the network says it was sent; 0
+  string key = 5 [(nanopb).max_size = 65];       // Names it on its network:
+                                                 // stored once for each key
+}
+
+message MessagesDelivered {
+  uint64 conversation = 1;
+  uint64 message = 2;
+  bool again = 3;                 // Its key was stored already
 }
 
 // That a conversation changed, on the messages topic: no text, no peer
@@ -178,6 +224,10 @@ message MessagesRecordHead {
   uint64 conversation = 2;
   string transport = 3 [(nanopb).max_size = 65];
   string peer = 4 [(nanopb).max_size = 33];
+  uint64 next = 5;                // The next message's id when written: at
+                                  // start, ids go on from the highest any
+                                  // file holds, as a rewrite may drop the
+                                  // newest message
 }
 
 message MessagesMessageRecord {
