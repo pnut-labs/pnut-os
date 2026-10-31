@@ -79,6 +79,12 @@ struct tel_test_s
   bool no_sim;
   bool left_on;                   /* On, in a multiplexer, at start */
   bool timed;                     /* The network's time sent */
+  int cfun;                       /* 1 on the air, 4 off it */
+  bool sim_air;                   /* Starts off the air, and goes on once
+                                   * its SIM is ready, as the A7682E */
+  uint64_t ready_at;              /* When its SIM answered ready */
+  bool airplane;                  /* Airplane mode on, from the start */
+  FAR struct pnut_publisher_s *airplanes;
   FAR const char *clock;          /* Its clock, as +CCLK gives it */
   uint64_t clock_at;              /* When its clock was read */
   FAR const char *ignore;         /* A command left unanswered, once */
@@ -207,8 +213,23 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
       if (!t->no_sim)
         {
           tel_test_say(t, "OK");
+          if (t->ready_at == 0)
+            {
+              t->ready_at = pnut_now();
+              if (t->sim_air)
+                {
+                  t->cfun = 1;    /* On the air with its SIM */
+                }
+            }
         }
 
+      return;
+    }
+
+  if (strcmp(cmd, "AT+CFUN=4") == 0 || strcmp(cmd, "AT+CFUN=1") == 0)
+    {
+      t->cfun = cmd[8] - '0';
+      tel_test_say(t, "OK");
       return;
     }
 
@@ -218,7 +239,8 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
     }
   else if (strcmp(cmd, "AT+CEREG?") == 0)
     {
-      tel_test_say(t, "+CEREG: 2,1,\"1A2B\",\"01A2B3C4\",7");
+      tel_test_say(t, t->cfun == 4 ? "+CEREG: 2,0" :
+                   "+CEREG: 2,1,\"1A2B\",\"01A2B3C4\",7");
     }
   else if (strcmp(cmd, "AT+CREG?") == 0)
     {
@@ -226,7 +248,7 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
     }
   else if (strcmp(cmd, "AT+COPS?") == 0)
     {
-      tel_test_say(t, "+COPS: 0,0,\"Test\",7");
+      tel_test_say(t, t->cfun == 4 ? "+COPS: 0" : "+COPS: 0,0,\"Test\",7");
     }
   else if (strcmp(cmd, "AT+CNBP?") == 0)
     {
@@ -238,7 +260,7 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
     }
   else if (strcmp(cmd, "AT+CFUN?") == 0)
     {
-      tel_test_say(t, "+CFUN: 1");
+      tel_test_say(t, t->cfun == 4 ? "+CFUN: 4" : "+CFUN: 1");
     }
   else if (strcmp(cmd, "AT+CCLK?") == 0)
     {
@@ -251,7 +273,7 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
 
   /* Once registered, the network's time, once */
 
-  if (strcmp(cmd, "AT+COPS?") == 0 && !t->timed)
+  if (strcmp(cmd, "AT+COPS?") == 0 && !t->timed && t->cfun != 4)
     {
       t->timed = true;
       tel_test_say(t, "+CTZE: \"+04\",0,\"2026/10/30,13:34:56\"");
@@ -436,7 +458,8 @@ static int tel_test_set_line(FAR void *arg, int fd, bool high)
       assert_int_equal(fd, t->lines[1]);
       if (t->key && !high && t->rail && !t->on)
         {
-          t->on = true;           /* Booted at once */
+          t->on   = true;         /* Booted at once */
+          t->cfun = t->sim_air ? 4 : 1;
         }
 
       t->key = high;
@@ -495,6 +518,8 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
 
   if (t->stop_at == 0 &&
       ((t->was_on && t->times_seen > 0) ||
+       (t->airplane && t->ready_at != 0 &&
+        pnut_now() - t->ready_at > 500) ||
        (t->was_on && t->clock_at != 0 && pnut_now() - t->clock_at > 200) ||
        (t->no_sim && t->info.reason ==
         PNUT_TELEPHONY_INFO_REASON_NO_SIM &&
@@ -523,6 +548,16 @@ static int tel_test_start(FAR struct pnut_module_s *module,
                                                &t->times), 0);
   assert_int_equal(pnut_timer_start(loop, 20, 20, tel_test_tick, t, NULL),
                    0);
+  if (t->airplane)
+    {
+      pnut_airplane_mode_t msg;
+
+      memset(&msg, 0, sizeof(msg));
+      msg.on = true;
+      assert_int_equal(pnut_airplane_mode_advertise(loop, &t->airplanes), 0);
+      assert_int_equal(pnut_airplane_mode_publish(t->airplanes, &msg), 0);
+    }
+
   pnut_module_ready(module);
   return 0;
 }
@@ -535,6 +570,11 @@ static void tel_test_stop_module(FAR struct pnut_module_s *module,
 
   pnut_telephony_info_unsubscribe(&t->infos);
   pnut_network_time_unsubscribe(&t->times);
+  if (t->airplanes != NULL)
+    {
+      pnut_topic_unadvertise(t->airplanes);
+      t->airplanes = NULL;
+    }
 }
 
 /* Board's description: the modem on its UART, with its rail and key */
@@ -765,6 +805,35 @@ static void test_telephony_left_on(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telephony_airplane
+ *
+ * Description:
+ *   Powered up in airplane mode, by a modem that starts off the air and
+ *   goes on once its SIM is ready, as the A7682E does: airplane mode is
+ *   given again, and the modem ends off the air.
+ *
+ ****************************************************************************/
+
+static void test_telephony_airplane(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR const char *ready;
+
+  t->airplane = true;
+  t->sim_air  = true;
+  assert_int_equal(tel_test_run(t), 0);
+
+  ready = strstr(t->commands, "AT+CPIN?;");
+  assert_non_null(ready);
+  assert_non_null(strstr(ready, "AT+CFUN=4;"));
+  assert_int_equal(t->cfun, 4);
+  assert_false(t->was_on);
+  assert_int_equal(t->times_seen, 0);
+
+  tel_test_free(t);
+}
+
+/****************************************************************************
  * Name: test_telephony_clock_before
  *
  * Description:
@@ -881,6 +950,7 @@ int main(void)
   {
     cmocka_unit_test(test_telephony_life),
     cmocka_unit_test(test_telephony_left_on),
+    cmocka_unit_test(test_telephony_airplane),
     cmocka_unit_test(test_telephony_clock_before),
     cmocka_unit_test(test_telephony_clock_unset),
     cmocka_unit_test(test_telephony_slow),
