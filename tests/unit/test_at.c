@@ -228,8 +228,10 @@ static void test_at_timeout(void **state)
  * Description:
  *   A command that takes a text: the text and Ctrl-Z go at the prompt,
  *   then the answer is read as any; an error instead of the prompt sends
- *   no text, and ESC; with no room at the prompt, the text goes once
- *   there is; a timeout after the prompt sends ESC.
+ *   no text and no ESC (the modem is not in its text input); with no room
+ *   at the prompt, the text goes once there is; a timeout after Ctrl-Z
+ *   sends no ESC, one with no prompt does; a stray prompt is no answer's
+ *   line; Ctrl-Z alone waits for room.
  *
  ****************************************************************************/
 
@@ -327,7 +329,7 @@ static void test_at_text(void **state)
  * Description:
  *   A text the channel had no room for, its command timing out: ESC goes,
  *   and the room it gives, told from inside its send, sends no text after
- *   it.
+ *   it.  An ESC with no room waits, and the next command after it.
  *
  ****************************************************************************/
 
@@ -350,6 +352,49 @@ static void test_at_text_esc(void **state)
   assert_int_equal(t.ndone, 1);
   assert_int_equal(t.results[0], -ETIMEDOUT);
   assert_string_equal(t.sent, "AT+CMGS=5\r\x1b");
+
+  /* The ESC refused too: the next command waits for it */
+
+  t.nsent = 0;
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   30, at_test_done, &t), 0);
+  assert_int_equal(at_command(&t.at, "AT+CSQ", "+CSQ:", 0, 0, at_test_done,
+                              &t), 0);
+  t.full = true;
+  at_test_feed(&t, "\r\n> ");
+  assert_int_equal(pnut_timer_start(t.loop, 200, 0, at_test_stop, NULL,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(t.loop), 0);
+  assert_int_equal(t.ndone, 2);
+  assert_string_equal(t.sent, "AT+CMGS=5\r");
+  t.full = false;
+  at_room(&t.at);
+  assert_string_equal(t.sent, "AT+CMGS=5\r\x1b" "AT+CSQ\r");
+  pnut_loop_destroy(t.loop);
+}
+
+/****************************************************************************
+ * Name: test_at_room_inside
+ *
+ * Description:
+ *   A command the channel refused, another queued before room came: the
+ *   first goes once, though its send tells of room from inside itself.
+ *
+ ****************************************************************************/
+
+static void test_at_room_inside(void **state)
+{
+  struct at_test_s t;
+
+  at_test_init(&t);
+  t.room_inside = true;
+  t.full        = true;
+  assert_int_equal(at_command(&t.at, "AT+CSQ", NULL, 0, 0, at_test_done,
+                              &t), 0);
+  t.full = false;
+  assert_int_equal(at_command(&t.at, "AT+CPIN?", NULL, 0, 0, at_test_done,
+                              &t), 0);
+  assert_string_equal(t.sent, "AT+CSQ\r");
   pnut_loop_destroy(t.loop);
 }
 
@@ -441,6 +486,7 @@ int main(void)
     cmocka_unit_test(test_at_timeout),
     cmocka_unit_test(test_at_text),
     cmocka_unit_test(test_at_text_esc),
+    cmocka_unit_test(test_at_room_inside),
     cmocka_unit_test(test_at_queue),
   };
 

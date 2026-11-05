@@ -162,7 +162,14 @@ static void msgt_take_opened(FAR struct pnut_messages_client_s *client,
 {
   FAR struct msgt_s *t = arg;
 
+  /* Refused: the step waiting for an item goes on, to fail at once */
+
   t->take_open = status;
+  if (status != PNUT_STATUS_OK && t->waits > 0)
+    {
+      t->waits = 0;
+      msgt_next(t);
+    }
 }
 
 static void msgt_taken(FAR struct pnut_messages_client_s *client,
@@ -174,6 +181,12 @@ static void msgt_taken(FAR struct pnut_messages_client_s *client,
   if (status != PNUT_STATUS_OK)
     {
       t->take_end = status;
+      if (t->waits > 0)
+        {
+          t->waits = 0;
+          msgt_next(t);
+        }
+
       return;
     }
 

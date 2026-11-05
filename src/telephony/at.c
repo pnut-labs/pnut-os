@@ -117,15 +117,22 @@ static void at_next(FAR struct at_s *at)
   FAR struct at_command_s *cmd;
   int ret;
 
-  while (!at->sent && at->cancelling == 0 && at->count > 0)
+  while (!at->sent && !at->escaping && at->cancelling == 0 &&
+         at->count > 0)
     {
       cmd       = &at->queue[at->head];
       at->rlen  = 0;
       at->reply[0] = '\0';
 
+      /* Out from before the send: room told from inside it (the channel
+       * flushing after an earlier refusal) must not send it again
+       */
+
+      at->sent = true;
       ret = at->ops->send(at->arg, cmd->command, strlen(cmd->command));
       if (ret == -EAGAIN)
         {
+          at->sent = false;
           return;                       /* at_room() sends it */
         }
 
@@ -143,7 +150,6 @@ static void at_next(FAR struct at_s *at)
                                  &at->timer);
           if (ret >= 0)
             {
-              at->sent = true;
               return;
             }
 
@@ -152,7 +158,6 @@ static void at_next(FAR struct at_s *at)
 
       /* Not sent, or not timed: it fails, and the next is tried */
 
-      at->sent = true;
       at_finish(at, ret);
       return;
     }
@@ -203,9 +208,9 @@ static void at_finish(FAR struct at_s *at, int result)
         (at->texting || (cmd->prompted && !cmd->ended) ||
          (!cmd->prompted && result == -ETIMEDOUT));
   at->texting = false;
-  if (esc)
+  if (esc && at->ops->send(at->arg, "\x1b", 1) == -EAGAIN)
     {
-      at->ops->send(at->arg, "\x1b", 1);
+      at->escaping = true;        /* at_room() sends it, before any */
     }
 
   at->head    = (at->head + 1) % AT_QUEUE;
@@ -286,8 +291,9 @@ static void at_line(FAR struct at_s *at, FAR const char *line)
   FAR struct at_command_s *cmd;
   size_t n;
 
-  /* A line of blanks says nothing; nor does a prompt ("> ") no text
-   * command waited for, which would otherwise begin the next answer
+  /* A line of blanks says nothing; nor does a prompt ("> "), which
+   * at_input() takes when a text command waits for it, and which would
+   * otherwise begin the next answer
    */
 
   if (line[strspn(line, " \t")] == '\0' || strcmp(line, "> ") == 0)
@@ -472,6 +478,20 @@ void at_input(FAR struct at_s *at, FAR const char *buf, size_t len)
 
 void at_room(FAR struct at_s *at)
 {
+  if (at->escaping)
+    {
+      /* Cleared before the send, as at_next() does: room told from
+       * inside it must not send it again
+       */
+
+      at->escaping = false;
+      if (at->ops->send(at->arg, "\x1b", 1) == -EAGAIN)
+        {
+          at->escaping = true;
+          return;
+        }
+    }
+
   if (at->texting && at->sent && at->count > 0)
     {
       at_text(at);
@@ -503,8 +523,9 @@ void at_cancel(FAR struct at_s *at, int result)
    */
 
   at->cancelling++;
-  at->sent    = false;
-  at->texting = false;
+  at->sent     = false;
+  at->texting  = false;
+  at->escaping = false;
 
   while (n-- > 0 && at->count > 0)
     {
