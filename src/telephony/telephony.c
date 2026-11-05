@@ -1840,11 +1840,16 @@ static void tel_air_check(FAR void *arg, int result, FAR const char *reply)
    */
 
   p = tel_find(reply, line, sizeof(line), "+CFUN:");
-  if (p != NULL && atoi(tel_args(p)) != 4 &&
+  if (p != NULL && atoi(tel_args(p)) != 4 && !tel->air_keeping &&
       (tel->air_checked == 0 || now - tel->air_checked >= TEL_AIR_CHECK_MS))
     {
-      tel->air_checked = now;
+      /* Counted only when given: airplane mode may be off meanwhile */
+
       tel_air_keep(tel, true);
+      if (tel->air_keeping)
+        {
+          tel->air_checked = now;
+        }
     }
 }
 
