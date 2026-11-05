@@ -35,6 +35,8 @@
                                      * more is delivered a part at a time */
 #define SMSJOIN_WAIT      86400     /* Seconds a part waits for the rest */
 #define SMSJOIN_KEY       32        /* The key's characters (RFC 0029) */
+#define SMSJOIN_DONE      64        /* Parts of long messages delivered
+                                     * lately, told from copies of them */
 
 /* smsjoin_add(): a copy of a part already in; an older long message given
  * up to make room, in out, and the part in its place; or given up, and
@@ -65,6 +67,9 @@ struct smsjoin_msg_s
   bool binary;                      /* 8-bit data: no text */
   uint8_t nslots;
   int16_t slots[SMSJOIN_PARTS];     /* Its parts' slots in the modem */
+  uint8_t nhashes;                  /* A long one's parts, for
+                                     * smsjoin_delivered() */
+  uint64_t hashes[SMSJOIN_PARTS];
   FAR char *text;                   /* UTF-8, its parts joined; given back
                                      * with smsjoin_free() */
 };
@@ -93,10 +98,18 @@ struct smsjoin_long_s
   struct smsjoin_part_s parts[SMSJOIN_PARTS];
 };
 
+struct smsjoin_done_s
+{
+  uint64_t hash;                    /* A part's sender, reference and text */
+  uint64_t when;                    /* Delivered then, in s */
+};
+
 struct smsjoin_s
 {
   struct smsjoin_long_s longs[SMSJOIN_MESSAGES];
   uint32_t seq;                     /* The next long message's */
+  struct smsjoin_done_s done[SMSJOIN_DONE];
+  uint8_t done_next;
 };
 
 /****************************************************************************
@@ -113,8 +126,11 @@ struct smsjoin_s
  *   again, changes nothing; the same part again from another slot, as
  *   when the network sent it twice, is a copy whose slot is to be
  *   deleted; a part of the same number with another text, a reference
- *   two messages share, goes as a message of its own.  now is the
- *   monotonic clock's seconds, which never go back.
+ *   two messages share, goes as a message of its own.  A part of a long
+ *   message delivered within the wait (smsjoin_delivered()), come again
+ *   when nothing of its message is being joined, is a copy too: the
+ *   network may send a part twice, and a SIM may hold each part twice.
+ *   now is the monotonic clock's seconds, which never go back.
  *
  *   A reference two messages share can still join a part of one with the
  *   other's when their texts do not tell them apart: nothing in the parts
@@ -136,6 +152,20 @@ struct smsjoin_s
  *   -EINVAL for a part numbered 0, or beyond its message's parts.
  *
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: smsjoin_delivered
+ *
+ * Description:
+ *   A long message made by the join is with Messages, and its slots are
+ *   deleted: its parts, met again, are copies.  Only then: a message let
+ *   go before (the modem going, Messages refusing) is read and joined
+ *   again, and its parts must not be taken for copies.
+ *
+ ****************************************************************************/
+
+void smsjoin_delivered(FAR struct smsjoin_s *join,
+                       FAR const struct smsjoin_msg_s *msg, uint64_t now);
 
 int smsjoin_add(FAR struct smsjoin_s *join,
                 FAR const struct sms_deliver_s *part, int16_t slot,

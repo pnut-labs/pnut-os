@@ -63,6 +63,10 @@ struct transport_s
 
   bool modem;                     /* On, its SIM ready */
   bool storage;                   /* Its memory chosen and counted */
+  bool sim;                       /* The memory read is the SIM's, being
+                                   * emptied into Messages */
+  bool sim_check;                 /* The SIM's to look at, at the next
+                                   * choice */
   bool busy;                      /* A command or a delivery out */
   bool paused;                    /* Something failed: until the tick */
   bool again;                     /* Read through again at the tick */
