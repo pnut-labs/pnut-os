@@ -1690,6 +1690,7 @@ static void msg_register(FAR struct messages_s *m,
   memset(&reply, 0, sizeof(reply));
   pnut_messages_register_transport_reply(&m->server, req, PNUT_STATUS_OK,
                                          &reply);
+  msg_next(m);                    /* What it had taken, marked now */
 }
 
 static FAR struct messages_transport_s *

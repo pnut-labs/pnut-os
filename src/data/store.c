@@ -839,6 +839,11 @@ static int store_ids_write(FAR const char *path, uint64_t next_msg,
   snprintf(temp, sizeof(temp), "%s" STORE_TEMP, path);
   len = snprintf(line, sizeof(line), "pnut-ids 1 %" PRIu64 " %" PRIu64 "\n",
                  next_msg, next_conv);
+  if (len < 0 || len >= (int)sizeof(line))
+    {
+      return -EINVAL;             /* Cannot be: 53 characters at most */
+    }
+
   fd = open(temp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
   if (fd < 0)
     {
