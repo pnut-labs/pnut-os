@@ -70,6 +70,11 @@ struct at_command_s
 {
   char command[AT_COMMAND_MAX + 2];   /* With its CR */
   char prefix[AT_PREFIX_MAX];
+  FAR const char *text;           /* After the "> " prompt, or NULL; the
+                                   * caller's until done */
+  bool prompted;                  /* The prompt came */
+  bool text_sent;                 /* The text went */
+  bool ended;                     /* and its Ctrl-Z */
   uint32_t timeout;
   uint8_t flags;
   at_done_t done;
@@ -93,6 +98,7 @@ struct at_s
   uint8_t head;
   uint8_t count;
   bool sent;                      /* The first in the queue is out */
+  bool texting;                   /* Its text, or Ctrl-Z, waits for room */
   uint8_t cancelling;             /* In at_cancel(), nested perhaps:
                                    * nothing is sent */
   FAR struct pnut_timer_s *timer; /* Its timeout */
@@ -141,6 +147,32 @@ void at_init(FAR struct at_s *at, FAR struct pnut_module_s *module,
 int at_command(FAR struct at_s *at, FAR const char *command,
                FAR const char *prefix, uint32_t timeout, uint8_t flags,
                at_done_t done, FAR void *arg);
+
+/****************************************************************************
+ * Name: at_command_text
+ *
+ * Description:
+ *   Queue a command that takes a text after the modem's "> " prompt, as
+ *   AT+CMGS takes a PDU: the text goes when the prompt comes, ended with
+ *   Ctrl-Z; then the answer as for at_command().  A command that ends
+ *   with an error or a timeout while the modem may be in its text input
+ *   (the prompt came but the text or its Ctrl-Z did not go, or no prompt
+ *   came at all) sends ESC, which leaves it.  A command cancelled
+ *   (at_cancel()) sends nothing: the modem is going.
+ *
+ * Input Parameters:
+ *   As at_command(), and:
+ *   text - The text, without its Ctrl-Z: the caller's, unchanged, until
+ *          done is called.  It must fit the channel's queue whole.
+ *
+ * Returned Value:
+ *   As at_command().
+ *
+ ****************************************************************************/
+
+int at_command_text(FAR struct at_s *at, FAR const char *command,
+                    FAR const char *text, FAR const char *prefix,
+                    uint32_t timeout, at_done_t done, FAR void *arg);
 
 /****************************************************************************
  * Name: at_input

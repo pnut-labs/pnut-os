@@ -171,6 +171,7 @@ static void at_finish(FAR struct at_s *at, int result)
   FAR struct at_command_s *cmd;
   at_done_t done;
   FAR void *arg;
+  bool esc;
 
   if (!at->sent || at->count == 0)
     {
@@ -191,9 +192,25 @@ static void at_finish(FAR struct at_s *at, int result)
       explicit_bzero(cmd->command, sizeof(cmd->command));
     }
 
-  at->head = (at->head + 1) % AT_QUEUE;
+  /* A text command that failed while the modem may be in its text
+   * input: out of it.  Nothing of this command is waited for any more
+   * (texting cleared first), since the send may give the channel room,
+   * and at_room() is called from inside it; sent is still set, so
+   * at_next() sends nothing from there either.
+   */
+
+  esc = cmd->text != NULL && result < 0 &&
+        (at->texting || (cmd->prompted && !cmd->ended) ||
+         (!cmd->prompted && result == -ETIMEDOUT));
+  at->texting = false;
+  if (esc)
+    {
+      at->ops->send(at->arg, "\x1b", 1);
+    }
+
+  at->head    = (at->head + 1) % AT_QUEUE;
   at->count--;
-  at->sent = false;
+  at->sent    = false;
 
   if (done != NULL)
     {
@@ -201,6 +218,58 @@ static void at_finish(FAR struct at_s *at, int result)
     }
 
   at_next(at);
+}
+
+/****************************************************************************
+ * Name: at_text
+ *
+ * Description:
+ *   The prompt came: the command's text, then Ctrl-Z; with no room on the
+ *   channel, once there is.
+ *
+ ****************************************************************************/
+
+static void at_text(FAR struct at_s *at)
+{
+  FAR struct at_command_s *cmd = &at->queue[at->head];
+  size_t n = strlen(cmd->text);
+  int ret;
+
+  cmd->prompted = true;
+  at->texting   = false;
+  if (!cmd->text_sent)
+    {
+      ret = at->ops->send(at->arg, cmd->text, n);
+      if (ret == -EAGAIN)
+        {
+          at->texting = true;     /* at_room() sends it */
+          return;
+        }
+
+      if (ret < 0)
+        {
+          at_finish(at, ret);
+          return;
+        }
+
+      cmd->text_sent = true;
+      pnut_log(at->module, PNUT_LOG_DEBUG, "> (text, %zu)", n);
+    }
+
+  ret = at->ops->send(at->arg, "\x1a", 1);
+  if (ret == -EAGAIN)
+    {
+      at->texting = true;         /* Ctrl-Z alone, then */
+      return;
+    }
+
+  if (ret < 0)
+    {
+      at_finish(at, ret);
+      return;
+    }
+
+  cmd->ended = true;
 }
 
 /****************************************************************************
@@ -217,11 +286,11 @@ static void at_line(FAR struct at_s *at, FAR const char *line)
   FAR struct at_command_s *cmd;
   size_t n;
 
-  /* A line of blanks says nothing: the space of the SMS prompt ("> ") is
-   * one, and it would otherwise hide the error after it
+  /* A line of blanks says nothing; nor does a prompt ("> ") no text
+   * command waited for, which would otherwise begin the next answer
    */
 
-  if (line[strspn(line, " \t")] == '\0')
+  if (line[strspn(line, " \t")] == '\0' || strcmp(line, "> ") == 0)
     {
       return;
     }
@@ -289,9 +358,18 @@ void at_init(FAR struct at_s *at, FAR struct pnut_module_s *module,
   at->arg    = arg;
 }
 
-int at_command(FAR struct at_s *at, FAR const char *command,
-               FAR const char *prefix, uint32_t timeout, uint8_t flags,
-               at_done_t done, FAR void *arg)
+/****************************************************************************
+ * Name: at_queue
+ *
+ * Description:
+ *   A command queued, with its text or none.
+ *
+ ****************************************************************************/
+
+static int at_queue(FAR struct at_s *at, FAR const char *command,
+                    FAR const char *text, FAR const char *prefix,
+                    uint32_t timeout, uint8_t flags, at_done_t done,
+                    FAR void *arg)
 {
   FAR struct at_command_s *cmd;
   size_t n = strlen(command);
@@ -312,14 +390,37 @@ int at_command(FAR struct at_s *at, FAR const char *command,
   cmd->command[n]     = '\r';
   cmd->command[n + 1] = '\0';
   strlcpy(cmd->prefix, prefix != NULL ? prefix : "", sizeof(cmd->prefix));
-  cmd->timeout = timeout > 0 ? timeout : AT_TIMEOUT;
-  cmd->flags   = flags;
-  cmd->done    = done;
-  cmd->arg     = arg;
+  cmd->text      = text;
+  cmd->prompted  = false;
+  cmd->text_sent = false;
+  cmd->ended     = false;
+  cmd->timeout  = timeout > 0 ? timeout : AT_TIMEOUT;
+  cmd->flags    = flags;
+  cmd->done     = done;
+  cmd->arg      = arg;
   at->count++;
 
   at_next(at);
   return OK;
+}
+
+int at_command(FAR struct at_s *at, FAR const char *command,
+               FAR const char *prefix, uint32_t timeout, uint8_t flags,
+               at_done_t done, FAR void *arg)
+{
+  return at_queue(at, command, NULL, prefix, timeout, flags, done, arg);
+}
+
+int at_command_text(FAR struct at_s *at, FAR const char *command,
+                    FAR const char *text, FAR const char *prefix,
+                    uint32_t timeout, at_done_t done, FAR void *arg)
+{
+  if (text == NULL)
+    {
+      return -EINVAL;
+    }
+
+  return at_queue(at, command, text, prefix, timeout, 0, done, arg);
 }
 
 void at_input(FAR struct at_s *at, FAR const char *buf, size_t len)
@@ -355,11 +456,28 @@ void at_input(FAR struct at_s *at, FAR const char *buf, size_t len)
         {
           at->long_line = true;           /* The rest is cut off */
         }
+
+      /* The prompt for a text, which no line end follows */
+
+      if (at->llen == 2 && at->line[0] == '>' && at->line[1] == ' ' &&
+          at->sent && at->count > 0 &&
+          at->queue[at->head].text != NULL &&
+          !at->queue[at->head].prompted)
+        {
+          at->llen = 0;
+          at_text(at);
+        }
     }
 }
 
 void at_room(FAR struct at_s *at)
 {
+  if (at->texting && at->sent && at->count > 0)
+    {
+      at_text(at);
+      return;
+    }
+
   at_next(at);
 }
 
@@ -385,7 +503,8 @@ void at_cancel(FAR struct at_s *at, int result)
    */
 
   at->cancelling++;
-  at->sent = false;
+  at->sent    = false;
+  at->texting = false;
 
   while (n-- > 0 && at->count > 0)
     {

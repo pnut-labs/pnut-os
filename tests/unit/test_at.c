@@ -42,6 +42,10 @@ struct at_test_s
   char sent[1024];                /* What went to the modem */
   size_t nsent;
   bool full;                      /* The channel takes nothing now */
+  int full_after;                 /* Sends taken before it is full */
+  bool room_inside;               /* A send after a refusal tells of room
+                                   * from inside itself, as the mux does */
+  bool refused;
   char urcs[1024];                /* Lines sent unasked, each ended */
   int results[16];
   char replies[16][128];
@@ -59,13 +63,25 @@ static int at_test_send(FAR void *arg, FAR const char *buf, size_t len)
 
   if (t->full)
     {
+      t->refused = true;
       return -EAGAIN;
+    }
+
+  if (t->full_after > 0 && --t->full_after == 0)
+    {
+      t->full = true;
     }
 
   assert_true(t->nsent + len < sizeof(t->sent));
   memcpy(t->sent + t->nsent, buf, len);
   t->nsent += len;
   t->sent[t->nsent] = '\0';
+  if (t->room_inside && t->refused)
+    {
+      t->refused = false;
+      at_room(&t->at);
+    }
+
   return 0;
 }
 
@@ -207,6 +223,137 @@ static void test_at_timeout(void **state)
 }
 
 /****************************************************************************
+ * Name: test_at_text
+ *
+ * Description:
+ *   A command that takes a text: the text and Ctrl-Z go at the prompt,
+ *   then the answer is read as any; an error instead of the prompt sends
+ *   no text, and ESC; with no room at the prompt, the text goes once
+ *   there is; a timeout after the prompt sends ESC.
+ *
+ ****************************************************************************/
+
+static void test_at_text(void **state)
+{
+  struct at_test_s t;
+
+  at_test_init(&t);
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   0, at_test_done, &t), 0);
+  assert_string_equal(t.sent, "AT+CMGS=5\r");
+  at_test_feed(&t, "\r\n> ");
+  assert_string_equal(t.sent, "AT+CMGS=5\r0011AB\x1a");
+  at_test_feed(&t, "\r\n+CMGS: 12\r\n\r\nOK\r\n");
+  assert_int_equal(t.ndone, 1);
+  assert_int_equal(t.results[0], 0);
+  assert_string_equal(t.replies[0], "+CMGS: 12\n");
+
+  /* An error instead of the prompt: the modem is not in its text input,
+   * no ESC
+   */
+
+  t.nsent = 0;
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   0, at_test_done, &t), 0);
+  at_test_feed(&t, "\r\n+CMS ERROR: 500\r\n");
+  assert_int_equal(t.ndone, 2);
+  assert_int_equal(t.results[1], -EIO);
+  assert_string_equal(t.sent, "AT+CMGS=5\r");
+
+  /* No room at the prompt: the text waits */
+
+  t.nsent = 0;
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   0, at_test_done, &t), 0);
+  t.full = true;
+  at_test_feed(&t, "\r\n> ");
+  t.full = false;
+  assert_string_equal(t.sent, "AT+CMGS=5\r");
+  at_room(&t.at);
+  assert_string_equal(t.sent, "AT+CMGS=5\r0011AB\x1a");
+  at_test_feed(&t, "\r\n+CMGS: 13\r\n\r\nOK\r\n");
+  assert_int_equal(t.ndone, 3);
+  assert_int_equal(t.results[2], 0);
+
+  /* No answer after the text and Ctrl-Z: the modem is back from its text
+   * input, no ESC; no prompt at all: ESC, should it still come; a stray
+   * prompt later is no answer's line
+   */
+
+  t.nsent = 0;
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   30, at_test_done, &t), 0);
+  at_test_feed(&t, "\r\n> ");
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   30, at_test_done, &t), 0);
+  assert_int_equal(pnut_timer_start(t.loop, 200, 0, at_test_stop, NULL,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(t.loop), 0);
+  assert_int_equal(t.ndone, 5);
+  assert_int_equal(t.results[3], -ETIMEDOUT);
+  assert_int_equal(t.results[4], -ETIMEDOUT);
+  assert_string_equal(t.sent,
+                      "AT+CMGS=5\r0011AB\x1a" "AT+CMGS=5\r\x1b");
+  assert_true(at_idle(&t.at));
+
+  assert_int_equal(at_command(&t.at, "AT+CSQ", "+CSQ:", 0, 0, at_test_done,
+                              &t), 0);
+  at_test_feed(&t, "\r\n> \r\n+CSQ: 20,99\r\n\r\nOK\r\n");
+  assert_int_equal(t.ndone, 6);
+  assert_string_equal(t.replies[5], "+CSQ: 20,99\n");
+
+  /* The channel full for Ctrl-Z alone: it goes once there is room */
+
+  t.nsent = 0;
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   0, at_test_done, &t), 0);
+  t.full_after = 1;
+  at_test_feed(&t, "\r\n> ");
+  assert_string_equal(t.sent, "AT+CMGS=5\r0011AB");
+  t.full_after = 0;
+  t.full       = false;
+  at_room(&t.at);
+  assert_string_equal(t.sent, "AT+CMGS=5\r0011AB\x1a");
+  at_test_feed(&t, "\r\n+CMGS: 14\r\n\r\nOK\r\n");
+  assert_int_equal(t.ndone, 7);
+  assert_int_equal(t.results[6], 0);
+
+  pnut_loop_destroy(t.loop);
+}
+
+/****************************************************************************
+ * Name: test_at_text_esc
+ *
+ * Description:
+ *   A text the channel had no room for, its command timing out: ESC goes,
+ *   and the room it gives, told from inside its send, sends no text after
+ *   it.
+ *
+ ****************************************************************************/
+
+static void test_at_text_esc(void **state)
+{
+  struct at_test_s t;
+
+  at_test_init(&t);
+  t.room_inside = true;
+  assert_int_equal(at_command_text(&t.at, "AT+CMGS=5", "0011AB", "+CMGS:",
+                                   30, at_test_done, &t), 0);
+  t.full = true;
+  at_test_feed(&t, "\r\n> ");
+  t.full = false;
+  assert_string_equal(t.sent, "AT+CMGS=5\r");
+
+  assert_int_equal(pnut_timer_start(t.loop, 200, 0, at_test_stop, NULL,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(t.loop), 0);
+  assert_int_equal(t.ndone, 1);
+  assert_int_equal(t.results[0], -ETIMEDOUT);
+  assert_string_equal(t.sent, "AT+CMGS=5\r\x1b");
+  pnut_loop_destroy(t.loop);
+}
+
+/****************************************************************************
  * Name: test_at_queue
  *
  * Description:
@@ -292,6 +439,8 @@ int main(void)
   {
     cmocka_unit_test(test_at_answers),
     cmocka_unit_test(test_at_timeout),
+    cmocka_unit_test(test_at_text),
+    cmocka_unit_test(test_at_text_esc),
     cmocka_unit_test(test_at_queue),
   };
 
