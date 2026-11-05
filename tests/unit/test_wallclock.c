@@ -1052,6 +1052,35 @@ static bool wall_test_stale_steps(FAR struct wall_test_s *t)
     }
 }
 
+/* The same, the time saved being the owner's: no floor, the first
+ * reading taken
+ */
+
+static bool wall_test_owner_floor_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        t->uncertainty = 60000;
+        t->kind        = PNUT_NETWORK_TIME_KIND_MODEM_CLOCK;
+        wall_test_network(t, T0 + 1000 - 86400, true, 3600, false);
+        return true;
+
+      case 1:
+        if (t->sets < 2)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 1000 - 86400);
+        pnut_loop_stop(t->loop, 0);
+        return true;
+
+      default:
+        return false;
+    }
+}
+
 static void test_wallclock_stale_modem(void **state)
 {
   FAR struct wall_test_s *t = wall_test_new(false);
@@ -1061,6 +1090,13 @@ static void test_wallclock_stale_modem(void **state)
   wall_test_run(t, wall_test_stale_steps);
   assert_int_equal(t->step, 2);
   assert_int_equal(t->sets, 2);
+  wall_test_free(t);
+
+  t = wall_test_new(false);
+  wall_test_write(t->state, "pnut-time 1 1792757800 2 1792757800\n");
+  t->clock = T_START;
+  wall_test_run(t, wall_test_owner_floor_steps);
+  assert_int_equal(t->step, 2);
   wall_test_free(t);
 }
 

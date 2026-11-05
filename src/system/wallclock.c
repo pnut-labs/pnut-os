@@ -513,7 +513,15 @@ static void wallclock_load(FAR struct wallclock_s *wall)
       return;
     }
 
-  wall->floor = utc;
+  /* A floor for the modem's own clock: a time a network, NTP or GNSS
+   * gave, not the owner's, which may be wrong ahead
+   */
+
+  if (source >= PNUT_TIME_INFO_SOURCE_NETWORK)
+    {
+      wall->floor = utc;
+    }
+
   ret = wallclock_now(wall, &ts);
   if (ret < 0)
     {
@@ -785,6 +793,7 @@ static void wallclock_network(FAR struct pnut_network_time_reader_s *reader,
 {
   FAR struct wallclock_s *wall = arg;
   uint64_t age;
+  int64_t behind;
   bool dst_only;
 
   if (wallclock_age(wall, msg->taken, &age) < 0)
@@ -794,19 +803,19 @@ static void wallclock_network(FAR struct pnut_network_time_reader_s *reader,
       return;
     }
 
-  /* The modem's own clock earlier than the time saved: one the network
-   * did not set, kept from long ago, its zone with it.  The network's
-   * own readings are taken whatever the time saved, which an owner may
-   * have set wrong.
+  /* The modem's own clock earlier than the time saved, by more than its
+   * uncertainty: one the network did not set, kept from long ago, its
+   * zone with it.  The network's own readings are taken whatever the
+   * time saved.
    */
 
+  behind = wall->floor - msg->utc - (int64_t)((age + 500) / 1000);
   if (msg->kind == PNUT_NETWORK_TIME_KIND_MODEM_CLOCK && msg->utc != 0 &&
-      wall->floor != 0 &&
-      msg->utc + (int64_t)(age / 1000) < wall->floor)
+      wall->floor != 0 && behind > (int64_t)(msg->uncertainty / 1000))
     {
       pnut_log(&wall->module, PNUT_LOG_WARNING,
                "The modem's clock %" PRId64 " s before the time saved: "
-               "left aside", wall->floor - msg->utc);
+               "left aside", behind);
       return;
     }
 
