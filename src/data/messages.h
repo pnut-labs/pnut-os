@@ -39,6 +39,8 @@
 #define MESSAGES_TRANSPORTS 4          /* Transports registered at once */
 #define MESSAGES_ASKS      4           /* Callers waiting to be told apart */
 #define MESSAGES_QUEUE     8           /* Jobs waiting for the store */
+#define MESSAGES_ASIDE_TRIES 3         /* Loads failed before a segment that
+                                        * cannot be read is set aside */
 #define MESSAGES_RETRY     30000       /* ms before the store is read again,
                                         * when it could not be */
 #define MESSAGES_PUSH_MS   200         /* A hand-over with no room, again */
@@ -68,7 +70,10 @@ enum messages_kind_e
                                    * read, written as sending, pushed */
   MESSAGES_REQUEUE,               /* One that could not be handed over,
                                    * queued again, or failed if unread */
-  MESSAGES_REPORT                 /* A status, from its transport */
+  MESSAGES_REPORT,                /* A status, from its transport */
+  MESSAGES_UNCONFIRM              /* A message a transport had taken,
+                                   * when its Take closed: not known to
+                                   * be sent */
 };
 
 /* The work a worker has: which part of the union is in use */
@@ -126,6 +131,8 @@ struct messages_transport_s
   struct pnut_endpoint_s from;
   FAR struct messages_s *messages;
   struct pnut_stream_s stream;    /* Its Take, while open */
+  bool unconfirm;                 /* What it had taken is to be marked
+                                   * not known to be sent */
 };
 
 /* The store's files read at start, on a worker */

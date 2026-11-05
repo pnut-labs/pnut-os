@@ -346,6 +346,12 @@ static int msg_load(FAR struct messages_s *m)
 
   store_init(&m->work.load.store, m->config.dir, m->config.limit,
              m->config.segmax);
+
+  /* Failed a few times in a row: a segment that cannot be read is set
+   * aside, so that the rest of the store works again
+   */
+
+  m->work.load.store.set_aside = m->retries >= MESSAGES_ASIDE_TRIES;
   m->work_kind = MESSAGES_WORK_LOAD;
   ret = pnut_job_submit(m->module.loop, msg_load_run, msg_loaded,
                         &m->work.load);
@@ -456,6 +462,14 @@ static void msg_loaded(FAR struct pnut_loop_s *loop, FAR void *arg)
           pnut_log(&m->module, PNUT_LOG_WARNING,
                    "%" PRIu32 " files with no head left aside",
                    m->store.bad);
+        }
+
+      if (m->store.aside > 0)
+        {
+          pnut_log(&m->module, PNUT_LOG_ERROR,
+                   "%" PRIu32 " segments that could not be read set aside "
+                   "(" STORE_ASIDE "): their messages are not shown",
+                   m->store.aside);
         }
 
       m->room = m->store.bytes > m->store.limit || m->full;
@@ -715,6 +729,29 @@ static void msg_hand_read(FAR struct pnut_loop_s *loop, FAR void *arg)
 }
 
 /****************************************************************************
+ * Name: msg_unconfirm_more
+ *
+ * Description:
+ *   One a transport had taken is marked: the next, if any is left.
+ *
+ ****************************************************************************/
+
+static void msg_unconfirm_more(FAR struct messages_s *m,
+                               FAR const char *transport)
+{
+  int i;
+
+  for (i = 0; i < MESSAGES_TRANSPORTS; i++)
+    {
+      if (m->transports[i].used &&
+          strcmp(m->transports[i].name, transport) == 0)
+        {
+          m->transports[i].unconfirm = true;
+        }
+    }
+}
+
+/****************************************************************************
  * Name: msg_written
  *
  * Description:
@@ -786,6 +823,10 @@ static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg)
   else if (job->kind == MESSAGES_SEND || job->kind == MESSAGES_REQUEUE)
     {
       m->hand = true;             /* Queued: its transport may take it */
+    }
+  else if (job->kind == MESSAGES_UNCONFIRM)
+    {
+      msg_unconfirm_more(m, job->transport);
     }
 
   if (job->answer)
@@ -1354,6 +1395,34 @@ static bool msg_start_job(FAR struct messages_s *m)
 
         return true;
 
+      case MESSAGES_UNCONFIRM:
+        {
+          uint64_t c = 0;
+          uint64_t id = 0;
+
+          /* The oldest it had taken, one at a time; none left: done */
+
+          if (store_oldest_status(&m->store, job->transport,
+                                  PNUT_MESSAGES_MESSAGE_STATUS_SENDING, &c,
+                                  &id) < 0)
+            {
+              return false;
+            }
+
+          ret = store_plan_status(&m->store, id,
+                                  PNUT_MESSAGES_MESSAGE_STATUS_UNCONFIRMED,
+                                  "", &m->work.write);
+          if (ret < 0)
+            {
+              pnut_log(&m->module, PNUT_LOG_WARNING,
+                       "Message %" PRIu64 " left sending: %d", id, ret);
+              return false;
+            }
+
+          return msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run,
+                            msg_written, &m->work.write);
+        }
+
       case MESSAGES_REPORT:
         {
           FAR struct store_conv_s *conv;
@@ -1462,11 +1531,30 @@ static bool msg_start_job(FAR struct messages_s *m)
  *
  ****************************************************************************/
 
+static FAR struct messages_transport_s *
+msg_unconfirming(FAR struct messages_s *m)
+{
+  int i;
+
+  for (i = 0; i < MESSAGES_TRANSPORTS; i++)
+    {
+      if (m->transports[i].used && m->transports[i].unconfirm)
+        {
+          return &m->transports[i];
+        }
+    }
+
+  return NULL;
+}
+
 static void msg_next(FAR struct messages_s *m)
 {
+  FAR struct messages_transport_s *t;
+
   while (!m->working && m->loaded && !m->stopped &&
          (m->room || m->compact || m->requeue ||
-          (m->hand && !m->pushing) || m->count > 0))
+          (m->hand && !m->pushing) || m->count > 0 ||
+          (!m->failed && msg_unconfirming(m) != NULL)))
     {
       /* Room first, then a compaction, then the queue */
 
@@ -1497,6 +1585,13 @@ static void msg_next(FAR struct messages_s *m)
           m->current.kind           = MESSAGES_REQUEUE;
           m->current.in.hand.message = m->requeue_msg;
           m->current.in.hand.status  = m->requeue_status;
+        }
+      else if (!m->failed && (t = msg_unconfirming(m)) != NULL)
+        {
+          t->unconfirm    = false;  /* Its job asks again while some are */
+          m->current.kind = MESSAGES_UNCONFIRM;
+          strlcpy(m->current.transport, t->name,
+                  sizeof(m->current.transport));
         }
       else if (m->hand && !m->failed && !m->pushing && !m->requeue_held)
         {
@@ -1573,13 +1668,17 @@ static void msg_register(FAR struct messages_s *m,
       return;
     }
 
-  /* Its program started again: a Take on the old connection is over */
+  /* Its program started again: a Take on the old connection is over,
+   * and what it had taken not known to be sent (ending it does not call
+   * msg_take_closed())
+   */
 
   if (t->used && t->stream.open &&
       (t->stream.to.conn != req->from.conn ||
        t->stream.to.gen != req->from.gen))
     {
       pnut_stream_end(&t->stream, PNUT_STATUS_ENDED);
+      t->unconfirm = true;
     }
 
   t->used     = true;
@@ -1927,12 +2026,16 @@ static void msg_take_closed(FAR struct pnut_stream_s *stream, int status,
 {
   FAR struct messages_transport_s *t = arg;
 
-  /* What it had taken stays sending: not known to be sent at the next
-   * start
+  /* What it had taken is not known to be sent (RFC 0029): its program
+   * restarted, or its connection went; a report that comes after still
+   * says what became of it
    */
 
-  pnut_log(&t->messages->module, PNUT_LOG_INFO, "%s takes no more: %d",
+  pnut_log(&t->messages->module, PNUT_LOG_INFO,
+           "%s takes no more: %d; what it had taken is not known to be sent",
            t->name, status);
+  t->unconfirm = true;
+  msg_next(t->messages);
 }
 
 static void msg_take(FAR struct pnut_messages_server_s *server,

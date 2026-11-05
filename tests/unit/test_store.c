@@ -18,6 +18,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <fcntl.h>
 #include <setjmp.h>
 #include <stdarg.h>
@@ -164,6 +165,8 @@ static off_t st_size(FAR const char *path)
   return stat(path, &st) == 0 ? st.st_size : -1;
 }
 
+/* The segments' files, and others but the next ids' */
+
 static int st_files(FAR const char *dir)
 {
   struct dirent *de;
@@ -174,7 +177,7 @@ static int st_files(FAR const char *dir)
   assert_non_null(d);
   while ((de = readdir(d)) != NULL)
     {
-      n += de->d_name[0] != '.';
+      n += de->d_name[0] != '.' && strcmp(de->d_name, STORE_IDS) != 0;
     }
 
   closedir(d);
@@ -689,7 +692,9 @@ static void test_store_records(void **state)
  *   A conversation read, the messages of its second segment deleted and
  *   compacted away, the read record kept there: after a restart, ids go
  *   on from the highest given, and a new message is not covered by the
- *   read record.
+ *   read record.  The conversation removed whole, its files with it:
+ *   after a restart, neither its messages' ids nor its own are given
+ *   again.
  *
  ****************************************************************************/
 
@@ -753,6 +758,75 @@ static void test_store_ids(void **state)
   st_reload(s);
   assert_int_equal(store_find(&s->store, c)->unread, 1);
 
+  /* The conversation removed: its files go, the next ids stay */
+
+  {
+    struct store_remove_s rm;
+    uint64_t next = s->store.next_msg;
+
+    assert_int_equal(store_plan_remove(&s->store, c, &rm), 0);
+    store_remove_run(&rm);
+    assert_int_equal(rm.ret, 0);
+    store_removed(&s->store, &rm);
+    assert_int_equal(st_files(s->dir), 0);
+
+    st_reload(s);
+    assert_int_equal(s->store.nconvs, 0);
+    assert_int_equal(s->store.next_msg, next);
+    assert_true(s->store.next_conv > c);
+  }
+
+  st_free(s);
+}
+
+/****************************************************************************
+ * Name: test_store_aside
+ *
+ * Description:
+ *   A segment that cannot be read fails the load; asked to, the load sets
+ *   it aside, renamed and kept, and the rest of the store loads.
+ *
+ ****************************************************************************/
+
+static void test_store_aside(void **state)
+{
+  FAR struct st_s *s = st_new(S_LIMIT, STORE_SEGMENT_MAX);
+  struct store_s fresh;
+  char path[STORE_PATH_MAX];
+  char aside[STORE_PATH_MAX + sizeof(STORE_ASIDE)];
+  uint64_t bad;
+
+  assert_int_equal(st_message(s, "sms", "+1", "kept", false, NULL), 0);
+  assert_int_equal(st_message(s, "sms", "+2", "unreadable", false, NULL),
+                   0);
+  bad = s->w.conversation;
+  snprintf(path, sizeof(path), "%s/%016" PRIx64 "-%08" PRIx32 ".log",
+           s->dir, bad, (uint32_t)1);
+  assert_int_equal(chmod(path, 0), 0);
+
+  if (access(path, R_OK) == 0)
+    {
+      chmod(path, 0600);          /* Run as root: nothing is unreadable */
+      st_free(s);
+      skip();
+    }
+
+  store_init(&fresh, s->dir, s->store.limit, s->store.segmax);
+  assert_true(store_load(&fresh) < 0);
+  store_free(&fresh);
+
+  store_init(&fresh, s->dir, s->store.limit, s->store.segmax);
+  fresh.set_aside = true;
+  assert_int_equal(store_load(&fresh), 0);
+  assert_int_equal(fresh.aside, 1);
+  assert_int_equal(fresh.nconvs, 1);
+  store_free(&fresh);
+
+  snprintf(aside, sizeof(aside), "%s" STORE_ASIDE, path);
+  assert_int_equal(access(path, F_OK), -1);
+  assert_int_equal(chmod(aside, 0600), 0);
+  st_reload(s);
+  assert_int_equal(s->store.nconvs, 1);
   st_free(s);
 }
 
@@ -842,6 +916,7 @@ int main(void)
     cmocka_unit_test(test_store_records),
     cmocka_unit_test(test_store_compact),
     cmocka_unit_test(test_store_ids),
+    cmocka_unit_test(test_store_aside),
   };
 
   return cmocka_run_group_tests_name("store", tests, NULL, NULL);
