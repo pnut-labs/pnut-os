@@ -49,11 +49,14 @@
  * its stack and task dumps write (_alert()), the emergency level alike;
  * the assertion's line, the dump's first, which a small RAM log may have
  * lost; and the line Log logs once it has saved the report, which tells
- * a later start that the dump before it is saved
+ * a later start that the dump before it is saved: the dump that ends at
+ * the time it names, so that a second dump, come while the first's
+ * report was written, is not taken as saved with it
  */
 
 #define LOGS_ASSERTION    "Assertion failed"
 #define LOGS_SAVED        "log: Crash report saved"
+#define LOGS_SAVED_TO     " (to "
 
 /* How long a crash's dump must be quiet to be over, in ms */
 
@@ -122,6 +125,8 @@ struct logs_line_s
 static void logs_mark(FAR struct logs_s *logs, FAR const char *fmt, ...)
   printf_like(2, 3);
 static void logs_write_done(FAR struct pnut_loop_s *loop, FAR void *arg);
+static bool logs_scan(FAR const char **cursor, FAR const char *end,
+                      FAR char *line, FAR size_t *lenp);
 
 /****************************************************************************
  * Private Data
@@ -773,6 +778,35 @@ static void logs_prepare(FAR struct logs_s *logs)
 }
 
 /****************************************************************************
+ * Name: logs_report_end
+ *
+ * Description:
+ *   The time of a crash report's last line, its dump's end, in us since
+ *   the device's start; -1 with none.
+ *
+ ****************************************************************************/
+
+static int64_t logs_report_end(FAR const char *report, size_t len)
+{
+  struct logs_line_s parsed;
+  char line[LOGS_LINE_MAX];
+  FAR const char *cursor = report;
+  int64_t us = -1;
+  size_t n;
+
+  while (logs_scan(&cursor, report + len, line, &n))
+    {
+      if (n > 0)
+        {
+          logs_parse(line, &parsed);
+          us = parsed.us;
+        }
+    }
+
+  return us;
+}
+
+/****************************************************************************
  * Name: logs_written
  *
  * Description:
@@ -785,6 +819,7 @@ static void logs_prepare(FAR struct logs_s *logs)
 static void logs_written(FAR struct logs_s *logs)
 {
   FAR struct logs_write_s *write = &logs->write;
+  int64_t us;
 
   if (write->ret < 0)
     {
@@ -812,9 +847,22 @@ static void logs_written(FAR struct logs_s *logs)
         }
       else
         {
-          pnut_log(&logs->module, PNUT_LOG_WARNING,
-                   "Crash report saved: %s/%s", write->dir,
-                   write->crash_name);
+          /* The dump it holds named by its last line's time (LOGS_SAVED) */
+
+          us = logs_report_end(write->crash, write->crash_len);
+          if (us >= 0)
+            {
+              pnut_log(&logs->module, PNUT_LOG_WARNING,
+                       "Crash report saved: %s/%s" LOGS_SAVED_TO
+                       "%lld.%06ld)", write->dir, write->crash_name,
+                       (long long)(us / 1000000), (long)(us % 1000000));
+            }
+          else
+            {
+              pnut_log(&logs->module, PNUT_LOG_WARNING,
+                       "Crash report saved: %s/%s", write->dir,
+                       write->crash_name);
+            }
         }
 
       free(write->crash);
@@ -1109,6 +1157,11 @@ static void logs_last_saved(FAR struct logs_s *logs, FAR char *last)
  *   if no line after the dump says it is saved already.  Its length, or 0
  *   with none.
  *
+ *   A line saying a report is saved names the time of the dump's last line
+ *   it saved, and covers that dump alone: a dump after it, come while the
+ *   report was written, is still to save.  One that names no time, as
+ *   older ones do, covers whatever dump is before it.
+ *
  ****************************************************************************/
 
 static size_t logs_crash_take(FAR const char *buffer, size_t len)
@@ -1117,6 +1170,12 @@ static size_t logs_crash_take(FAR const char *buffer, size_t len)
   char line[LOGS_LINE_MAX];
   FAR const char *cursor = buffer;
   FAR const char *dump_end = NULL;
+  FAR const char *saved;
+  FAR char *p;
+  int64_t dump_us = -1;
+  int64_t to;
+  long long sec;
+  long usec;
   size_t n;
   bool in_dump = false;
 
@@ -1127,8 +1186,34 @@ static size_t logs_crash_take(FAR const char *buffer, size_t len)
         {
           in_dump  = true;
           dump_end = cursor;
+          dump_us  = parsed.us;
+          continue;
         }
-      else if (in_dump && strstr(line, LOGS_SAVED) != NULL)
+
+      saved = in_dump ? strstr(line, LOGS_SAVED) : NULL;
+      if (saved == NULL)
+        {
+          continue;
+        }
+
+      /* The time it names, "<s>.<us>)"; -1 with none */
+
+      to    = -1;
+      saved = strstr(saved, LOGS_SAVED_TO);
+      if (saved != NULL)
+        {
+          sec = strtoll(saved + sizeof(LOGS_SAVED_TO) - 1, &p, 10);
+          if (*p == '.')
+            {
+              usec = strtol(p + 1, &p, 10);
+              if (*p == ')' && sec >= 0 && usec >= 0 && usec < 1000000)
+                {
+                  to = (int64_t)sec * 1000000 + usec;
+                }
+            }
+        }
+
+      if (to < 0 || to == dump_us)
         {
           in_dump  = false;
           dump_end = NULL;

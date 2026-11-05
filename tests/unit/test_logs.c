@@ -288,6 +288,14 @@ static bool test_starts(FAR const char *line, FAR const char *prefix)
   return strncmp(line, prefix, strlen(prefix)) == 0;
 }
 
+static bool test_ends(FAR const char *text, FAR const char *suffix)
+{
+  size_t n = strlen(text);
+  size_t m = strlen(suffix);
+
+  return n >= m && strcmp(text + n - m, suffix) == 0;
+}
+
 /* Warnings and errors kept, the rest not, with no carriage return; the
  * start's mark first, the stop's last
  */
@@ -633,6 +641,56 @@ static void test_logs_crash_saved(void **state)
   test_teardown(&t);
 }
 
+/* A dump the line after it says is saved, by its last line's time: no
+ * report again; a line naming another dump's end does not cover it
+ */
+
+static void test_logs_crash_saved_to(void **state)
+{
+  struct logs_test_s t;
+
+  test_setup(&t);
+  test_ring(&t, DUMP "[   11.000000] [  WARN] pnut_system: log: Crash "
+                "report saved: /var/lib/log/" T0_NAME " (to 10.000200)\r\n");
+  test_run(&t, test_has_log, NULL);
+  assert_int_equal(test_count(&t, "crash-"), 0);
+  test_teardown(&t);
+
+  test_setup(&t);
+  test_ring(&t, DUMP "[   11.000000] [  WARN] pnut_system: log: Crash "
+                "report saved: /var/lib/log/" T0_NAME " (to 9.000200)\r\n");
+  test_run(&t, test_has_crash, NULL);
+  assert_int_equal(test_count(&t, "crash-"), 1);
+  test_teardown(&t);
+}
+
+/* A second task's dump, come while the first's report was written: the
+ * line saying the first is saved does not cover it, and a report holds
+ * it
+ */
+
+static void test_logs_crash_second(void **state)
+{
+  struct logs_test_s t;
+  FAR char *report;
+
+  test_setup(&t);
+  test_ring(&t, DUMP
+                "[   12.000000] [ ALERT] ui: _assert: Assertion failed: at "
+                "file: y.c:2 task: ui\r\n"
+                "[   12.000100] [ ALERT] ui: dump_stack: sp: 0x3fc81000\r\n"
+                "[   12.500000] [  WARN] pnut_system: log: Crash report "
+                "saved: /var/lib/log/" T0_NAME " (to 10.000200)\r\n");
+  test_run(&t, test_has_crash, NULL);
+
+  report = test_read(&t, T0_NAME);
+  assert_non_null(report);
+  assert_true(test_ends(report, "[   12.000100] [ ALERT] ui: dump_stack: "
+                                "sp: 0x3fc81000\r\n"));
+  free(report);
+  test_teardown(&t);
+}
+
 /* A task's assertion while Log runs: the report once the dump is over */
 
 static void test_step_crash(FAR struct logs_test_s *t)
@@ -736,6 +794,8 @@ int main(void)
     cmocka_unit_test(test_logs_crash_cut),
     cmocka_unit_test(test_logs_crash_size),
     cmocka_unit_test(test_logs_crash_saved),
+    cmocka_unit_test(test_logs_crash_saved_to),
+    cmocka_unit_test(test_logs_crash_second),
     cmocka_unit_test(test_logs_crash_live),
     cmocka_unit_test(test_logs_crash_known),
     cmocka_unit_test(test_logs_crash_trim),
