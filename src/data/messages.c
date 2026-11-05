@@ -36,6 +36,10 @@
  ****************************************************************************/
 
 static void msg_next(FAR struct messages_s *m);
+static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg);
+static bool msg_submit(FAR struct messages_s *m, uint8_t kind,
+                       pnut_job_run_t run, pnut_job_done_t done,
+                       FAR void *work);
 
 /****************************************************************************
  * Private Functions
@@ -426,6 +430,7 @@ static void msg_loaded(FAR struct pnut_loop_s *loop, FAR void *arg)
       m->failed    = false;
       m->fresh     = true;
       m->retries   = 0;
+      m->hand      = true;        /* A transport may have been waiting */
       for (i = 0; i < m->store.nconvs; i++)
         {
           msgs += m->store.convs[i].count;
@@ -466,6 +471,250 @@ static void msg_loaded(FAR struct pnut_loop_s *loop, FAR void *arg)
 }
 
 /****************************************************************************
+ * Name: msg_taker, msg_requeue, msg_hand_over
+ *
+ * Description:
+ *   The transport of that name whose Take is open, or NULL; a message
+ *   that could not be handed over, queued again; a message written as
+ *   sending, pushed to its transport (RFC 0029).
+ *
+ ****************************************************************************/
+
+static FAR struct messages_transport_s *
+msg_taker(FAR struct messages_s *m, FAR const char *name)
+{
+  int i;
+
+  for (i = 0; i < MESSAGES_TRANSPORTS; i++)
+    {
+      if (m->transports[i].used && m->transports[i].stream.open &&
+          strcmp(m->transports[i].name, name) == 0)
+        {
+          return &m->transports[i];
+        }
+    }
+
+  return NULL;
+}
+
+static void msg_requeue(FAR struct messages_s *m, uint64_t message,
+                        uint8_t status)
+{
+  /* One at a time: the one waits before any other hand-over */
+
+  if (m->requeue || m->requeue_held)
+    {
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 "'s status not put right", message);
+      return;
+    }
+
+  m->requeue        = true;
+  m->requeue_msg    = message;
+  m->requeue_status = status;
+}
+
+static void msg_hand_over(FAR struct messages_s *m,
+                          FAR const char *transport);
+
+/****************************************************************************
+ * Name: msg_hand_later
+ *
+ * Description:
+ *   A hand-over that did not go (the message's read or its status's write
+ *   not planned, not submitted, or failed on flash): tried again in a
+ *   while, so that the queue does not stay put until something else asks
+ *   for one, nor spins on a failure that lasts.  A store with no room is
+ *   given some first.
+ *
+ ****************************************************************************/
+
+static void msg_hand_again(FAR struct pnut_loop_s *loop,
+                           FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct messages_s *m = arg;
+
+  m->hand_later = NULL;
+  m->hand       = true;
+  if (m->requeue_held)
+    {
+      m->requeue_held = false;
+      m->requeue      = true;
+    }
+
+  msg_next(m);
+}
+
+static void msg_hand_later(FAR struct messages_s *m, uint64_t id, int ret)
+{
+  if (ret == -ENOSPC)
+    {
+      m->room = true;
+    }
+
+  if (m->hand_later == NULL &&
+      pnut_timer_start(m->module.loop, MESSAGES_HAND_MS, 0, msg_hand_again,
+                       m, &m->hand_later) < 0)
+    {
+      m->hand_later = NULL;
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 " not handed over (%d)", id, ret);
+      return;
+    }
+
+  pnut_log(&m->module, PNUT_LOG_INFO,
+           "Message %" PRIu64 " not handed over (%d): again in a while", id,
+           ret);
+}
+
+/****************************************************************************
+ * Name: msg_requeue_later
+ *
+ * Description:
+ *   A status put right (msg_requeue()) whose write did not go: held, and
+ *   tried again with the hand-overs' timer, which wait for it; not at
+ *   once, so that a failure that lasts does not spin.
+ *
+ ****************************************************************************/
+
+static void msg_requeue_later(FAR struct messages_s *m,
+                              FAR const struct messages_job_s *job, int ret)
+{
+  if (m->requeue || m->requeue_held)
+    {
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 "'s status not put right (%d)",
+               job->in.hand.message, ret);
+      return;
+    }
+
+  m->requeue_msg    = job->in.hand.message;
+  m->requeue_status = job->in.hand.status;
+  m->requeue_held   = true;
+  msg_hand_later(m, job->in.hand.message, ret);
+  if (m->hand_later == NULL)
+    {
+      m->requeue_held = false;    /* No timer: the hand-overs go on */
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 "'s status not put right (%d)",
+               job->in.hand.message, ret);
+    }
+}
+
+static void msg_push_again(FAR struct pnut_loop_s *loop,
+                           FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct messages_s *m = arg;
+
+  m->push = NULL;
+  msg_hand_over(m, m->pushing_to);
+  msg_next(m);
+}
+
+static void msg_hand_over(FAR struct messages_s *m,
+                          FAR const char *transport)
+{
+  FAR struct messages_transport_s *t = msg_taker(m, transport);
+  int ret = -ENOTCONN;
+
+  m->pushing = false;
+  if (t != NULL)
+    {
+      ret = pnut_messages_take_push(&m->server, &t->stream, &m->handing);
+    }
+
+  /* No room on the connection now: it stays sending, and goes in a
+   * moment; nothing else is handed over meanwhile
+   */
+
+  if (ret == -EBUSY &&
+      pnut_timer_start(m->module.loop, MESSAGES_PUSH_MS, 0, msg_push_again,
+                       m, &m->push) == 0)
+    {
+      m->pushing = true;
+      strlcpy(m->pushing_to, transport, sizeof(m->pushing_to));
+      return;
+    }
+
+  if (ret < 0)
+    {
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 " not handed to %s: %d; queued again",
+               m->handing.message, transport, ret);
+      msg_requeue(m, m->handing.message,
+                  PNUT_MESSAGES_MESSAGE_STATUS_QUEUED);
+    }
+
+  m->hand = true;                 /* The next, if credit is left */
+}
+
+/****************************************************************************
+ * Name: msg_hand_read
+ *
+ * Description:
+ *   A queued message read: written as sending, then handed over.
+ *
+ ****************************************************************************/
+
+static void msg_hand_read(FAR struct pnut_loop_s *loop, FAR void *arg)
+{
+  FAR struct messages_s *m = msg_from_work(arg);
+  FAR struct messages_job_s *job = &m->current;
+  FAR struct store_read_s *r = &m->work.read;
+  FAR struct store_conv_s *conv;
+  int ret;
+
+  m->working   = false;
+  m->work_kind = MESSAGES_WORK_NONE;
+  if (m->stopped)
+    {
+      return;
+    }
+
+  conv = store_find(&m->store, job->in.hand.conversation);
+  if (r->ret < 0 || r->n != 1 || conv == NULL ||
+      r->records[0].which_kind != PNUT_MESSAGES_RECORD_MESSAGE_TAG)
+    {
+      /* Failed, so that the queue behind it moves */
+
+      pnut_log(&m->module, PNUT_LOG_ERROR,
+               "Message %" PRIu64 " cannot be read (%d): failed",
+               job->in.hand.message, r->ret);
+      msg_requeue(m, job->in.hand.message,
+                  PNUT_MESSAGES_MESSAGE_STATUS_FAILED);
+      m->hand = true;
+      msg_next(m);
+      return;
+    }
+
+  /* Copied before the write's plan takes the work's place */
+
+  memset(&m->handing, 0, sizeof(m->handing));
+  m->handing.conversation = job->in.hand.conversation;
+  m->handing.message      = job->in.hand.message;
+  strlcpy(m->handing.peer, conv->peer, sizeof(m->handing.peer));
+  strlcpy(m->handing.text, r->records[0].kind.message.text,
+          sizeof(m->handing.text));
+
+  ret = store_plan_status(&m->store, job->in.hand.message,
+                          PNUT_MESSAGES_MESSAGE_STATUS_SENDING, "",
+                          &m->work.write);
+  if (ret < 0)
+    {
+      msg_hand_later(m, job->in.hand.message, ret);
+      msg_next(m);
+      return;
+    }
+
+  if (!msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run, msg_written,
+                  &m->work.write))
+    {
+      msg_hand_later(m, job->in.hand.message, -EAGAIN);
+      msg_next(m);
+    }
+}
+
+/****************************************************************************
  * Name: msg_written
  *
  * Description:
@@ -492,6 +741,15 @@ static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg)
   if (w->ret < 0)
     {
       msg_store_failed(m, w->ret);
+      if (job->kind == MESSAGES_HAND)
+        {
+          msg_hand_later(m, job->in.hand.message, w->ret);
+        }
+      else if (job->kind == MESSAGES_REQUEUE)
+        {
+          msg_requeue_later(m, job, w->ret);
+        }
+
       msg_next(m);
       return;
     }
@@ -508,11 +766,38 @@ static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg)
       msg_broken(m);
     }
 
+  /* A message written as sending goes to its transport now: one queued
+   * for long, or a send taken at once
+   */
+
+  if (job->kind == MESSAGES_HAND)
+    {
+      msg_hand_over(m, job->transport);
+    }
+  else if (job->kind == MESSAGES_SEND && job->at_once)
+    {
+      memset(&m->handing, 0, sizeof(m->handing));
+      m->handing.conversation = w->conversation;
+      m->handing.message      = w->message;
+      strlcpy(m->handing.peer, job->in.send.peer, sizeof(m->handing.peer));
+      strlcpy(m->handing.text, job->in.send.text, sizeof(m->handing.text));
+      msg_hand_over(m, job->in.send.transport);
+    }
+  else if (job->kind == MESSAGES_SEND || job->kind == MESSAGES_REQUEUE)
+    {
+      m->hand = true;             /* Queued: its transport may take it */
+    }
+
   if (job->answer)
     {
       memset(&reply, 0, sizeof(reply));
       switch (job->kind)
         {
+          case MESSAGES_REPORT:
+            pnut_messages_report_reply(&m->server, &job->req,
+                                       PNUT_STATUS_OK, &reply);
+            break;
+
           case MESSAGES_SEND:
             memset(&sent, 0, sizeof(sent));
             sent.conversation = w->conversation;
@@ -572,7 +857,7 @@ static void msg_page_read(FAR struct pnut_loop_s *loop, FAR void *arg)
       return;
     }
 
-  page = (FAR pnut_messages_page_t *)m->server.out;
+  page = &m->answer.page;
   if (store_page(&m->store, &m->work.read, page) < 0)
     {
       msg_fail(m, &m->current.req, PNUT_STATUS_NOTFOUND,
@@ -810,7 +1095,7 @@ static bool msg_start_job(FAR struct messages_s *m)
       case MESSAGES_LIST:
         {
           FAR pnut_messages_conversations_t *out =
-            (FAR pnut_messages_conversations_t *)m->server.out;
+            &m->answer.conversations;
 
           if (store_conversations(&m->store, job->in.list.after, out) < 0)
             {
@@ -834,7 +1119,7 @@ static bool msg_start_job(FAR struct messages_s *m)
         if (m->work.read.n == 0)
           {
             FAR pnut_messages_page_t *page =
-              (FAR pnut_messages_page_t *)m->server.out;
+              &m->answer.page;
 
             memset(page, 0, sizeof(*page));
             pnut_messages_read_reply(&m->server, &job->req,
@@ -902,6 +1187,27 @@ static bool msg_start_job(FAR struct messages_s *m)
         rec->status = PNUT_MESSAGES_MESSAGE_STATUS_QUEUED;
         rec->stored = (int64_t)time(NULL);
         strlcpy(rec->text, job->in.send.text, sizeof(rec->text));
+
+        /* Its transport takes it at once, nothing older waiting: stored
+         * as sending, in the send's one write (RFC 0029)
+         */
+
+        {
+          FAR struct messages_transport_s *t;
+          uint64_t c;
+          uint64_t id;
+
+          /* Not while another waits for room to go: handing holds it */
+
+          t = msg_taker(m, job->in.send.transport);
+          if (t != NULL && t->stream.credit > 0 && !m->pushing &&
+              store_oldest_queued(&m->store, t->name, &c, &id) == -ENOENT)
+            {
+              rec->status  = PNUT_MESSAGES_MESSAGE_STATUS_SENDING;
+              job->at_once = true;
+            }
+        }
+
         ret = store_plan_message(&m->store, job->in.send.transport,
                                  job->in.send.peer, rec, &m->work.write);
         free(rec);
@@ -971,6 +1277,119 @@ static bool msg_start_job(FAR struct messages_s *m)
 
         return msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run,
                           msg_written, &m->work.write);
+
+      case MESSAGES_HAND:
+        {
+          FAR struct messages_transport_s *t = NULL;
+          uint64_t c = 0;
+          uint64_t id = 0;
+          int i;
+
+          /* The first transport that takes, with credit and something
+           * queued
+           */
+
+          for (i = 0; i < MESSAGES_TRANSPORTS && t == NULL; i++)
+            {
+              t = &m->transports[i];
+              if (!t->used || !t->stream.open || t->stream.credit == 0 ||
+                  store_oldest_queued(&m->store, t->name, &c, &id) < 0)
+                {
+                  t = NULL;
+                }
+            }
+
+          if (t == NULL)
+            {
+              return false;
+            }
+
+          strlcpy(job->transport, t->name, sizeof(job->transport));
+          job->in.hand.conversation = c;
+          job->in.hand.message      = id;
+          ret = store_plan_one(&m->store, c, id, &m->work.read);
+          if (ret < 0)
+            {
+              msg_hand_later(m, id, ret);
+              return false;
+            }
+
+          if (!msg_submit(m, MESSAGES_WORK_READ, msg_read_run,
+                          msg_hand_read, &m->work.read))
+            {
+              msg_hand_later(m, id, -EAGAIN);
+              return false;
+            }
+
+          return true;
+        }
+
+      case MESSAGES_REQUEUE:
+        ret = store_plan_status(&m->store, job->in.hand.message,
+                                job->in.hand.status,
+                                job->in.hand.status ==
+                                PNUT_MESSAGES_MESSAGE_STATUS_FAILED ?
+                                "the message cannot be read" : "",
+                                &m->work.write);
+
+        /* Gone meanwhile, or right already: nothing to put right */
+
+        if (ret == -ENOENT || ret == -EALREADY)
+          {
+            return false;
+          }
+
+        if (ret < 0)
+          {
+            msg_requeue_later(m, job, ret);
+            return false;
+          }
+
+        if (!msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run, msg_written,
+                        &m->work.write))
+          {
+            msg_requeue_later(m, job, -EAGAIN);
+            return false;
+          }
+
+        return true;
+
+      case MESSAGES_REPORT:
+        {
+          FAR struct store_conv_s *conv;
+          FAR struct store_msg_s *msg;
+
+          /* Its transport's own message, going out */
+
+          conv = store_find(&m->store, job->in.report.conversation);
+          msg  = conv != NULL ? store_msg(conv, job->in.report.message) :
+                                NULL;
+          if (msg == NULL || (msg->flags & STORE_DELETED) ||
+              strcmp(conv->transport, job->transport) != 0 ||
+              msg->status < PNUT_MESSAGES_MESSAGE_STATUS_QUEUED)
+            {
+              ret = -ENOENT;
+              break;
+            }
+
+          ret = store_plan_status(&m->store, job->in.report.message,
+                                  job->in.report.status,
+                                  job->in.report.reason, &m->work.write);
+          if (ret == -EALREADY)
+            {
+              pnut_messages_report_reply(&m->server, &job->req,
+                                         PNUT_STATUS_OK, &reply);
+              return false;
+            }
+
+          if (ret < 0)
+            {
+              break;
+            }
+
+          return msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run,
+                            msg_written, &m->work.write);
+        }
 
       case MESSAGES_ROOM:
         ret = store_plan_room(&m->store, &m->work.rewrite);
@@ -1046,7 +1465,8 @@ static bool msg_start_job(FAR struct messages_s *m)
 static void msg_next(FAR struct messages_s *m)
 {
   while (!m->working && m->loaded && !m->stopped &&
-         (m->room || m->compact || m->count > 0))
+         (m->room || m->compact || m->requeue ||
+          (m->hand && !m->pushing) || m->count > 0))
     {
       /* Room first, then a compaction, then the queue */
 
@@ -1071,6 +1491,18 @@ static void msg_next(FAR struct messages_s *m)
           m->compact = false;
           m->current.kind = MESSAGES_COMPACT;
         }
+      else if (m->requeue && !m->failed)
+        {
+          m->requeue = false;
+          m->current.kind           = MESSAGES_REQUEUE;
+          m->current.in.hand.message = m->requeue_msg;
+          m->current.in.hand.status  = m->requeue_status;
+        }
+      else if (m->hand && !m->failed && !m->pushing && !m->requeue_held)
+        {
+          m->hand = false;
+          m->current.kind = MESSAGES_HAND;
+        }
       else if (m->count > 0)
         {
           m->current = m->queue[m->head];
@@ -1081,6 +1513,7 @@ static void msg_next(FAR struct messages_s *m)
         {
           m->room    = false;
           m->compact = false;
+          m->hand    = m->hand && m->pushing;
           break;
         }
 
@@ -1140,8 +1573,18 @@ static void msg_register(FAR struct messages_s *m,
       return;
     }
 
-  t->used = true;
-  t->from = req->from;
+  /* Its program started again: a Take on the old connection is over */
+
+  if (t->used && t->stream.open &&
+      (t->stream.to.conn != req->from.conn ||
+       t->stream.to.gen != req->from.gen))
+    {
+      pnut_stream_end(&t->stream, PNUT_STATUS_ENDED);
+    }
+
+  t->used     = true;
+  t->from     = req->from;
+  t->messages = m;
   strlcpy(t->name, name, sizeof(t->name));
   pnut_log(&m->module, PNUT_LOG_INFO, "Transport %s registered", name);
 
@@ -1198,7 +1641,7 @@ static void msg_allowed(FAR struct messages_s *m,
 
   if (kind == MESSAGES_LIST && m->loaded && !m->failed)
     {
-      out = (FAR pnut_messages_conversations_t *)m->server.out;
+      out = &m->answer.conversations;
       if (store_conversations(&m->store,
                               ((FAR const pnut_messages_page_request_t *)
                                in)->after, out) < 0)
@@ -1471,6 +1914,105 @@ static void msg_deliver(FAR struct pnut_messages_server_s *server,
   msg_next(m);
 }
 
+static void msg_take_ready(FAR struct pnut_stream_s *stream, FAR void *arg)
+{
+  FAR struct messages_transport_s *t = arg;
+
+  t->messages->hand = true;
+  msg_next(t->messages);
+}
+
+static void msg_take_closed(FAR struct pnut_stream_s *stream, int status,
+                            FAR void *arg)
+{
+  FAR struct messages_transport_s *t = arg;
+
+  /* What it had taken stays sending: not known to be sent at the next
+   * start
+   */
+
+  pnut_log(&t->messages->module, PNUT_LOG_INFO, "%s takes no more: %d",
+           t->name, status);
+}
+
+static void msg_take(FAR struct pnut_messages_server_s *server,
+                     FAR const struct pnut_request_s *req,
+                     FAR const pnut_messages_take_request_t *in,
+                     FAR void *arg)
+{
+  FAR struct messages_s *m = arg;
+  FAR struct messages_transport_s *t;
+  int ret;
+
+  t = msg_transport(m, req);
+  if (t == NULL)
+    {
+      msg_fail(m, req, PNUT_STATUS_DENIED,
+               PNUT_MESSAGES_ERROR_CODE_UNREGISTERED,
+               "no transport on this connection");
+      return;
+    }
+
+  /* A newer Take replaces it */
+
+  pnut_stream_end(&t->stream, PNUT_STATUS_ENDED);
+  ret = pnut_messages_take_accept(server, req, &t->stream, msg_take_ready,
+                                  msg_take_closed, t);
+  if (ret < 0)
+    {
+      pnut_log(&m->module, PNUT_LOG_WARNING, "%s's Take not opened: %d",
+               t->name, ret);
+      return;
+    }
+
+  m->hand = true;
+  msg_next(m);
+}
+
+static void msg_report(FAR struct pnut_messages_server_s *server,
+                       FAR const struct pnut_request_s *req,
+                       FAR const pnut_messages_report_request_t *in,
+                       FAR void *arg)
+{
+  FAR struct messages_s *m = arg;
+  FAR struct messages_transport_s *t;
+  FAR struct messages_job_s *job;
+
+  t = msg_transport(m, req);
+  if (t == NULL)
+    {
+      msg_fail(m, req, PNUT_STATUS_DENIED,
+               PNUT_MESSAGES_ERROR_CODE_UNREGISTERED,
+               "no transport on this connection");
+      return;
+    }
+
+  if (in->status != PNUT_MESSAGES_MESSAGE_STATUS_SENT &&
+      in->status != PNUT_MESSAGES_MESSAGE_STATUS_DELIVERED &&
+      in->status != PNUT_MESSAGES_MESSAGE_STATUS_FAILED)
+    {
+      msg_fail(m, req, PNUT_STATUS_INVALID,
+               PNUT_MESSAGES_ERROR_CODE_INVALID,
+               "sent, delivered or failed");
+      return;
+    }
+
+  job = msg_slot(m, false);
+  if (job == NULL)
+    {
+      msg_fail(m, req, PNUT_STATUS_BUSY, PNUT_MESSAGES_ERROR_CODE_NONE,
+               "too many requests wait");
+      return;
+    }
+
+  job->kind      = MESSAGES_REPORT;
+  job->answer    = true;
+  job->req       = *req;
+  job->in.report = *in;
+  strlcpy(job->transport, t->name, sizeof(job->transport));
+  msg_next(m);
+}
+
 static const struct pnut_messages_handlers_s g_msg_handlers =
 {
   .conversations      = msg_conversations,
@@ -1480,6 +2022,8 @@ static const struct pnut_messages_handlers_s g_msg_handlers =
   .send               = msg_send,
   .register_transport = msg_register_transport,
   .deliver            = msg_deliver,
+  .take               = msg_take,
+  .report             = msg_report,
 };
 
 /****************************************************************************
@@ -1497,6 +2041,19 @@ static void msg_cleanup(FAR struct messages_s *m)
     {
       pnut_timer_cancel(m->module.loop, m->retry);
       m->retry = NULL;
+    }
+
+  if (m->push != NULL)
+    {
+      pnut_timer_cancel(m->module.loop, m->push);
+      m->push    = NULL;
+      m->pushing = false;
+    }
+
+  if (m->hand_later != NULL)
+    {
+      pnut_timer_cancel(m->module.loop, m->hand_later);
+      m->hand_later = NULL;
     }
 
   if (m->services_open)

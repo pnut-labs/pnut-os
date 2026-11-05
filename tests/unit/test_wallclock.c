@@ -97,6 +97,7 @@ struct wall_test_s
   int64_t clock;                  /* The fake clock */
   uint64_t mono;                  /* The fake monotonic clock, in ms */
   uint32_t uncertainty;           /* The readings', in ms */
+  uint8_t kind;                   /* The network readings' */
   int sets;                       /* Times it was set */
   FAR const char *program;        /* Who calls; NULL: nobody known */
   int who_ret;                    /* Or who cannot tell: -EAGAIN */
@@ -283,6 +284,7 @@ static void wall_test_network(FAR struct wall_test_s *t, int64_t utc,
   msg.dst         = dst;
   msg.taken       = t->mono;
   msg.uncertainty = t->uncertainty;
+  msg.kind        = t->kind;
   assert_int_equal(pnut_network_time_publish(t->network, &msg), 0);
 }
 
@@ -1019,6 +1021,85 @@ static void test_wallclock_uncertain(void **state)
   wall_test_free(t);
 }
 
+/* After a power loss, the modem's own clock earlier than the state file's
+ * time is a clock the network did not set: left aside, and a later
+ * reading taken
+ */
+
+static bool wall_test_stale_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        t->uncertainty = 60000;
+        t->kind        = PNUT_NETWORK_TIME_KIND_MODEM_CLOCK;
+        wall_test_network(t, T0 + 1000 - 86400, true, 3600, false);
+        wall_test_network(t, T0 + 1020, true, 3600, false);
+        return true;
+
+      case 1:
+        if (t->sets < 2)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 1020);
+        pnut_loop_stop(t->loop, 0);
+        return true;
+
+      default:
+        return false;
+    }
+}
+
+/* The same, the time saved being the owner's: no floor, the first
+ * reading taken
+ */
+
+static bool wall_test_owner_floor_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        t->uncertainty = 60000;
+        t->kind        = PNUT_NETWORK_TIME_KIND_MODEM_CLOCK;
+        wall_test_network(t, T0 + 1000 - 86400, true, 3600, false);
+        return true;
+
+      case 1:
+        if (t->sets < 2)
+          {
+            return false;
+          }
+
+        assert_true(t->clock == T0 + 1000 - 86400);
+        pnut_loop_stop(t->loop, 0);
+        return true;
+
+      default:
+        return false;
+    }
+}
+
+static void test_wallclock_stale_modem(void **state)
+{
+  FAR struct wall_test_s *t = wall_test_new(false);
+
+  wall_test_write(t->state, "pnut-time 1 1792757800 3 1792757800\n");
+  t->clock = T_START;
+  wall_test_run(t, wall_test_stale_steps);
+  assert_int_equal(t->step, 2);
+  assert_int_equal(t->sets, 2);
+  wall_test_free(t);
+
+  t = wall_test_new(false);
+  wall_test_write(t->state, "pnut-time 1 1792757800 2 1792757800\n");
+  t->clock = T_START;
+  wall_test_run(t, wall_test_owner_floor_steps);
+  assert_int_equal(t->step, 2);
+  wall_test_free(t);
+}
+
 /* State files that do not parse, or name a time out of range, a source
  * that never set the clock, or a reading after the time saved, are left
  * aside; a new file left under its temporary name is taken
@@ -1253,6 +1334,7 @@ int main(void)
     cmocka_unit_test(test_wallclock_state),
     cmocka_unit_test(test_wallclock_bad_state),
     cmocka_unit_test(test_wallclock_uncertain),
+    cmocka_unit_test(test_wallclock_stale_modem),
     cmocka_unit_test(test_wallclock_sleep_rate),
   };
 

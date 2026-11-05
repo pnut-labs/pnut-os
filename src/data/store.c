@@ -1760,6 +1760,75 @@ int store_plan_page(FAR struct store_s *store, uint64_t conversation,
   return OK;
 }
 
+int store_plan_one(FAR struct store_s *store, uint64_t conversation,
+                   uint64_t message, FAR struct store_read_s *r)
+{
+  FAR struct store_conv_s *conv;
+  FAR struct store_msg_s *msg;
+  int ret;
+
+  memset(r, 0, offsetof(struct store_read_s, records));
+  r->conversation = conversation;
+
+  conv = store_find(store, conversation);
+  msg  = conv != NULL ? store_msg(conv, message) : NULL;
+  if (msg == NULL || (msg->flags & STORE_DELETED))
+    {
+      return -ENOENT;
+    }
+
+  ret = store_path(store, conv->id, msg->segment, r->at[0].path);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  r->at[0].offset = msg->offset;
+  r->at[0].size   = msg->size;
+  r->n            = 1;
+  return OK;
+}
+
+int store_oldest_queued(FAR struct store_s *store, FAR const char *transport,
+                        FAR uint64_t *conversation, FAR uint64_t *message)
+{
+  FAR struct store_conv_s *conv;
+  FAR struct store_msg_s *msg;
+  uint64_t best = UINT64_MAX;
+  uint32_t i;
+  uint32_t j;
+
+  for (i = 0; i < store->nconvs; i++)
+    {
+      conv = &store->convs[i];
+      if (strcmp(conv->transport, transport) != 0)
+        {
+          continue;
+        }
+
+      /* Ids grow: a conversation's first queued is its oldest */
+
+      for (j = 0; j < conv->nmsgs; j++)
+        {
+          msg = &conv->msgs[j];
+          if ((msg->flags & STORE_DELETED) == 0 &&
+              msg->status == PNUT_MESSAGES_MESSAGE_STATUS_QUEUED)
+            {
+              if (msg->id < best)
+                {
+                  best          = msg->id;
+                  *conversation = conv->id;
+                  *message      = msg->id;
+                }
+
+              break;
+            }
+        }
+    }
+
+  return best == UINT64_MAX ? -ENOENT : OK;
+}
+
 void store_read_run(FAR struct store_read_s *r)
 {
   FAR uint8_t *buf = r->buf;

@@ -95,8 +95,9 @@ class Msg:
 class Method:
     def __init__(self, svc, desc):
         opts = desc.options
-        if desc.client_streaming or desc.server_streaming:
-            raise GenError(f"{svc.full}.{desc.name}: streams come later")
+        if desc.client_streaming:
+            raise GenError(f"{svc.full}.{desc.name}: a stream of requests "
+                           "is not supported: only answers stream")
         if not opts.HasExtension(options_pb2.method):
             raise GenError(f"{svc.full}.{desc.name}: no (pnut.method)")
 
@@ -106,7 +107,8 @@ class Method:
         self.version = opts.Extensions[options_pb2.version]
         self.permission = opts.Extensions[options_pb2.permission]
         self.req = Msg(desc.input_type)
-        self.reply = Msg(desc.output_type)
+        self.reply = Msg(desc.output_type)   # A stream's item
+        self.stream = desc.server_streaming
         self.doc = ""
 
         if not 0 < self.number < 0x10000:
@@ -155,7 +157,11 @@ class Service:
                 raise GenError(f"{self.full}.{m.name}: the name {m.snake} "
                                "is a C keyword")
             taken |= {m.snake + s for s in
-                      ("_reply", "_handler", "_answer", "_done")}
+                      ("_handler", "_accept", "_push", "_credit", "_cancel",
+                       "_opened", "_item", "_open_t", "_item_t")
+                      if m.stream} | {m.snake + s for s in
+                      ("_reply", "_handler", "_answer", "_done", "_done_t")
+                      if not m.stream}
         for m in self.methods:
             if m.snake in taken:
                 raise GenError(f"{self.full}.{m.name}: clashes with the "
@@ -207,8 +213,14 @@ def service_names(svc):
                                   "server_s", "client_s", "call_s",
                                   "handlers_s", "methods")}
     for m in svc.methods:
-        names |= {f"{p}_{m.snake}{s}" for s in
-                  ("", "_reply", "_handler", "_answer", "_done_t")}
+        if m.stream:
+            names |= {f"{p}_{m.snake}{s}" for s in
+                      ("", "_accept", "_push", "_credit", "_cancel",
+                       "_handler", "_opened", "_item", "_open_t",
+                       "_item_t")}
+        else:
+            names |= {f"{p}_{m.snake}{s}" for s in
+                      ("", "_reply", "_handler", "_answer", "_done_t")}
     return names
 
 
@@ -926,7 +938,12 @@ def header(path, svc, fdesc):
              "what")
     w.append(" * pnut_reply() returns.  The permission a method names is not "
              "checked")
-    w.append(" * yet.")
+    w.append(" * yet.  A method that answers with a stream is accepted with "
+             "_accept(),")
+    w.append(" * which answers OK, and its items go with _push() as the "
+             "caller's")
+    w.append(" * credit allows (pnut_stream_push()); pnut_stream_end() ends "
+             "it.")
     w.append(" */")
     w.append("")
     w.append(f"struct {p}_server_s;")
@@ -964,7 +981,14 @@ def header(path, svc, fdesc):
     w.append(" * runs, and NULL unless the status is PNUT_STATUS_OK; an "
              "error's detail,")
     w.append(" * err, likewise, and NULL unless the service gave one that "
-             "decodes.")
+             "decodes.  A")
+    w.append(" * stream's opening answer comes to opened; then each item "
+             "to item, and")
+    w.append(" * last its end, with another status and no item.  The stream "
+             "holds one")
+    w.append(" * of the client's calls while it lasts; _credit() lets the "
+             "service send")
+    w.append(" * more, _cancel() ends it.")
     w.append(" */")
     w.append("")
     w.append(f"struct {p}_client_s;")
@@ -974,6 +998,16 @@ def header(path, svc, fdesc):
     w.append("                                bool connected, "
              "FAR void *arg);")
     for m in svc.methods:
+        if m.stream:
+            # A stream's opening answer, and its items then its end
+
+            w.append(f"typedef CODE void (*{p}_{m.snake}_open_t)")
+            w.append(f"  (FAR struct {p}_client_s *client, int status,")
+            w.append("   FAR const pnut_error_t *err, FAR void *arg);")
+            w.append(f"typedef CODE void (*{p}_{m.snake}_item_t)")
+            w.append(f"  (FAR struct {p}_client_s *client, int status,")
+            w.append(f"   FAR const {m.reply.type} *item, FAR void *arg);")
+            continue
         w.append(f"typedef CODE void (*{p}_{m.snake}_done_t)")
         w.append(f"  (FAR struct {p}_client_s *client, int status,")
         w.append(f"   FAR const {m.reply.type} *out,")
@@ -983,7 +1017,9 @@ def header(path, svc, fdesc):
     w.append("{")
     w.append(f"  FAR struct {p}_client_s *client;")
     w.append("  CODE void (*done)(void);")
+    w.append("  CODE void (*item)(void);       /* A stream's */")
     w.append("  FAR void *arg;")
+    w.append("  uint16_t stream;")
     w.append("  bool used;")
     w.append("};")
     w.append("")
@@ -1023,6 +1059,19 @@ def header(path, svc, fdesc):
              "uint32_t code,")
     w.append("    FAR const char *text);")
     for m in svc.methods:
+        if m.stream:
+            w.append(f"int {p}_{m.snake}_accept(FAR struct {p}_server_s "
+                     "*server,")
+            w.append("    FAR const struct pnut_request_s *req, "
+                     "FAR struct pnut_stream_s *stream,")
+            w.append("    pnut_stream_ready_t ready, pnut_stream_closed_t "
+                     "closed,")
+            w.append("    FAR void *arg);")
+            w.append(f"int {p}_{m.snake}_push(FAR struct {p}_server_s "
+                     "*server,")
+            w.append("    FAR struct pnut_stream_s *stream,")
+            w.append(f"    FAR const {m.reply.type} *item);")
+            continue
         w.append(f"int {p}_{m.snake}_reply(FAR struct {p}_server_s *server,")
         w.append("    FAR const struct pnut_request_s *req, int status,")
         w.append(f"    FAR const {m.reply.type} *out);")
@@ -1033,6 +1082,20 @@ def header(path, svc, fdesc):
     w.append(f"    FAR struct {p}_client_s *client);")
     w.append(f"void {p}_disconnect(FAR struct {p}_client_s *client);")
     for m in svc.methods:
+        if m.stream:
+            w.append(f"int {p}_{m.snake}(FAR struct {p}_client_s *client,")
+            w.append(f"    FAR const {m.req.type} *in, uint16_t credit, "
+                     "uint32_t timeout,")
+            w.append(f"    {p}_{m.snake}_open_t opened, "
+                     f"{p}_{m.snake}_item_t item,")
+            w.append("    FAR void *arg, FAR uint16_t *streamp);")
+            w.append(f"int {p}_{m.snake}_credit(FAR struct {p}_client_s "
+                     "*client,")
+            w.append("    uint16_t stream, uint16_t credit);")
+            w.append(f"int {p}_{m.snake}_cancel(FAR struct {p}_client_s "
+                     "*client,")
+            w.append("    uint16_t stream);")
+            continue
         w.append(f"int {p}_{m.snake}(FAR struct {p}_client_s *client,")
         w.append(f"    FAR const {m.req.type} *in, uint32_t timeout,")
         w.append(f"    {p}_{m.snake}_done_t done, FAR void *arg);")
@@ -1043,6 +1106,227 @@ def header(path, svc, fdesc):
     w.append("")
     w.append(f"#endif /* {guard} */")
     return "\n".join(w) + "\n"
+
+
+def stream_answers(w, p, m):
+    """A stream's client side: its opening answer, and its items."""
+
+    w.append(f"static void {p}_{m.snake}_opened"
+             "(FAR struct pnut_client_s *c, int status,")
+    w.append("    FAR const uint8_t *payload, uint16_t len, "
+             "FAR void *arg)")
+    w.append("{")
+    w.append(f"  FAR struct {p}_call_s *call = arg;")
+    w.append(f"  FAR struct {p}_client_s *client = call->client;")
+    w.append(f"  {p}_{m.snake}_open_t opened = "
+             f"({p}_{m.snake}_open_t)call->done;")
+    w.append("  FAR const pnut_error_t *err = NULL;")
+    w.append("  pb_istream_t stream;")
+    w.append("")
+    w.append("  (void)c;")
+    w.append("")
+    w.append("  /* Refused: the call is over; open: it stays for the items */")
+    w.append("")
+    w.append("  if (status != PNUT_STATUS_OK)")
+    w.append("    {")
+    w.append("      call->used = false;")
+    w.append("      stream = pb_istream_from_buffer(payload, len);")
+    w.append("      if (len > 0 && pb_decode(&stream, PNUT_ERROR_FIELDS, "
+             "&client->error))")
+    w.append("        {")
+    w.append("          err = &client->error;")
+    w.append("        }")
+    w.append("    }")
+    w.append("")
+    w.append("  opened(client, status, err, call->arg);")
+    w.append("}")
+    w.append("")
+    w.append(f"static void {p}_{m.snake}_item"
+             "(FAR struct pnut_client_s *c, int status,")
+    w.append("    FAR const uint8_t *payload, uint16_t len, "
+             "FAR void *arg)")
+    w.append("{")
+    w.append(f"  FAR struct {p}_call_s *call = arg;")
+    w.append(f"  FAR struct {p}_client_s *client = call->client;")
+    w.append(f"  {p}_{m.snake}_item_t item = "
+             f"({p}_{m.snake}_item_t)call->item;")
+    w.append("  FAR void *iarg = call->arg;")
+    w.append("  pb_istream_t stream;")
+    w.append("")
+    w.append("  if (status == PNUT_STATUS_OK)")
+    w.append("    {")
+    w.append("      stream = pb_istream_from_buffer(payload, len);")
+    w.append(f"      if (pb_decode(&stream, {m.reply.fields}, "
+             f"&client->in.{m.snake}))")
+    w.append("        {")
+    w.append(f"          item(client, PNUT_STATUS_OK, &client->in.{m.snake}, "
+             "iarg);")
+    w.append("          return;")
+    w.append("        }")
+    w.append("")
+    w.append("      /* An item that does not decode ends the stream */")
+    w.append("")
+    w.append("      pnut_stream_cancel(c, call->stream);")
+    w.append("      status = PNUT_STATUS_INVALID;")
+    w.append("    }")
+    w.append("")
+    w.append("  call->used = false;")
+    w.append("  item(client, status, NULL, iarg);")
+    w.append("}")
+    w.append("")
+
+
+def stream_server(w, p, m):
+    """A stream's server side: accepted, and its items pushed."""
+
+    w.append(f"int {p}_{m.snake}_accept(FAR struct {p}_server_s *server,")
+    w.append("    FAR const struct pnut_request_s *req, "
+             "FAR struct pnut_stream_s *stream,")
+    w.append("    pnut_stream_ready_t ready, pnut_stream_closed_t closed,")
+    w.append("    FAR void *arg)")
+    w.append("{")
+    w.append("  if (server->service == NULL)")
+    w.append("    {")
+    w.append("      return -ENOTCONN;")
+    w.append("    }")
+    w.append("")
+    w.append("  return pnut_stream_accept(server->service, req, stream, "
+             "ready, closed,")
+    w.append("                            arg);")
+    w.append("}")
+    w.append("")
+    w.append(f"int {p}_{m.snake}_push(FAR struct {p}_server_s *server,")
+    w.append("    FAR struct pnut_stream_s *stream,")
+    w.append(f"    FAR const {m.reply.type} *item)")
+    w.append("{")
+    w.append("  pb_ostream_t out = pb_ostream_from_buffer(server->out,")
+    w.append("                                            "
+             "sizeof(server->out));")
+    w.append("")
+    w.append("  if (server->service == NULL)")
+    w.append("    {")
+    w.append("      return -ENOTCONN;")
+    w.append("    }")
+    w.append("")
+    w.append(f"  if (!pb_encode(&out, {m.reply.fields}, item))")
+    w.append("    {")
+    w.append("      return -EINVAL;")
+    w.append("    }")
+    w.append("")
+    w.append("  return pnut_stream_push(stream, server->out, "
+             "(uint16_t)out.bytes_written);")
+    w.append("}")
+    w.append("")
+
+
+def stream_client(w, p, u, m):
+    """A stream's client calls: opened, given credit, cancelled."""
+
+    w.append(f"int {p}_{m.snake}(FAR struct {p}_client_s *client,")
+    w.append(f"    FAR const {m.req.type} *in, uint16_t credit, "
+             "uint32_t timeout,")
+    w.append(f"    {p}_{m.snake}_open_t opened, {p}_{m.snake}_item_t item,")
+    w.append("    FAR void *arg, FAR uint16_t *streamp)")
+    w.append("{")
+    w.append(f"  FAR struct {p}_call_s *call = NULL;")
+    w.append("  pb_ostream_t stream;")
+    w.append("  int ret;")
+    w.append("  int i;")
+    w.append("")
+    w.append("  if (client->client == NULL || opened == NULL || "
+             "item == NULL)")
+    w.append("    {")
+    w.append("      return client->client == NULL ? -ENOTCONN : "
+             "-EINVAL;")
+    w.append("    }")
+    w.append("")
+    w.append("  for (i = 0; i < PNUT_CLIENT_INFLIGHT && call == NULL; "
+             "i++)")
+    w.append("    {")
+    w.append("      if (!client->calls[i].used)")
+    w.append("        {")
+    w.append("          call = &client->calls[i];")
+    w.append("        }")
+    w.append("    }")
+    w.append("")
+    w.append("  if (call == NULL)")
+    w.append("    {")
+    w.append("      return -EBUSY;")
+    w.append("    }")
+    w.append("")
+    w.append("  stream = pb_ostream_from_buffer(client->out, "
+             "sizeof(client->out));")
+    w.append(f"  if (!pb_encode(&stream, {m.req.fields}, in))")
+    w.append("    {")
+    w.append("      return -EINVAL;")
+    w.append("    }")
+    w.append("")
+    w.append("  call->done = (CODE void (*)(void))opened;")
+    w.append("  call->item = (CODE void (*)(void))item;")
+    w.append("  call->arg  = arg;")
+    w.append("  call->used = true;")
+    w.append("")
+    w.append(f"  ret = pnut_stream_call(client->client, {u}_IFACE, "
+             f"{u}_{m.snake.upper()},")
+    w.append(f"                         {m.version}, client->out,")
+    w.append("                         (uint16_t)stream.bytes_written, "
+             "credit, timeout,")
+    w.append(f"                         {p}_{m.snake}_opened, "
+             f"{p}_{m.snake}_item, call,")
+    w.append("                         &call->stream);")
+    w.append("  if (ret < 0)")
+    w.append("    {")
+    w.append("      call->used = false;")
+    w.append("      return ret;")
+    w.append("    }")
+    w.append("")
+    w.append("  if (streamp != NULL)")
+    w.append("    {")
+    w.append("      *streamp = call->stream;")
+    w.append("    }")
+    w.append("")
+    w.append("  return OK;")
+    w.append("}")
+    w.append("")
+    w.append(f"int {p}_{m.snake}_credit(FAR struct {p}_client_s *client,")
+    w.append("    uint16_t stream, uint16_t credit)")
+    w.append("{")
+    w.append("  if (client->client == NULL)")
+    w.append("    {")
+    w.append("      return -ENOTCONN;")
+    w.append("    }")
+    w.append("")
+    w.append("  return pnut_stream_credit(client->client, stream, credit);")
+    w.append("}")
+    w.append("")
+    w.append(f"int {p}_{m.snake}_cancel(FAR struct {p}_client_s *client,")
+    w.append("    uint16_t stream)")
+    w.append("{")
+    w.append("  int ret;")
+    w.append("  int i;")
+    w.append("")
+    w.append("  if (client->client == NULL)")
+    w.append("    {")
+    w.append("      return -ENOTCONN;")
+    w.append("    }")
+    w.append("")
+    w.append("  ret = pnut_stream_cancel(client->client, stream);")
+    w.append("")
+    w.append("  /* Over here whatever the send gave, as in the library */")
+    w.append("")
+    w.append("  for (i = 0; i < PNUT_CLIENT_INFLIGHT; i++)")
+    w.append("    {")
+    w.append("      if (client->calls[i].used && client->calls[i].item != "
+             "NULL &&")
+    w.append("          client->calls[i].stream == stream)")
+    w.append("        {")
+    w.append("          client->calls[i].used = false;")
+    w.append("        }")
+    w.append("    }")
+    w.append("")
+    w.append("  return ret;")
+    w.append("}")
+    w.append("")
 
 
 def source(path, svc, fdesc):
@@ -1107,14 +1391,23 @@ def source(path, svc, fdesc):
     for m in svc.methods:
         w.append(f"  {{ {u}_IFACE, {u}_{m.snake.upper()}, {m.version}, "
                  f"{p}_{m.snake}_handler,")
+        if m.stream:
+            # A stream's opening answer is empty, or an error's detail
+
+            w.append("    PNUT_ERROR_SIZE },")
+            continue
         w.append(f"    {m.reply.size} > PNUT_ERROR_SIZE ? {m.reply.size} : "
                  "PNUT_ERROR_SIZE },")
     w.append("};")
     w.append("")
 
-    # The client's answers, decoding the reply
+    # The client's answers, decoding the reply; a stream's opening answer
+    # and its items
 
     for m in svc.methods:
+        if m.stream:
+            stream_answers(w, p, m)
+            continue
         w.append(f"static void {p}_{m.snake}_answer"
                  "(FAR struct pnut_client_s *c, int status,")
         w.append("    FAR const uint8_t *payload, uint16_t len, "
@@ -1254,6 +1547,9 @@ def source(path, svc, fdesc):
     w.append("}")
     w.append("")
     for m in svc.methods:
+        if m.stream:
+            stream_server(w, p, m)
+            continue
         w.append(f"int {p}_{m.snake}_reply(FAR struct {p}_server_s *server,")
         w.append("    FAR const struct pnut_request_s *req, int status,")
         w.append(f"    FAR const {m.reply.type} *out)")
@@ -1314,6 +1610,9 @@ def source(path, svc, fdesc):
     w.append("}")
     w.append("")
     for m in svc.methods:
+        if m.stream:
+            stream_client(w, p, u, m)
+            continue
         w.append(f"int {p}_{m.snake}(FAR struct {p}_client_s *client,")
         w.append(f"    FAR const {m.req.type} *in, uint32_t timeout,")
         w.append(f"    {p}_{m.snake}_done_t done, FAR void *arg)")
@@ -1351,6 +1650,7 @@ def source(path, svc, fdesc):
         w.append("    }")
         w.append("")
         w.append("  call->done = (CODE void (*)(void))done;")
+        w.append("  call->item = NULL;")
         w.append("  call->arg  = arg;")
         w.append("  call->used = true;")
         w.append("")
@@ -1393,8 +1693,10 @@ def reference(svc, fdesc, topics):
     w += ["| Method | Number | Version | Request | Answer | Permission |",
           "|---|---|---|---|---|---|"]
     for m in svc.methods:
+        answer = f"stream of `{m.reply.proto}`" if m.stream \
+            else f"`{m.reply.proto}`"
         w.append(f"| `{m.name}` | {m.number} | {m.version} | "
-                 f"`{m.req.proto}` | `{m.reply.proto}` | "
+                 f"`{m.req.proto}` | {answer} | "
                  f"{m.permission or '—'} |")
     w.append("")
     w += ["An error answer may carry `pnut.Error`, whose code is one of the "

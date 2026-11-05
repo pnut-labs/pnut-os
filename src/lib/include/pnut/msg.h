@@ -54,6 +54,7 @@ enum pnut_status_e
   PNUT_STATUS_UNAVAILABLE,        /* Not ready, or its hardware is absent */
   PNUT_STATUS_TIMEOUT,            /* No reply in time */
   PNUT_STATUS_INTERNAL,           /* The service failed */
+  PNUT_STATUS_ENDED,              /* A stream is over (RFC 0004) */
 };
 
 struct pnut_msghdr_s
@@ -67,7 +68,8 @@ struct pnut_msghdr_s
   uint16_t seq;                   /* A reply carries its request's */
   uint16_t len;                   /* The body's length */
   uint16_t app;                   /* The app, on the runtime's connections */
-  uint16_t reserved;
+  uint16_t credit;                /* A stream's: the items its caller can
+                                   * take, more of them (RFC 0004) */
 };
 
 /****************************************************************************

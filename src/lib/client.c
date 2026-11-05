@@ -31,9 +31,14 @@ struct pnut_call_s
   FAR struct pnut_client_s *client;
   uint64_t deadline;              /* Milliseconds, monotonic */
   pnut_reply_t reply;
+  pnut_item_t item;               /* A stream's items, or NULL */
   FAR void *arg;
   uint16_t seq;
+  uint16_t iface;                 /* A stream's, for its credit */
+  uint16_t method;
+  uint8_t mversion;
   bool used;
+  bool streaming;                 /* Its stream is open: no deadline */
 };
 
 /* The client keeps one timer: while it is not connected, for its next try;
@@ -64,6 +69,7 @@ struct pnut_client_s
  ****************************************************************************/
 
 static void client_connect(FAR struct pnut_client_s *client);
+static void client_schedule(FAR struct pnut_client_s *client);
 
 /****************************************************************************
  * Private Functions
@@ -127,10 +133,54 @@ static bool client_finish(FAR struct pnut_call_s *call, int status,
   pnut_reply_t reply = call->reply;
   FAR void *arg = call->arg;
 
-  call->used = false;
+  call->used      = false;
+  call->streaming = false;
 
   client_enter(client);
   reply(client, status, payload, len, arg);
+  return client_leave(client);
+}
+
+/****************************************************************************
+ * Name: client_opened, client_item
+ *
+ * Description:
+ *   A stream's call answered OK: open, without a deadline, its reply
+ *   handler told.  An item, or the stream's end, which frees the call.
+ *   Like client_finish(), true when the client was closed meanwhile.
+ *
+ ****************************************************************************/
+
+static bool client_opened(FAR struct pnut_call_s *call)
+{
+  FAR struct pnut_client_s *client = call->client;
+
+  call->streaming = true;
+  call->deadline  = UINT64_MAX;
+  client_schedule(client);
+
+  client_enter(client);
+  call->reply(client, PNUT_STATUS_OK, NULL, 0, call->arg);
+  return client_leave(client);
+}
+
+static bool client_item(FAR struct pnut_call_s *call, int status,
+                        FAR const uint8_t *payload, uint16_t len)
+{
+  FAR struct pnut_client_s *client = call->client;
+  pnut_item_t item = call->item;
+  FAR void *arg = call->arg;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      call->used      = false;
+      call->streaming = false;
+      payload         = NULL;
+      len             = 0;
+    }
+
+  client_enter(client);
+  item(client, status, payload, len, arg);
   return client_leave(client);
 }
 
@@ -246,8 +296,11 @@ static void client_closed(FAR struct pnut_conn_s *conn)
   for (i = 0; i < client->ncalls; i++)
     {
       if (client->calls[i].used &&
-          client_finish(&client->calls[i], PNUT_STATUS_UNAVAILABLE, NULL,
-                        0))
+          (client->calls[i].streaming ?
+           client_item(&client->calls[i], PNUT_STATUS_UNAVAILABLE, NULL,
+                       0) :
+           client_finish(&client->calls[i], PNUT_STATUS_UNAVAILABLE, NULL,
+                         0)))
         {
           return;
         }
@@ -293,8 +346,18 @@ static int client_message(FAR struct pnut_conn_s *conn,
     {
       for (i = 0; i < client->ncalls; i++)
         {
-          if (client->calls[i].used && client->calls[i].seq == hdr->seq)
+          if (client->calls[i].used && !client->calls[i].streaming &&
+              client->calls[i].seq == hdr->seq)
             {
+              /* A stream's call stays, open, on an OK answer */
+
+              if (client->calls[i].item != NULL &&
+                  hdr->status == PNUT_STATUS_OK)
+                {
+                  return client_opened(&client->calls[i]) ?
+                         PNUT_CONN_GONE : PNUT_CONN_NEXT;
+                }
+
               /* Its deadline goes with it; the timer finds it gone */
 
               return client_finish(&client->calls[i], hdr->status,
@@ -304,6 +367,38 @@ static int client_message(FAR struct pnut_conn_s *conn,
         }
 
       /* A reply after its call timed out is dropped */
+    }
+  else if (hdr->kind == PNUT_KIND_STREAM)
+    {
+      for (i = 0; i < client->ncalls; i++)
+        {
+          if (client->calls[i].used && client->calls[i].streaming &&
+              client->calls[i].seq == hdr->seq)
+            {
+              return client_item(&client->calls[i], hdr->status, payload,
+                                 hdr->len) ?
+                     PNUT_CONN_GONE : PNUT_CONN_NEXT;
+            }
+        }
+
+      /* An item for a stream the client no longer has (cancelled, or
+       * its opening timed out): dropped, and the service told it is over
+       */
+
+      if (hdr->status == PNUT_STATUS_OK)
+        {
+          struct pnut_msghdr_s end = *hdr;
+
+          end.status = PNUT_STATUS_ENDED;
+          end.credit = 0;
+          end.len    = 0;
+          client_enter(client);
+          pnut_conn_send(&client->conn, &end, NULL);
+          if (client_leave(client))
+            {
+              return PNUT_CONN_GONE;
+            }
+        }
     }
   else if (hdr->kind == PNUT_KIND_EVENT && client->event != NULL)
     {
@@ -349,6 +444,203 @@ static void client_connect(FAR struct pnut_client_s *client)
       client->state(client, true, client->arg);
       client_leave(client);
     }
+}
+
+/****************************************************************************
+ * Name: client_seq
+ *
+ * Description:
+ *   The next request's number, past those of the streams still open: a
+ *   stream keeps its number while it lasts.
+ *
+ ****************************************************************************/
+
+static uint16_t client_seq(FAR struct pnut_client_s *client)
+{
+  uint8_t i;
+
+  for (; ; )
+    {
+      client->seq++;
+      for (i = 0; i < client->ncalls; i++)
+        {
+          if (client->calls[i].used && client->calls[i].seq == client->seq)
+            {
+              break;
+            }
+        }
+
+      if (i == client->ncalls)
+        {
+          return client->seq;
+        }
+    }
+}
+
+/****************************************************************************
+ * Name: client_call
+ *
+ * Description:
+ *   A call, or a stream's when item is not NULL.
+ *
+ ****************************************************************************/
+
+static int client_call(FAR struct pnut_client_s *client, uint16_t iface,
+                       uint16_t method, uint8_t mversion,
+                       FAR const void *payload, uint16_t len,
+                       uint16_t credit, uint32_t timeout,
+                       pnut_reply_t reply, pnut_item_t item, FAR void *arg,
+                       FAR uint16_t *seqp)
+{
+  FAR struct pnut_call_s *call = NULL;
+  struct pnut_msghdr_s hdr;
+  uint8_t i;
+  int ret;
+
+  if (reply == NULL)
+    {
+      return -EINVAL;
+    }
+
+  if (!client->connected || client->closing)
+    {
+      return -ENOTCONN;
+    }
+
+  if (len > PNUT_MSG_PAYLOAD_MAX)
+    {
+      return -EMSGSIZE;
+    }
+
+  for (i = 0; i < client->ncalls; i++)
+    {
+      if (!client->calls[i].used)
+        {
+          call = &client->calls[i];
+          break;
+        }
+    }
+
+  if (call == NULL)
+    {
+      return -EBUSY;
+    }
+
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.version  = PNUT_MSG_VERSION;
+  hdr.kind     = PNUT_KIND_REQUEST;
+  hdr.iface    = iface;
+  hdr.method   = method;
+  hdr.mversion = mversion;
+  hdr.seq      = client_seq(client);
+  hdr.len      = len;
+  hdr.credit   = credit;
+
+  /* A connection that fails while sending tells the program through the
+   * state handler, which may close the client: hold it until the end.
+   * The call counts only once sent, so that a failure is reported once,
+   * by the returned value.
+   */
+
+  client_enter(client);
+
+  ret = pnut_conn_send(&client->conn, &hdr, payload);
+  if (ret == OK)
+    {
+      call->used      = true;
+      call->streaming = false;
+      call->seq       = hdr.seq;
+      call->iface     = iface;
+      call->method    = method;
+      call->mversion  = mversion;
+      call->reply     = reply;
+      call->item      = item;
+      call->arg       = arg;
+      call->deadline  = pnut_now() + (timeout > 0 ? timeout :
+                                      CONFIG_PNUT_LIB_CALL_TIMEOUT);
+      client_schedule(client);
+      if (seqp != NULL)
+        {
+          *seqp = hdr.seq;
+        }
+    }
+
+  client_leave(client);
+  return ret < 0 ? ret : OK;
+}
+
+/****************************************************************************
+ * Name: client_tell
+ *
+ * Description:
+ *   A word to the service about an open stream: credit, or its end.
+ *
+ ****************************************************************************/
+
+static int client_tell(FAR struct pnut_client_s *client, uint16_t seq,
+                       uint16_t credit, int status)
+{
+  FAR struct pnut_call_s *call = NULL;
+  struct pnut_msghdr_s hdr;
+  uint8_t i;
+  int ret;
+
+  if (!client->connected || client->closing)
+    {
+      return -ENOTCONN;
+    }
+
+  /* A stream not open yet, its opening answer still to come, is
+   * cancelled too: its call is dropped, the late answer with it, and an
+   * item that still comes is answered with its end
+   */
+
+  for (i = 0; i < client->ncalls; i++)
+    {
+      if (client->calls[i].used && client->calls[i].item != NULL &&
+          client->calls[i].seq == seq &&
+          (client->calls[i].streaming || status != PNUT_STATUS_OK))
+        {
+          call = &client->calls[i];
+          break;
+        }
+    }
+
+  if (call == NULL)
+    {
+      return -ENOENT;
+    }
+
+  if (!call->streaming)
+    {
+      call->used = false;
+      return OK;
+    }
+
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.version  = PNUT_MSG_VERSION;
+  hdr.kind     = PNUT_KIND_STREAM;
+  hdr.iface    = call->iface;
+  hdr.method   = call->method;
+  hdr.mversion = call->mversion;
+  hdr.seq      = seq;
+  hdr.status   = status;
+  hdr.credit   = credit;
+
+  /* Cancelled, the stream is over here whether the service hears of it
+   * or not: an item that still comes is answered with its end
+   */
+
+  if (status != PNUT_STATUS_OK)
+    {
+      call->used      = false;
+      call->streaming = false;
+    }
+
+  client_enter(client);
+  ret = pnut_conn_send(&client->conn, &hdr, NULL);
+  client_leave(client);
+  return ret < 0 ? ret : OK;
 }
 
 /****************************************************************************
@@ -460,69 +752,37 @@ int pnut_call(FAR struct pnut_client_s *client, uint16_t iface,
               uint16_t len, uint32_t timeout, pnut_reply_t reply,
               FAR void *arg)
 {
-  FAR struct pnut_call_s *call = NULL;
-  struct pnut_msghdr_s hdr;
-  uint8_t i;
-  int ret;
+  return client_call(client, iface, method, mversion, payload, len, 0,
+                     timeout, reply, NULL, arg, NULL);
+}
 
-  if (reply == NULL)
+int pnut_stream_call(FAR struct pnut_client_s *client, uint16_t iface,
+                     uint16_t method, uint8_t mversion,
+                     FAR const void *payload, uint16_t len, uint16_t credit,
+                     uint32_t timeout, pnut_reply_t reply, pnut_item_t item,
+                     FAR void *arg, FAR uint16_t *seqp)
+{
+  if (item == NULL)
     {
       return -EINVAL;
     }
 
-  if (!client->connected || client->closing)
+  return client_call(client, iface, method, mversion, payload, len, credit,
+                     timeout, reply, item, arg, seqp);
+}
+
+int pnut_stream_credit(FAR struct pnut_client_s *client, uint16_t seq,
+                       uint16_t credit)
+{
+  if (credit == 0)
     {
-      return -ENOTCONN;
+      return OK;
     }
 
-  if (len > PNUT_MSG_PAYLOAD_MAX)
-    {
-      return -EMSGSIZE;
-    }
+  return client_tell(client, seq, credit, PNUT_STATUS_OK);
+}
 
-  for (i = 0; i < client->ncalls; i++)
-    {
-      if (!client->calls[i].used)
-        {
-          call = &client->calls[i];
-          break;
-        }
-    }
-
-  if (call == NULL)
-    {
-      return -EBUSY;
-    }
-
-  memset(&hdr, 0, sizeof(hdr));
-  hdr.version  = PNUT_MSG_VERSION;
-  hdr.kind     = PNUT_KIND_REQUEST;
-  hdr.iface    = iface;
-  hdr.method   = method;
-  hdr.mversion = mversion;
-  hdr.seq      = ++client->seq;
-  hdr.len      = len;
-
-  /* A connection that fails while sending tells the program through the
-   * state handler, which may close the client: hold it until the end.
-   * The call counts only once sent, so that a failure is reported once,
-   * by the returned value.
-   */
-
-  client_enter(client);
-
-  ret = pnut_conn_send(&client->conn, &hdr, payload);
-  if (ret == OK)
-    {
-      call->used     = true;
-      call->seq      = hdr.seq;
-      call->reply    = reply;
-      call->arg      = arg;
-      call->deadline = pnut_now() + (timeout > 0 ? timeout :
-                                     CONFIG_PNUT_LIB_CALL_TIMEOUT);
-      client_schedule(client);
-    }
-
-  client_leave(client);
-  return ret < 0 ? ret : OK;
+int pnut_stream_cancel(FAR struct pnut_client_s *client, uint16_t seq)
+{
+  return client_tell(client, seq, 0, PNUT_STATUS_ENDED);
 }

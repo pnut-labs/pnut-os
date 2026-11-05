@@ -41,6 +41,8 @@
 #define MESSAGES_QUEUE     8           /* Jobs waiting for the store */
 #define MESSAGES_RETRY     30000       /* ms before the store is read again,
                                         * when it could not be */
+#define MESSAGES_PUSH_MS   200         /* A hand-over with no room, again */
+#define MESSAGES_HAND_MS   10000       /* One that could not be planned */
 
 /****************************************************************************
  * Public Types
@@ -61,7 +63,12 @@ enum messages_kind_e
   MESSAGES_ROOM,                  /* Room made, over the limit */
   MESSAGES_COMPACT,               /* Deleted messages' segment rewritten */
   MESSAGES_LATEST,                /* A conversation's newest text read */
-  MESSAGES_EMPTY                  /* A conversation with no message gone */
+  MESSAGES_EMPTY,                 /* A conversation with no message gone */
+  MESSAGES_HAND,                  /* A queued message to its transport:
+                                   * read, written as sending, pushed */
+  MESSAGES_REQUEUE,               /* One that could not be handed over,
+                                   * queued again, or failed if unread */
+  MESSAGES_REPORT                 /* A status, from its transport */
 };
 
 /* The work a worker has: which part of the union is in use */
@@ -87,7 +94,9 @@ struct messages_job_s
   uint8_t kind;                   /* enum messages_kind_e */
   bool answer;                    /* A caller waits for it */
   struct pnut_request_s req;
-  char transport[65];             /* DELIVER's */
+  char transport[65];             /* DELIVER's, HAND's, REPORT's */
+  bool at_once;                   /* SEND's: stored as sending, handed
+                                   * over once written */
   union
     {
       pnut_messages_page_request_t list;
@@ -97,7 +106,14 @@ struct messages_job_s
       pnut_messages_send_request_t send;
       pnut_messages_register_request_t reg;
       pnut_messages_deliver_request_t deliver;
+      pnut_messages_report_request_t report;
       uint64_t conversation;      /* LATEST and EMPTY */
+      struct
+        {
+          uint64_t conversation;
+          uint64_t message;
+          uint8_t status;         /* REQUEUE's */
+        } hand;                   /* HAND and REQUEUE */
     } in;
 };
 
@@ -108,6 +124,8 @@ struct messages_transport_s
   bool used;
   char name[65];
   struct pnut_endpoint_s from;
+  FAR struct messages_s *messages;
+  struct pnut_stream_s stream;    /* Its Take, while open */
 };
 
 /* The store's files read at start, on a worker */
@@ -157,6 +175,19 @@ struct messages_s
                                    * a failure now is not the index's */
   bool room;                      /* Room to make, before any job */
   bool compact;                   /* A segment to compact, after it */
+  bool hand;                      /* A transport takes: hand over */
+  bool requeue;                   /* A status to put right: */
+  bool requeue_held;              /* or one whose writing failed, again
+                                   * with hand_later; hand-overs wait */
+  uint64_t requeue_msg;           /* the message's */
+  uint8_t requeue_status;         /* QUEUED again, or FAILED */
+  bool pushing;                   /* handing waits for room to go */
+  char pushing_to[65];            /* to this transport */
+  FAR struct pnut_timer_s *push;  /* Until it tries again */
+
+  /* Until a hand-over that could not be planned is tried again */
+
+  FAR struct pnut_timer_s *hand_later;
   FAR struct pnut_timer_s *retry; /* Until the store is read again */
   uint8_t retries;                /* Loads failed in a row */
   struct messages_job_s current;
@@ -182,12 +213,20 @@ struct messages_s
   bool services_open;
   struct messages_ask_s asks[MESSAGES_ASKS];
 
-  /* The transports */
+  /* The transports, and the message being handed over */
 
   struct messages_transport_s transports[MESSAGES_TRANSPORTS];
+  pnut_messages_queued_t handing;
 
-  /* What it serves and announces */
+  /* What it serves and announces; an answer built apart from the
+   * server's own buffer, which the reply is encoded into
+   */
 
+  union
+    {
+      pnut_messages_page_t page;
+      pnut_messages_conversations_t conversations;
+    } answer;
   struct pnut_messages_server_s server;
   bool serving;
   FAR struct pnut_publisher_s *changes;
