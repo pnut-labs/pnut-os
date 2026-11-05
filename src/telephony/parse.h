@@ -195,4 +195,20 @@ int tel_sms_slot(FAR const char *line);
 int tel_sms_listed(FAR const char *line);
 int tel_sms_length(FAR const char *line);
 
+/****************************************************************************
+ * Name: tel_sms_memory
+ *
+ * Description:
+ *   The SMS in the memory read and deleted from, and its slots: the first
+ *   memory of +CPMS: <used>,<total>,... (to AT+CPMS=...) or of +CPMS:
+ *   "ME",<used>,<total>,... (to AT+CPMS?).
+ *
+ * Returned Value:
+ *   Zero (OK); -EINVAL.
+ *
+ ****************************************************************************/
+
+int tel_sms_memory(FAR const char *line, FAR uint16_t *used,
+                   FAR uint16_t *total);
+
 #endif /* __PNUT_OS_TELEPHONY_PARSE_H */
