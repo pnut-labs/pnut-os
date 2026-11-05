@@ -657,8 +657,10 @@ static int logs_crash_save(FAR struct logs_write_s *write)
         }
       else
         {
-          snprintf(name, sizeof(name), "%.*s-%d",
-                   (int)(sizeof(name) - 3), write->crash_name, i);
+          /* One digit: the compiler then knows the name fits */
+
+          snprintf(name, sizeof(name), "%.*s-%c",
+                   (int)(sizeof(name) - 3), write->crash_name, '0' + i);
         }
 
       snprintf(path, sizeof(path), "%s/%s", write->dir, name);
