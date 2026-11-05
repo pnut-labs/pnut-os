@@ -24,6 +24,20 @@ service Echo {
     option (pnut.method) = 2;
     option (pnut.version) = 2;
   }
+
+  // Ticks numbered from 1, as many as asked for, as the caller's credit
+  // allows; then the stream ends
+  rpc Ticks (TicksRequest) returns (stream Ticked) {
+    option (pnut.method) = 3;
+  }
+}
+
+message TicksRequest {
+  uint32 count = 1;
+}
+
+message Ticked {
+  uint32 number = 1;
 }
 
 message SayRequest {
