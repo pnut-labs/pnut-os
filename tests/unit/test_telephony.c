@@ -18,6 +18,7 @@
  * Included Files
  ****************************************************************************/
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <setjmp.h>
@@ -41,7 +42,9 @@
 #include <pnut/topic.h>
 
 #include "board.h"
+#include "messages.h"
 #include "pnut_internal.h"
+#include "store.h"
 #include "telephony.h"
 
 /****************************************************************************
@@ -49,6 +52,18 @@
  ****************************************************************************/
 
 #define T_UTC   1793363696          /* 2026-10-30 12:34:56 UTC */
+
+/* SMS in the modem's memory (the codec's own vectors, test_sms.c) */
+
+#define T_SCTS    "62010321300040"
+#define T_HELLO   "07917283010010F5040BC87238880900F1000099" \
+                  "3092516195800AE8329BFD4697D9EC37"
+#define T_LONG1   "00440B918421436587F90000" T_SCTS "090500037B0201D069"
+#define T_LONG2   "00440B918421436587F90000" T_SCTS "090500037B0202D069"
+#define T_STATUS  "000600"
+#define T_DATA    "00040B918421436587F90004" T_SCTS "02CAFE"
+#define T_ZIPPED  "00040B918421436587F90020" T_SCTS "02E834"
+#define T_UCS2    "00040B918421436587F90008" T_SCTS "0401050119"
 
 /****************************************************************************
  * Private Types
@@ -102,6 +117,25 @@ struct tel_test_s
   size_t flen;
   char commands[2048];            /* Every command, ';' after each */
   int kicks;                      /* Close-downs seen */
+
+  /* SMS: the modem's memory, and Messages to deliver to */
+
+  bool sms;
+  struct messages_s messages;
+  char store[96];
+  int sms_total;                  /* The memory's slots */
+  uint64_t sms_limit;             /* Messages' store's; 0 for 64 KB */
+  FAR const char *slots[32];      /* Each slot's PDU, or NULL */
+  FAR const char *sim_slots[32];  /* The SIM's memory, alike */
+  int sim_total;                  /* Its slots; 0 for 25 */
+  bool on_sim;                    /* AT+CMGR and AT+CMGD read the SIM's */
+  int deletes;                    /* AT+CMGD seen */
+  int cmgd_fail;                  /* AT+CMGD refused, so many times */
+  uint64_t deleted_at;
+  int expect_deletes;             /* Then the run ends */
+  int cmti_after;                 /* Deletes before an SMS comes */
+  int cmti_slot;                  /* Where it is stored; -1 none */
+  FAR const char *cmti_pdu;
 
   /* What the program announced */
 
@@ -168,18 +202,136 @@ static void tel_test_frame(FAR struct tel_test_s *t, uint8_t dlci,
 
 static void tel_test_say(FAR struct tel_test_s *t, FAR const char *text)
 {
-  char buf[200];
+  char buf[600];
   int n;
+  int i;
 
   n = snprintf(buf, sizeof(buf), "\r\n%s\r\n", text);
+  assert_true(n < (int)sizeof(buf));
   if (t->mux)
     {
-      tel_test_frame(t, 1, 0xef, buf, n);
+      /* A long line, as a PDU, in several frames */
+
+      for (i = 0; i < n; i += 120)
+        {
+          tel_test_frame(t, 1, 0xef, buf + i, n - i < 120 ? n - i : 120);
+        }
     }
   else
     {
       tel_test_send(t, buf, n);
     }
+}
+
+/* The modem's SMS commands: its memory chosen and counted, a slot read or
+ * deleted; an SMS arriving after some deletes
+ */
+
+static bool tel_test_sms(FAR struct tel_test_s *t, FAR const char *cmd)
+{
+  char line[64];
+  int used = 0;
+  int n;
+  int i;
+
+  if (strcmp(cmd, "AT+CPMS=\"ME\",\"ME\",\"ME\"") == 0)
+    {
+      t->on_sim = false;
+      for (i = 0; i < t->sms_total; i++)
+        {
+          used += t->slots[i] != NULL;
+        }
+
+      snprintf(line, sizeof(line), "+CPMS: %d,%d,%d,%d,%d,%d", used,
+               t->sms_total, used, t->sms_total, used, t->sms_total);
+      tel_test_say(t, line);
+      tel_test_say(t, "OK");
+      return true;
+    }
+
+  if (strcmp(cmd, "AT+CPMS=\"SM\",\"SM\",\"ME\"") == 0)
+    {
+      int total = t->sim_total != 0 ? t->sim_total : 25;
+      int me    = 0;
+
+      t->on_sim = true;
+      for (i = 0; i < total; i++)
+        {
+          used += t->sim_slots[i] != NULL;
+        }
+
+      for (i = 0; i < t->sms_total; i++)
+        {
+          me += t->slots[i] != NULL;
+        }
+
+      snprintf(line, sizeof(line), "+CPMS: %d,%d,%d,%d,%d,%d", used, total,
+               used, total, me, t->sms_total);
+      tel_test_say(t, line);
+      tel_test_say(t, "OK");
+      return true;
+    }
+
+  if (strncmp(cmd, "AT+CMGR=", 8) == 0)
+    {
+      FAR const char **mem = t->on_sim ? t->sim_slots : t->slots;
+      int total = t->on_sim ? (t->sim_total != 0 ? t->sim_total : 25) :
+                  t->sms_total;
+
+      n = atoi(cmd + 8);
+      if (n >= 0 && n < total && mem[n] != NULL)
+        {
+          FAR const char *pdu = mem[n];
+          unsigned int smsc;
+          int len;
+
+          /* The TPDU's octets: the SMSC's address not counted */
+
+          assert_int_equal(sscanf(pdu, "%2x", &smsc), 1);
+          len = (int)(strlen(pdu) / 2) - 1 - (int)smsc;
+          snprintf(line, sizeof(line), "+CMGR: 0,,%d", len < 1 ? 1 : len);
+          tel_test_say(t, line);
+          tel_test_say(t, pdu);
+        }
+
+      tel_test_say(t, "OK");
+      return true;
+    }
+
+  if (strncmp(cmd, "AT+CMGD=", 8) == 0 && t->cmgd_fail > 0)
+    {
+      t->cmgd_fail--;
+      tel_test_say(t, "+CMS ERROR: 500");
+      return true;
+    }
+
+  if (strncmp(cmd, "AT+CMGD=", 8) == 0)
+    {
+      n = atoi(cmd + 8);
+      if (t->on_sim && n >= 0 && n < 32)
+        {
+          t->sim_slots[n] = NULL;
+        }
+      else if (n >= 0 && n < t->sms_total)
+        {
+          t->slots[n] = NULL;
+        }
+
+      t->deletes++;
+      t->deleted_at = pnut_now();
+      tel_test_say(t, "OK");
+      if (t->cmti_slot >= 0 && t->deletes == t->cmti_after)
+        {
+          t->slots[t->cmti_slot] = t->cmti_pdu;
+          snprintf(line, sizeof(line), "+CMTI: \"ME\",%d", t->cmti_slot);
+          t->cmti_slot = -1;
+          tel_test_say(t, line);
+        }
+
+      return true;
+    }
+
+  return false;
 }
 
 /* A command, as the modem answers it */
@@ -204,6 +356,11 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
     {
       tel_test_say(t, "OK");
       t->silent = true;
+      return;
+    }
+
+  if (tel_test_sms(t, cmd))
+    {
       return;
     }
 
@@ -543,6 +700,20 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
       tel_test_say(t, "+CEREG: 0");     /* Not registered: no change */
     }
 
+  if (t->sms)
+    {
+      /* Every SMS dealt with, and a moment for anything more */
+
+      if (t->stop_at == 0 && t->deletes >= t->expect_deletes &&
+          pnut_now() - t->deleted_at > 300)
+        {
+          t->stop_at = pnut_now();
+          pnut_loop_stop(loop, 0);
+        }
+
+      return;
+    }
+
   if (t->stop_at == 0 &&
       ((t->was_on && t->times_seen > 0) ||
        (t->airplane && t->ready_at != 0 &&
@@ -657,13 +828,15 @@ static FAR struct tel_test_s *tel_test_new(void)
   /* A directory of each test's own: one that fails leaves its own */
 
   assert_non_null(t);
-  t->uart     = -1;
-  t->lines[0] = -1;
-  t->lines[1] = -1;
+  t->uart      = -1;
+  t->lines[0]  = -1;
+  t->lines[1]  = -1;
+  t->cmti_slot = -1;
   snprintf(t->dir, sizeof(t->dir), "/tmp/pnut-tel-%d-%d", (int)getpid(),
            n++);
   assert_int_equal(mkdir(t->dir, 0700), 0);
   snprintf(t->path, sizeof(t->path), "%s/board.pb", t->dir);
+  snprintf(t->store, sizeof(t->store), "%s/store", t->dir);
   tel_test_describe(t);
   return t;
 }
@@ -672,11 +845,31 @@ static void tel_test_free(FAR struct tel_test_s *t)
 {
   static FAR const char * const topics[] =
   {
-    "telephony", "network_time", "airplane_mode", "settings"
+    "telephony", "network_time", "airplane_mode", "settings", "messages"
   };
 
-  char path[128];
+  char path[128 + 256];
+  struct dirent *de;
   size_t i;
+  DIR *d;
+
+  /* Messages' store */
+
+  d = opendir(t->store);
+  if (d != NULL)
+    {
+      while ((de = readdir(d)) != NULL)
+        {
+          if (de->d_name[0] != '.')
+            {
+              snprintf(path, sizeof(path), "%s/%s", t->store, de->d_name);
+              unlink(path);
+            }
+        }
+
+      closedir(d);
+      rmdir(t->store);
+    }
 
   for (i = 0; i < sizeof(topics) / sizeof(topics[0]); i++)
     {
@@ -721,6 +914,21 @@ static int tel_test_run(FAR struct tel_test_s *t)
   tconfig.ready     = 20;
   tconfig.wait      = 50;
   tconfig.open      = 50;
+  if (t->sms)
+    {
+      struct messages_config_s mconfig;
+
+      memset(&mconfig, 0, sizeof(mconfig));
+      mconfig.dir    = t->store;
+      mconfig.limit  = t->sms_limit != 0 ? t->sms_limit : 64 * 1024;
+      mconfig.segmax = STORE_SEGMENT_MAX;
+      mconfig.retry  = 100;
+      messages_init(&t->messages, &mconfig);
+      assert_int_equal(pnut_module_add(t->loop, &t->messages.module), 0);
+      tconfig.messages = MESSAGES_SERVICE;
+      tconfig.sms_tick = 200;
+    }
+
   telephony_init(&t->tel, &tconfig);
   assert_int_equal(pnut_module_add(t->loop, &t->tel.module), 0);
   if (getenv("TEL_DEBUG") != NULL)
@@ -737,6 +945,11 @@ static int tel_test_run(FAR struct tel_test_s *t)
   pnut_timer_start(t->loop, 15000, 0, tel_test_stop, NULL, NULL);
   ret = pnut_loop_run(t->loop);
   pnut_loop_destroy(t->loop);
+  if (t->sms)
+    {
+      messages_deinit(&t->messages);
+    }
+
   if (t->uart >= 0)
     {
       close(t->uart);
@@ -979,6 +1192,320 @@ static void test_telephony_slow(void **state)
   tel_test_free(t);
 }
 
+/* A conversation's newest page, read from Messages' store */
+
+static void tel_test_page(FAR struct store_s *store, FAR const char *peer,
+                          FAR pnut_messages_page_t *page)
+{
+  FAR struct store_read_s *r = calloc(1, sizeof(*r));
+  FAR struct store_conv_s *conv;
+  bool more;
+
+  assert_non_null(r);
+  conv = store_find_peer(store, "sms", peer);
+  assert_non_null(conv);
+  assert_int_equal(store_plan_page(store, conv->id, 0, r, &more), 0);
+  store_read_run(r);
+  assert_int_equal(r->ret, 0);
+  memset(page, 0, sizeof(*page));
+  assert_int_equal(store_page(store, r, page), 0);
+  free(r);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms
+ *
+ * Description:
+ *   The modem's memory read through once Messages has sms registered: a
+ *   whole SMS delivered, and a copy of it stored once; a long one's two
+ *   parts joined; a status report and 8-bit data deleted unread; one
+ *   that does not decode kept; then one announced as it arrives.  Each
+ *   delivered one's slots deleted once Messages answered.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR pnut_messages_page_t *page = calloc(1, sizeof(*page));
+  struct store_s store;
+  int i;
+
+  assert_non_null(page);
+  t->sms        = true;
+  t->sms_total  = 10;
+  t->slots[0]   = T_HELLO;
+  t->slots[1]   = T_LONG1;
+  t->slots[2]   = T_STATUS;
+  t->slots[3]   = T_DATA;
+  t->slots[4]   = T_ZIPPED;
+  t->slots[5]   = T_LONG2;
+  t->slots[6]   = T_HELLO;
+  t->cmti_after = 6;
+  t->cmti_slot  = 7;
+  t->cmti_pdu   = T_UCS2;
+  t->expect_deletes = 7;
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_non_null(strstr(t->commands, "AT+CPMS=\"ME\",\"ME\",\"ME\";"));
+  for (i = 0; i < t->sms_total; i++)
+    {
+      if (i == 4)
+        {
+          assert_non_null(t->slots[i]);
+        }
+      else
+        {
+          assert_null(t->slots[i]);
+        }
+    }
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  assert_int_equal(store.nconvs, 2);
+  assert_int_equal(store_unread(&store), 3);
+
+  tel_test_page(&store, "27838890001", page);
+  assert_int_equal(page->messages_count, 1);
+  assert_string_equal(page->messages[0].text, "hellohello");
+  assert_false(page->messages[0].out);
+  assert_true(page->messages[0].sent != 0);
+
+  tel_test_page(&store, "+48123456789", page);
+  assert_int_equal(page->messages_count, 2);
+  assert_string_equal(page->messages[0].text, "ąę");
+  assert_string_equal(page->messages[1].text, "hihi");
+
+  store_free(&store);
+  free(page);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_long
+ *
+ * Description:
+ *   A long SMS of 24 UCS-2 parts, 1608 characters: more than a message
+ *   holds, so delivered as two, in order, and its 24 slots deleted.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_long(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR pnut_messages_page_t *page = calloc(1, sizeof(*page));
+  static char parts[24][2 * 170];
+  struct store_s store;
+  size_t n;
+  int i;
+  int j;
+
+  assert_non_null(page);
+  for (i = 0; i < 24; i++)
+    {
+      n = snprintf(parts[i], sizeof(parts[i]), "00440B918421436587F90008"
+                   T_SCTS "%02X05000355%02X%02X", 6 + 2 * 67, 24, i + 1);
+      for (j = 0; j < 67; j++)
+        {
+          n += snprintf(parts[i] + n, sizeof(parts[i]) - n, "0061");
+        }
+
+      assert_true(n < sizeof(parts[i]));
+      t->slots[i] = parts[i];
+    }
+
+  t->sms        = true;
+  t->sms_total  = 32;
+  t->expect_deletes = 24;
+  assert_int_equal(tel_test_run(t), 0);
+  for (i = 0; i < 24; i++)
+    {
+      assert_null(t->slots[i]);
+    }
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  tel_test_page(&store, "+48123456789", page);
+  assert_int_equal(page->messages_count, 2);
+  assert_int_equal(strlen(page->messages[1].text), 1530);
+  assert_int_equal(strlen(page->messages[0].text), 24 * 67 - 1530);
+  assert_int_equal(page->messages[0].text[0], 'a');
+
+  store_free(&store);
+  free(page);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_scan
+ *
+ * Description:
+ *   Two SMS counted at start, in slots 0 and 5; the first part of a long
+ *   one stored in slot 1 while the memory is read through: the scan still
+ *   reaches slot 5, and the part waits for the rest.  Stored in slot 0,
+ *   behind the scan, it counts all the same.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_scan(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->sms        = true;
+  t->sms_total  = 10;
+  t->slots[0]   = T_HELLO;
+  t->slots[5]   = T_UCS2;
+  t->cmti_after = 1;
+  t->cmti_slot  = 1;
+  t->cmti_pdu   = T_LONG1;
+  t->expect_deletes = 2;
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_null(t->slots[0]);
+  assert_null(t->slots[5]);
+  assert_non_null(t->slots[1]);
+  assert_null(strstr(t->commands, "AT+CMGD=1;"));
+  tel_test_free(t);
+
+  /* One stored behind the scan, in the slot just emptied: read from its
+   * announcement, and counted, so the scan reads no further than it must
+   */
+
+  t = tel_test_new();
+  t->sms        = true;
+  t->sms_total  = 10;
+  t->slots[0]   = T_HELLO;
+  t->slots[5]   = T_UCS2;
+  t->cmti_after = 1;
+  t->cmti_slot  = 0;
+  t->cmti_pdu   = T_LONG1;
+  t->expect_deletes = 2;
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_non_null(t->slots[0]);
+  assert_null(t->slots[5]);
+  assert_null(strstr(t->commands, "AT+CMGR=6;"));
+
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_undeleted
+ *
+ * Description:
+ *   A delete the modem refuses, for a status report and for a delivered
+ *   SMS: each tried again when the memory is read through at the tick,
+ *   the SMS stored once.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_undeleted(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  struct store_s store;
+
+  t->sms        = true;
+  t->sms_total  = 10;
+  t->slots[0]   = T_STATUS;
+  t->slots[1]   = T_HELLO;
+  t->cmgd_fail  = 2;
+  t->expect_deletes = 2;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_null(t->slots[0]);
+  assert_null(t->slots[1]);
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  assert_int_equal(store_unread(&store), 1);
+  store_free(&store);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_sim
+ *
+ * Description:
+ *   SMS left in the SIM's memory, a long one among them, each part twice:
+ *   read from there first, delivered, the copies dropped, the SIM emptied;
+ *   then the modem's own read as ever.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_sim(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR pnut_messages_page_t *page = calloc(1, sizeof(*page));
+  struct store_s store;
+  FAR const char *sim;
+  FAR const char *me;
+  int i;
+
+  assert_non_null(page);
+  t->sms            = true;
+  t->sms_total      = 10;
+  t->slots[2]       = T_UCS2;
+  t->sim_slots[1]   = T_LONG2;    /* As a SIM seen holds them: each twice */
+  t->sim_slots[2]   = T_LONG2;
+  t->sim_slots[3]   = T_LONG1;
+  t->sim_slots[4]   = T_LONG1;
+  t->sim_slots[5]   = T_HELLO;
+  t->expect_deletes = 6;
+  assert_int_equal(tel_test_run(t), 0);
+
+  sim = strstr(t->commands, "AT+CPMS=\"SM\",\"SM\",\"ME\";");
+  assert_non_null(sim);
+  me = strstr(sim, "AT+CPMS=\"ME\",\"ME\",\"ME\";");
+  assert_non_null(me);
+  for (i = 0; i < 32; i++)
+    {
+      assert_null(t->sim_slots[i]);
+    }
+
+  assert_null(t->slots[2]);
+
+  /* Two conversations: the long message once, the short one, the UCS2 */
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  assert_int_equal(store.nconvs, 2);
+  i = store.convs[0].nmsgs + store.convs[1].nmsgs;
+  assert_int_equal(i, 3);
+  store_free(&store);
+
+  free(page);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_full
+ *
+ * Description:
+ *   Messages' store full of unread messages, which never go to make room:
+ *   the first SMS goes in, the next is refused and stays in the modem,
+ *   read and offered again at each tick, never deleted.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_full(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->sms        = true;
+  t->sms_limit  = 1;
+  t->sms_total  = 10;
+  t->slots[0]   = T_HELLO;
+  t->slots[1]   = T_UCS2;
+  t->expect_deletes = 1;
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_null(t->slots[0]);
+  assert_non_null(t->slots[1]);
+  assert_int_equal(t->deletes, 1);
+  assert_null(strstr(t->commands, "AT+CMGD=1;"));
+
+  tel_test_free(t);
+}
+
 /****************************************************************************
  * Name: test_telephony_no_channels
  *
@@ -1019,6 +1546,12 @@ int main(void)
     cmocka_unit_test(test_telephony_clock_unset),
     cmocka_unit_test(test_telephony_slow),
     cmocka_unit_test(test_telephony_no_channels),
+    cmocka_unit_test(test_telephony_sms),
+    cmocka_unit_test(test_telephony_sms_long),
+    cmocka_unit_test(test_telephony_sms_sim),
+    cmocka_unit_test(test_telephony_sms_full),
+    cmocka_unit_test(test_telephony_sms_scan),
+    cmocka_unit_test(test_telephony_sms_undeleted),
   };
 
   return cmocka_run_group_tests_name("telephony", tests, NULL, NULL);

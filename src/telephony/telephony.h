@@ -32,6 +32,7 @@
 
 #include "at.h"
 #include "mux.h"
+#include "transport.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -62,6 +63,8 @@ struct telephony_config_s
   FAR const char *board;          /* Board's service: the modem and its
                                    * lines (RFC 0024) */
   FAR const char *services;       /* Service states': who calls */
+  FAR const char *messages;       /* Messages': the sms transport, or
+                                   * NULL for none */
 
   /* The device, opened by the program: the UART, raw and not blocking,
    * at the modem's speed, as a descriptor or a negated errno value; a
@@ -85,6 +88,7 @@ struct telephony_config_s
   uint32_t ready;                 /* After the channels open, before
                                    * they answer */
   uint32_t wait;                  /* For Settings' values, at start */
+  uint32_t sms_tick;              /* Between the transport's looks */
 };
 
 /* A request kept while Service states says who sent it */
@@ -103,9 +107,10 @@ struct telephony_ask_s
   } in;
 };
 
-/* Telephony (RFC 0030), step 1: the modem powered, its UART multiplexed,
- * its state and the network's time announced, the SIM's PIN taken.  The
- * telephony program's one module.
+/* Telephony (RFC 0030): the modem powered, its UART multiplexed, its
+ * state and the network's time announced, the SIM's PIN taken (step 1);
+ * the SMS it receives delivered to Messages (step 2).  The telephony
+ * program's one module.
  */
 
 struct telephony_s
@@ -187,6 +192,10 @@ struct telephony_s
   bool left_on;                   /* Found running: its clock read once */
   uint64_t nitz_at;               /* When, in ms */
   uint64_t clock_at;              /* The modem's clock read last */
+
+  /* The sms transport (RFC 0029) */
+
+  struct transport_s transport;
 
   /* Requests waiting for the modem */
 

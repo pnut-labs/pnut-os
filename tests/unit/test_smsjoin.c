@@ -179,6 +179,41 @@ static void test_smsjoin_copies(void **state)
   assert_int_equal(m->nslots, 2);
   smsjoin_free(m);
 
+  /* A copy of a part of a message delivered: a copy, not a new message;
+   * another text under that reference is not; nor a copy of one not
+   * delivered (let go, to be joined again)
+   */
+
+  smsjoin_clear(j);
+  sj_part(&d, "+48333", 9, 2, 1, "alpha ");
+  assert_int_equal(smsjoin_add(j, &d, 20, 100, m), 0);
+  sj_part(&d, "+48333", 9, 2, 2, "beta");
+  assert_int_equal(smsjoin_add(j, &d, 21, 100, m), 1);
+  assert_int_equal(m->nhashes, 2);
+  smsjoin_delivered(j, m, 100);
+  smsjoin_free(m);
+  sj_part(&d, "+48333", 9, 2, 1, "alpha ");
+  assert_int_equal(smsjoin_add(j, &d, 22, 200, m), SMSJOIN_COPY);
+  sj_part(&d, "+48333", 9, 2, 1, "gamma ");
+  assert_int_equal(smsjoin_add(j, &d, 23, 200, m), 0);
+  smsjoin_clear(j);
+  sj_part(&d, "+48333", 9, 2, 1, "alpha ");
+  d.sent += 60;                   /* Sent again, later: a new message */
+  assert_int_equal(smsjoin_add(j, &d, 27, 200, m), 0);
+  smsjoin_clear(j);
+  sj_part(&d, "+48333", 9, 2, 2, "beta");
+  assert_int_equal(smsjoin_add(j, &d, 24, 100 + SMSJOIN_WAIT, m), 0);
+  smsjoin_clear(j);
+
+  sj_part(&d, "+48444", 7, 2, 1, "one ");
+  assert_int_equal(smsjoin_add(j, &d, 25, 300, m), 0);
+  sj_part(&d, "+48444", 7, 2, 2, "two");
+  assert_int_equal(smsjoin_add(j, &d, 26, 300, m), 1);
+  smsjoin_free(m);
+  sj_part(&d, "+48444", 7, 2, 1, "one ");
+  assert_int_equal(smsjoin_add(j, &d, 25, 300, m), 0);
+  smsjoin_clear(j);
+
   /* A clock that went back expires nothing */
 
   assert_int_equal(smsjoin_expired(j, 0, m), 0);

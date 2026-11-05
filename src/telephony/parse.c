@@ -587,6 +587,38 @@ int tel_sms_listed(FAR const char *line)
   return (int)slot;
 }
 
+int tel_sms_memory(FAR const char *line, FAR uint16_t *used,
+                   FAR uint16_t *total)
+{
+  FAR const char *args;
+  long u;
+  long t;
+  int n = 0;
+
+  if (!parse_starts(line, "+CPMS:"))
+    {
+      return -EINVAL;
+    }
+
+  /* AT+CPMS? names each memory first; AT+CPMS=... gives the counts */
+
+  args = tel_args(line);
+  if (*args == '"')
+    {
+      n = 1;
+    }
+
+  if (!parse_int(args, n, &u) || !parse_int(args, n + 1, &t) || u < 0 ||
+      t <= 0 || u > t || t > UINT16_MAX)
+    {
+      return -EINVAL;
+    }
+
+  *used  = (uint16_t)u;
+  *total = (uint16_t)t;
+  return OK;
+}
+
 int tel_sms_length(FAR const char *line)
 {
   long length;
