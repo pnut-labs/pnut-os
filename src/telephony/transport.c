@@ -419,16 +419,18 @@ static void tr_drop_done(FAR void *arg, int result, FAR const char *reply)
       return;
     }
 
+  /* Deleted or not, the slot is read again: a failed delete is tried
+   * again at the tick
+   */
+
   if (result < 0)
     {
       pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
                "SMS slot %d not deleted: %d", tr->slot, result);
-    }
-  else
-    {
-      tr_see(tr, tr->slot, false);
+      tr->again = true;
     }
 
+  tr_see(tr, tr->slot, false);
   tr_next(tr);
 }
 
@@ -686,8 +688,8 @@ static void tr_deliver(FAR struct transport_s *tr)
  *
  * Description:
  *   A delivered message's slots, deleted one by one.  One that stays is
- *   read and delivered again at the next start, which Messages answers
- *   "again" to.
+ *   read and delivered again at the tick, which Messages answers "again"
+ *   to, and deleted then.
  *
  ****************************************************************************/
 
@@ -700,16 +702,18 @@ static void tr_deleted(FAR void *arg, int result, FAR const char *reply)
       return;
     }
 
+  /* One that stays is read and delivered again at the tick, which
+   * Messages answers "again" to, and deleted then
+   */
+
   if (result < 0)
     {
       pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
                "SMS slot %d not deleted: %d", tr->slot, result);
-    }
-  else
-    {
-      tr_see(tr, tr->slot, false);
+      tr->again = true;
     }
 
+  tr_see(tr, tr->slot, false);
   if (++tr->deleting >= tr->msg.nslots)
     {
       tr_release(tr, false);
@@ -803,7 +807,7 @@ static void tr_next(FAR struct transport_s *tr)
            */
 
           tr->scanning = false;
-          tr->again    = tr->found < tr->used;
+          tr->again    = tr->again || tr->found < tr->used;
           break;
         }
 

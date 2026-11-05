@@ -122,6 +122,7 @@ struct tel_test_s
   uint64_t sms_limit;             /* Messages' store's; 0 for 64 KB */
   FAR const char *slots[32];      /* Each slot's PDU, or NULL */
   int deletes;                    /* AT+CMGD seen */
+  int cmgd_fail;                  /* AT+CMGD refused, so many times */
   uint64_t deleted_at;
   int expect_deletes;             /* Then the run ends */
   int cmti_after;                 /* Deletes before an SMS comes */
@@ -254,6 +255,13 @@ static bool tel_test_sms(FAR struct tel_test_s *t, FAR const char *cmd)
         }
 
       tel_test_say(t, "OK");
+      return true;
+    }
+
+  if (strncmp(cmd, "AT+CMGD=", 8) == 0 && t->cmgd_fail > 0)
+    {
+      t->cmgd_fail--;
+      tel_test_say(t, "+CMS ERROR: 500");
       return true;
     }
 
@@ -1284,6 +1292,38 @@ static void test_telephony_sms_scan(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telephony_sms_undeleted
+ *
+ * Description:
+ *   A delete the modem refuses, for a status report and for a delivered
+ *   SMS: each tried again when the memory is read through at the tick,
+ *   the SMS stored once.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_undeleted(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  struct store_s store;
+
+  t->sms        = true;
+  t->sms_total  = 10;
+  t->slots[0]   = T_STATUS;
+  t->slots[1]   = T_HELLO;
+  t->cmgd_fail  = 2;
+  t->expect_deletes = 2;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_null(t->slots[0]);
+  assert_null(t->slots[1]);
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  assert_int_equal(store_unread(&store), 1);
+  store_free(&store);
+  tel_test_free(t);
+}
+
+/****************************************************************************
  * Name: test_telephony_sms_full
  *
  * Description:
@@ -1356,6 +1396,7 @@ int main(void)
     cmocka_unit_test(test_telephony_sms_long),
     cmocka_unit_test(test_telephony_sms_full),
     cmocka_unit_test(test_telephony_sms_scan),
+    cmocka_unit_test(test_telephony_sms_undeleted),
   };
 
   return cmocka_run_group_tests_name("telephony", tests, NULL, NULL);
