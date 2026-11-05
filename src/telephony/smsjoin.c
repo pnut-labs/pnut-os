@@ -44,6 +44,32 @@ static uint64_t smsjoin_fnv(uint64_t h, FAR const void *data, size_t n)
 }
 
 /****************************************************************************
+ * Name: smsjoin_part_hash
+ *
+ * Description:
+ *   A part told apart: its sender, reference, place and text.
+ *
+ ****************************************************************************/
+
+static uint64_t smsjoin_part_hash(FAR const char *sender, bool ref16,
+                                  uint16_t ref, uint8_t total, uint8_t part,
+                                  FAR const char *text)
+{
+  uint64_t h = 0xcbf29ce484222325ull;
+  uint8_t stamp[5];
+
+  stamp[0] = (uint8_t)ref;
+  stamp[1] = (uint8_t)(ref >> 8);
+  stamp[2] = ref16;
+  stamp[3] = total;
+  stamp[4] = part;
+  h = smsjoin_fnv(h, sender, strlen(sender) + 1);
+  h = smsjoin_fnv(h, stamp, sizeof(stamp));
+  h = smsjoin_fnv(h, text, strlen(text));
+  return h != 0 ? h : 1;
+}
+
+/****************************************************************************
  * Name: smsjoin_drop
  *
  * Description:
@@ -120,6 +146,9 @@ static int smsjoin_make(FAR struct smsjoin_long_s *l,
         }
 
       out->slots[out->nslots++] = l->parts[i].slot;
+      out->hashes[out->nhashes++] =
+        smsjoin_part_hash(l->sender, l->ref16, l->ref, l->total, i + 1,
+                          l->parts[i].text);
       strlcat(out->text, l->parts[i].text, size);
     }
 
@@ -235,6 +264,25 @@ int smsjoin_add(FAR struct smsjoin_s *join,
         }
     }
 
+  /* Nothing of its message being joined: a copy of a part of one
+   * delivered lately goes
+   */
+
+  if (l == NULL)
+    {
+      uint64_t h = smsjoin_part_hash(part->sender, part->ref16, part->ref,
+                                     part->total, part->part, part->text);
+
+      for (i = 0; i < SMSJOIN_DONE; i++)
+        {
+          if (join->done[i].hash == h && now >= join->done[i].when &&
+              now - join->done[i].when < SMSJOIN_WAIT)
+            {
+              return SMSJOIN_COPY;
+            }
+        }
+    }
+
   /* No room: the long message that has waited longest is given up, as a
    * day's wait would, so that parts never sent the rest of, as a flood
    * may, cannot keep every other long message out
@@ -347,6 +395,19 @@ int smsjoin_expired(FAR struct smsjoin_s *join, uint64_t now,
     }
 
   return 0;
+}
+
+void smsjoin_delivered(FAR struct smsjoin_s *join,
+                       FAR const struct smsjoin_msg_s *msg, uint64_t now)
+{
+  uint8_t i;
+
+  for (i = 0; i < msg->nhashes; i++)
+    {
+      join->done[join->done_next].hash = msg->hashes[i];
+      join->done[join->done_next].when = now;
+      join->done_next = (uint8_t)((join->done_next + 1) % SMSJOIN_DONE);
+    }
 }
 
 void smsjoin_free(FAR struct smsjoin_msg_s *msg)

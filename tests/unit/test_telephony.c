@@ -126,6 +126,9 @@ struct tel_test_s
   int sms_total;                  /* The memory's slots */
   uint64_t sms_limit;             /* Messages' store's; 0 for 64 KB */
   FAR const char *slots[32];      /* Each slot's PDU, or NULL */
+  FAR const char *sim_slots[32];  /* The SIM's memory, alike */
+  int sim_total;                  /* Its slots; 0 for 25 */
+  bool on_sim;                    /* AT+CMGR and AT+CMGD read the SIM's */
   int deletes;                    /* AT+CMGD seen */
   int cmgd_fail;                  /* AT+CMGD refused, so many times */
   uint64_t deleted_at;
@@ -262,6 +265,7 @@ static bool tel_test_sms(FAR struct tel_test_s *t, FAR const char *cmd)
 
   if (strcmp(cmd, "AT+CPMS=\"ME\",\"ME\",\"ME\"") == 0)
     {
+      t->on_sim = false;
       for (i = 0; i < t->sms_total; i++)
         {
           used += t->slots[i] != NULL;
@@ -274,12 +278,39 @@ static bool tel_test_sms(FAR struct tel_test_s *t, FAR const char *cmd)
       return true;
     }
 
+  if (strcmp(cmd, "AT+CPMS=\"SM\",\"SM\",\"ME\"") == 0)
+    {
+      int total = t->sim_total != 0 ? t->sim_total : 25;
+      int me    = 0;
+
+      t->on_sim = true;
+      for (i = 0; i < total; i++)
+        {
+          used += t->sim_slots[i] != NULL;
+        }
+
+      for (i = 0; i < t->sms_total; i++)
+        {
+          me += t->slots[i] != NULL;
+        }
+
+      snprintf(line, sizeof(line), "+CPMS: %d,%d,%d,%d,%d,%d", used, total,
+               used, total, me, t->sms_total);
+      tel_test_say(t, line);
+      tel_test_say(t, "OK");
+      return true;
+    }
+
   if (strncmp(cmd, "AT+CMGR=", 8) == 0)
     {
+      FAR const char **mem = t->on_sim ? t->sim_slots : t->slots;
+      int total = t->on_sim ? (t->sim_total != 0 ? t->sim_total : 25) :
+                  t->sms_total;
+
       n = atoi(cmd + 8);
-      if (n >= 0 && n < t->sms_total && t->slots[n] != NULL)
+      if (n >= 0 && n < total && mem[n] != NULL)
         {
-          FAR const char *pdu = t->slots[n];
+          FAR const char *pdu = mem[n];
           unsigned int smsc;
           int len;
 
@@ -325,7 +356,11 @@ static bool tel_test_sms(FAR struct tel_test_s *t, FAR const char *cmd)
   if (strncmp(cmd, "AT+CMGD=", 8) == 0)
     {
       n = atoi(cmd + 8);
-      if (n >= 0 && n < t->sms_total)
+      if (t->on_sim && n >= 0 && n < 32)
+        {
+          t->sim_slots[n] = NULL;
+        }
+      else if (n >= 0 && n < t->sms_total)
         {
           t->slots[n] = NULL;
         }
@@ -1561,6 +1596,61 @@ static void test_telephony_sms_undeleted(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telephony_sms_sim
+ *
+ * Description:
+ *   SMS left in the SIM's memory, a long one among them, each part twice:
+ *   read from there first, delivered, the copies dropped, the SIM emptied;
+ *   then the modem's own read as ever.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_sim(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR pnut_messages_page_t *page = calloc(1, sizeof(*page));
+  struct store_s store;
+  FAR const char *sim;
+  FAR const char *me;
+  int i;
+
+  assert_non_null(page);
+  t->sms            = true;
+  t->sms_total      = 10;
+  t->slots[2]       = T_UCS2;
+  t->sim_slots[1]   = T_LONG2;    /* As a SIM seen holds them: each twice */
+  t->sim_slots[2]   = T_LONG2;
+  t->sim_slots[3]   = T_LONG1;
+  t->sim_slots[4]   = T_LONG1;
+  t->sim_slots[5]   = T_HELLO;
+  t->expect_deletes = 6;
+  assert_int_equal(tel_test_run(t), 0);
+
+  sim = strstr(t->commands, "AT+CPMS=\"SM\",\"SM\",\"ME\";");
+  assert_non_null(sim);
+  me = strstr(sim, "AT+CPMS=\"ME\",\"ME\",\"ME\";");
+  assert_non_null(me);
+  for (i = 0; i < 32; i++)
+    {
+      assert_null(t->sim_slots[i]);
+    }
+
+  assert_null(t->slots[2]);
+
+  /* Two conversations: the long message once, the short one, the UCS2 */
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  assert_int_equal(store.nconvs, 2);
+  i = store.convs[0].nmsgs + store.convs[1].nmsgs;
+  assert_int_equal(i, 3);
+  store_free(&store);
+
+  free(page);
+  tel_test_free(t);
+}
+
+/****************************************************************************
  * Name: test_telephony_sms_full
  *
  * Description:
@@ -1632,6 +1722,7 @@ int main(void)
     cmocka_unit_test(test_telephony_no_channels),
     cmocka_unit_test(test_telephony_sms),
     cmocka_unit_test(test_telephony_sms_long),
+    cmocka_unit_test(test_telephony_sms_sim),
     cmocka_unit_test(test_telephony_sms_full),
     cmocka_unit_test(test_telephony_sms_scan),
     cmocka_unit_test(test_telephony_sms_undeleted),

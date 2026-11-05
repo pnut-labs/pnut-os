@@ -55,6 +55,12 @@
 #define TR_STORAGE      "AT+CPMS=\"ME\",\"ME\",\"ME\""
 #define TR_SEND_MS      60000       /* A part's AT+CMGS, network and all */
 
+/* The SIM's memory read and emptied, what arrives meanwhile still stored in
+ * the modem's
+ */
+
+#define TR_STORAGE_SIM  "AT+CPMS=\"SM\",\"SM\",\"ME\""
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -293,6 +299,13 @@ static void tr_release(FAR struct transport_s *tr, bool again)
   smsjoin_free(&tr->msg);
   tr->holding   = false;
   tr->delivered = false;
+
+  /* A change of memory that waited for it: now */
+
+  if (tr->sim != tr->sim_check)
+    {
+      tr->storage = false;
+    }
 }
 
 /****************************************************************************
@@ -373,6 +386,20 @@ static void tr_choose_done(FAR void *arg, int result, FAR const char *reply)
       return;
     }
 
+  if (tr->sim &&
+      (result < 0 ||
+       tr_line(reply, "+CPMS:", line, sizeof(line), NULL) == NULL ||
+       tel_sms_memory(line, &tr->used, &tr->total) < 0))
+    {
+      /* No SIM memory to read (or not yet): the modem's, as before */
+
+      pnut_log(&tr->tel->module, PNUT_LOG_INFO,
+               "The SIM's SMS memory not read: %d", result);
+      tr->sim_check = false;
+      tr_next(tr);
+      return;
+    }
+
   if (result < 0 ||
       tr_line(reply, "+CPMS:", line, sizeof(line), NULL) == NULL ||
       tel_sms_memory(line, &tr->used, &tr->total) < 0)
@@ -404,8 +431,15 @@ static void tr_choose_done(FAR void *arg, int result, FAR const char *reply)
 
   tr->tries = 0;
 
-  pnut_log(&tr->tel->module, PNUT_LOG_INFO,
-           "The modem's SMS memory: %u of %u", tr->used, tr->total);
+  pnut_log(&tr->tel->module, PNUT_LOG_INFO, "The %s SMS memory: %u of %u",
+           tr->sim ? "SIM's" : "modem's", tr->used, tr->total);
+  if (tr->sim && tr->used == 0)
+    {
+      tr->sim_check = false;      /* Nothing there: the modem's */
+      tr_next(tr);
+      return;
+    }
+
   tr->storage  = true;
   tr->scanning = tr->used > 0;
   tr->next     = 0;
@@ -727,6 +761,9 @@ static void tr_deleted(FAR void *arg, int result, FAR const char *reply)
   tr_see(tr, tr->slot, false);
   if (++tr->deleting >= tr->msg.nslots)
     {
+      /* With Messages: its parts, met again, are copies */
+
+      smsjoin_delivered(&tr->join, &tr->msg, tr_now());
       tr_release(tr, false);
     }
 
@@ -1061,6 +1098,7 @@ static void tr_take(FAR struct transport_s *tr)
 
 static void tr_next(FAR struct transport_s *tr)
 {
+  bool sim;
   int slot;
 
   if (tr->busy || !tr->modem || tr->paused || tr->later != NULL)
@@ -1070,7 +1108,22 @@ static void tr_next(FAR struct transport_s *tr)
 
   if (!tr->storage)
     {
-      tr_at(tr, TR_STORAGE, "+CPMS:", TR_CHOOSE, tr_choose_done);
+      /* The SIM's first when it is to be looked at, never while a
+       * message is held, whose slots are the memory's chosen: the join's
+       * parts and the slots seen are the memory's they came from, so a
+       * change of memory forgets them (the modem's are read again after)
+       */
+
+      sim = tr->holding ? tr->sim : tr->sim_check;
+      if (sim != tr->sim)
+        {
+          memset(tr->seen, 0, sizeof(tr->seen));
+          smsjoin_clear(&tr->join);
+          tr->sim = sim;
+        }
+
+      tr_at(tr, sim ? TR_STORAGE_SIM : TR_STORAGE, "+CPMS:", TR_CHOOSE,
+            tr_choose_done);
       return;
     }
 
@@ -1093,7 +1146,9 @@ static void tr_next(FAR struct transport_s *tr)
       return;
     }
 
-  while (tr->count > 0)
+  /* The modem's announced slots wait while the SIM's memory is read */
+
+  while (tr->count > 0 && !tr->sim)
     {
       slot = tr->queue[tr->head];
       tr->head = (uint8_t)((tr->head + 1) % TRANSPORT_QUEUE);
@@ -1118,6 +1173,22 @@ static void tr_next(FAR struct transport_s *tr)
 
           tr->scanning = false;
           tr->again    = tr->again || tr->found < tr->used;
+          if (tr->sim)
+            {
+              /* The SIM's read through: what it keeps (parts of a message
+               * whose rest is not there, SMS not kept by Messages) stays,
+               * looked at again at the next start; then the modem's
+               */
+
+              pnut_log(&tr->tel->module, PNUT_LOG_INFO,
+                       "The SIM's SMS read through");
+              tr->sim_check = false;
+              tr->storage   = false;
+              tr->again     = false;
+              tr_next(tr);
+              return;
+            }
+
           break;
         }
 
@@ -1212,7 +1283,7 @@ static void tr_tick(FAR struct pnut_loop_s *loop,
       tr_take(tr);
     }
 
-  if (tr->paused || tr->again)
+  if (tr->paused || tr->again || (tr->sim_check && !tr->sim))
     {
       tr->paused  = false;
       tr->again   = false;
@@ -1297,15 +1368,16 @@ void transport_init(FAR struct transport_s *tr, FAR struct telephony_s *tel,
                     FAR const char *service, uint32_t tick)
 {
   memset(tr, 0, sizeof(*tr));
-  tr->tel     = tel;
-  tr->service = service;
-  tr->tick    = tick != 0 ? tick : TRANSPORT_TICK;
+  tr->tel       = tel;
+  tr->service   = service;
+  tr->tick      = tick != 0 ? tick : TRANSPORT_TICK;
+  tr->sim_check = true;           /* SMS left on the SIM, moved over */
 
   /* Long messages' reference, from where the last start would not have
    * left it
    */
 
-  tr->ref     = (uint8_t)(time(NULL) ^ tr_now());
+  tr->ref       = (uint8_t)(time(NULL) ^ tr_now());
 }
 
 int transport_start(FAR struct transport_s *tr,
@@ -1393,7 +1465,9 @@ void transport_gone(FAR struct transport_s *tr)
    * back, and what was joined, joined again
    */
 
-  tr->modem    = false;
+  tr->modem     = false;
+  tr->sim       = false;          /* The modem's choice goes with it */
+  tr->sim_check = true;
   if (tr->sending && tr->out_part <= tr->out_parts &&
       (tr->what == TR_SEND || tr->out_part > 1))
     {
@@ -1466,8 +1540,9 @@ bool transport_urc(FAR struct transport_s *tr, FAR const char *line)
        */
 
       pnut_log(&tr->tel->module, PNUT_LOG_INFO,
-               "An SMS stored on the SIM: the modem's memory chosen again");
-      tr->storage = false;
+               "An SMS stored on the SIM: read from there");
+      tr->sim_check = true;
+      tr->storage   = false;
     }
   else if (slot < 0)
     {
@@ -1487,7 +1562,7 @@ bool transport_urc(FAR struct transport_s *tr, FAR const char *line)
    * stop short of one counted at its start
    */
 
-  if (slot >= 0 && tr->scanning)
+  if (slot >= 0 && tr->scanning && !tr->sim)
     {
       tr->used++;
     }
