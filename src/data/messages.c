@@ -502,7 +502,7 @@ static void msg_requeue(FAR struct messages_s *m, uint64_t message,
 {
   /* One at a time: the one waits before any other hand-over */
 
-  if (m->requeue)
+  if (m->requeue || m->requeue_held)
     {
       pnut_log(&m->module, PNUT_LOG_WARNING,
                "Message %" PRIu64 "'s status not put right", message);
@@ -536,6 +536,12 @@ static void msg_hand_again(FAR struct pnut_loop_s *loop,
 
   m->hand_later = NULL;
   m->hand       = true;
+  if (m->requeue_held)
+    {
+      m->requeue_held = false;
+      m->requeue      = true;
+    }
+
   msg_next(m);
 }
 
@@ -559,6 +565,40 @@ static void msg_hand_later(FAR struct messages_s *m, uint64_t id, int ret)
   pnut_log(&m->module, PNUT_LOG_INFO,
            "Message %" PRIu64 " not handed over (%d): again in a while", id,
            ret);
+}
+
+/****************************************************************************
+ * Name: msg_requeue_later
+ *
+ * Description:
+ *   A status put right (msg_requeue()) whose write did not go: held, and
+ *   tried again with the hand-overs' timer, which wait for it; not at
+ *   once, so that a failure that lasts does not spin.
+ *
+ ****************************************************************************/
+
+static void msg_requeue_later(FAR struct messages_s *m,
+                              FAR const struct messages_job_s *job, int ret)
+{
+  if (m->requeue || m->requeue_held)
+    {
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 "'s status not put right (%d)",
+               job->in.hand.message, ret);
+      return;
+    }
+
+  m->requeue_msg    = job->in.hand.message;
+  m->requeue_status = job->in.hand.status;
+  m->requeue_held   = true;
+  msg_hand_later(m, job->in.hand.message, ret);
+  if (m->hand_later == NULL)
+    {
+      m->requeue_held = false;    /* No timer: the hand-overs go on */
+      pnut_log(&m->module, PNUT_LOG_WARNING,
+               "Message %" PRIu64 "'s status not put right (%d)",
+               job->in.hand.message, ret);
+    }
 }
 
 static void msg_push_again(FAR struct pnut_loop_s *loop,
@@ -704,6 +744,10 @@ static void msg_written(FAR struct pnut_loop_s *loop, FAR void *arg)
       if (job->kind == MESSAGES_HAND)
         {
           msg_hand_later(m, job->in.hand.message, w->ret);
+        }
+      else if (job->kind == MESSAGES_REQUEUE)
+        {
+          msg_requeue_later(m, job, w->ret);
         }
 
       msg_next(m);
@@ -1287,13 +1331,28 @@ static bool msg_start_job(FAR struct messages_s *m)
                                 PNUT_MESSAGES_MESSAGE_STATUS_FAILED ?
                                 "the message cannot be read" : "",
                                 &m->work.write);
-        if (ret < 0)
+
+        /* Gone meanwhile, or right already: nothing to put right */
+
+        if (ret == -ENOENT || ret == -EALREADY)
           {
             return false;
           }
 
-        return msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run,
-                          msg_written, &m->work.write);
+        if (ret < 0)
+          {
+            msg_requeue_later(m, job, ret);
+            return false;
+          }
+
+        if (!msg_submit(m, MESSAGES_WORK_WRITE, msg_write_run, msg_written,
+                        &m->work.write))
+          {
+            msg_requeue_later(m, job, -EAGAIN);
+            return false;
+          }
+
+        return true;
 
       case MESSAGES_REPORT:
         {
@@ -1439,7 +1498,7 @@ static void msg_next(FAR struct messages_s *m)
           m->current.in.hand.message = m->requeue_msg;
           m->current.in.hand.status  = m->requeue_status;
         }
-      else if (m->hand && !m->failed && !m->pushing)
+      else if (m->hand && !m->failed && !m->pushing && !m->requeue_held)
         {
           m->hand = false;
           m->current.kind = MESSAGES_HAND;

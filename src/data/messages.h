@@ -177,6 +177,8 @@ struct messages_s
   bool compact;                   /* A segment to compact, after it */
   bool hand;                      /* A transport takes: hand over */
   bool requeue;                   /* A status to put right: */
+  bool requeue_held;              /* or one whose writing failed, again
+                                   * with hand_later; hand-overs wait */
   uint64_t requeue_msg;           /* the message's */
   uint8_t requeue_status;         /* QUEUED again, or FAILED */
   bool pushing;                   /* handing waits for room to go */
