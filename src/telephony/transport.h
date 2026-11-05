@@ -40,9 +40,11 @@
 
 struct telephony_s;
 
-/* Telephony's sms transport, its arriving half (RFC 0030, step 2): SMS
- * stay in the modem's memory until Messages has them on flash, then go
- * from it.  One thing at a time: a command to the modem, or a delivery.
+/* Telephony's sms transport (RFC 0030, step 2).  Arriving: SMS stay in
+ * the modem's memory until Messages has them on flash, then go from it.
+ * Leaving: Messages' queue taken one message at a time, while the modem
+ * has the network, each sent in parts and reported.  One thing at a time:
+ * a command to the modem, or a call to Messages.
  */
 
 struct transport_s
@@ -101,6 +103,23 @@ struct transport_s
   size_t offset;                  /* Where that piece begins */
   uint8_t deleting;               /* Its slot being deleted */
   pnut_messages_deliver_request_t deliver;
+
+  /* Sending: Messages' queue, taken */
+
+  bool take_out;                  /* Take asked, not answered */
+  bool taking;                    /* Take open */
+  uint16_t take;                  /* Its stream's number */
+  bool credited;                  /* A credit given, not used yet */
+  bool sending;                   /* out is to send, then report */
+  bool reporting;                 /* report is to go to Messages */
+  bool lost;                      /* The modem went with part of it out */
+  uint8_t out_parts;              /* out's parts */
+  uint8_t out_part;               /* The next to send, from 1 */
+  uint8_t ref;                    /* Long messages' reference */
+  pnut_messages_queued_t out;
+  struct sms_part_s pdu;          /* The part out; the AT engine's until
+                                   * answered */
+  pnut_messages_report_request_t report;
 };
 
 /****************************************************************************
@@ -148,5 +167,15 @@ void transport_gone(FAR struct transport_s *tr);
  ****************************************************************************/
 
 bool transport_urc(FAR struct transport_s *tr, FAR const char *line);
+
+/****************************************************************************
+ * Name: transport_kick
+ *
+ * Description:
+ *   Something changed that work may wait for: the network.
+ *
+ ****************************************************************************/
+
+void transport_kick(FAR struct transport_s *tr);
 
 #endif /* __PNUT_OS_TELEPHONY_TRANSPORT_H */

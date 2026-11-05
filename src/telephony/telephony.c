@@ -2244,6 +2244,10 @@ static void tel_registered(FAR struct telephony_s *tel)
       s->operator_name[0] = '\0';
       s->tech             = PNUT_TELEPHONY_INFO_TECH_NO_TECH;
     }
+
+  /* SMS wait for the network */
+
+  transport_kick(&tel->transport);
 }
 
 static void tel_refresh_done(FAR void *arg, int result,
