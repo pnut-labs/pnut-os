@@ -624,6 +624,8 @@ static void long_end(FAR struct msgt_s *t)
   assert_int_equal(t->status, PNUT_STATUS_OK);
   assert_int_equal(t->convs.conversations_count, 1);
   assert_int_equal(t->convs.conversations[0].id, t->a);
+  assert_int_equal(strlen(t->convs.conversations[0].latest),
+                   sizeof(t->convs.conversations[0].latest) - 1);
   assert_true(strncmp(t->convs.conversations[0].latest, g_long,
                       strlen(t->convs.conversations[0].latest)) == 0);
   msgt_next(t);
