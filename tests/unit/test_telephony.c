@@ -99,6 +99,11 @@ struct tel_test_s
                                    * its SIM is ready, as the A7682E */
   uint64_t ready_at;              /* When its SIM answered ready */
   bool airplane;                  /* Airplane mode on, from the start */
+  bool air_flip;                  /* Then back on the air by itself, out
+                                   * of coverage */
+  bool air_stubborn;              /* and staying there, CFUN=4 or not */
+  bool flipped;
+  int air_given;                  /* CFUN=4 given after the flip */
   FAR struct pnut_publisher_s *airplanes;
   FAR const char *clock;          /* Its clock, as +CCLK gives it */
   uint64_t clock_at;              /* When its clock was read */
@@ -185,7 +190,11 @@ static void tel_test_frame(FAR struct tel_test_s *t, uint8_t dlci,
   buf[1] = (dlci << 2) | 0x01;          /* The modem's answers: no C/R */
   buf[2] = ctrl;
   buf[3] = (n << 1) | 0x01;
-  memcpy(buf + 4, info, n);
+  if (n > 0)
+    {
+      memcpy(buf + 4, info, n);
+    }
+
   buf[4 + n] = tel_test_fcs(buf + 1, 3);
   buf[5 + n] = 0xf9;
   tel_test_send(t, buf, n + 6);
@@ -398,7 +407,16 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
 
   if (strcmp(cmd, "AT+CFUN=4") == 0 || strcmp(cmd, "AT+CFUN=1") == 0)
     {
-      t->cfun = cmd[8] - '0';
+      if (t->flipped && cmd[8] == '4')
+        {
+          t->air_given++;
+        }
+
+      if (!t->flipped || !t->air_stubborn)
+        {
+          t->cfun = cmd[8] - '0';
+        }
+
       tel_test_say(t, "OK");
       return;
     }
@@ -409,7 +427,7 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
     }
   else if (strcmp(cmd, "AT+CEREG?") == 0)
     {
-      tel_test_say(t, t->cfun == 4 ? "+CEREG: 2,0" :
+      tel_test_say(t, t->cfun == 4 || t->flipped ? "+CEREG: 2,0" :
                    "+CEREG: 2,1,\"1A2B\",\"01A2B3C4\",7");
     }
   else if (strcmp(cmd, "AT+CREG?") == 0)
@@ -418,7 +436,8 @@ static void tel_test_command(FAR struct tel_test_s *t, FAR const char *cmd)
     }
   else if (strcmp(cmd, "AT+COPS?") == 0)
     {
-      tel_test_say(t, t->cfun == 4 ? "+COPS: 0" : "+COPS: 0,0,\"Test\",7");
+      tel_test_say(t, t->cfun == 4 || t->flipped ? "+COPS: 0" :
+                   "+COPS: 0,0,\"Test\",7");
     }
   else if (strcmp(cmd, "AT+CNBP?") == 0)
     {
@@ -705,6 +724,14 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
 {
   FAR struct tel_test_s *t = arg;
 
+  if (t->air_flip && !t->flipped && t->ready_at != 0 &&
+      pnut_now() - t->ready_at > 300)
+    {
+      t->flipped = true;
+      t->cfun    = 1;
+      tel_test_say(t, "+CEREG: 0");     /* Not registered: no change */
+    }
+
   if (t->sms)
     {
       /* Every SMS dealt with, and a moment for anything more */
@@ -725,7 +752,7 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
   if (t->stop_at == 0 &&
       ((t->was_on && t->times_seen > 0) ||
        (t->airplane && t->ready_at != 0 &&
-        pnut_now() - t->ready_at > 500) ||
+        pnut_now() - t->ready_at > (t->air_flip ? 1000 : 500)) ||
        (t->was_on && t->clock_at != 0 && pnut_now() - t->clock_at > 200) ||
        (t->no_sim && t->info.reason ==
         PNUT_TELEPHONY_INFO_REASON_NO_SIM &&
@@ -1078,6 +1105,42 @@ static void test_telephony_airplane(void **state)
   assert_false(t->was_on);
   assert_int_equal(t->times_seen, 0);
 
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_airplane_backstop
+ *
+ * Description:
+ *   In airplane mode, a modem that goes back on the air by itself, out of
+ *   coverage, reports only that it is not registered: its state is read,
+ *   and airplane mode given again.  One that stays on the air whatever it
+ *   is told is told again once a minute at most, not at each refresh.
+ *
+ ****************************************************************************/
+
+static void test_telephony_airplane_backstop(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->airplane = true;
+  t->air_flip = true;
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_true(t->flipped);
+  assert_int_equal(t->air_given, 1);
+  assert_int_equal(t->cfun, 4);
+  tel_test_free(t);
+
+  t = tel_test_new();
+  t->airplane     = true;
+  t->air_flip     = true;
+  t->air_stubborn = true;
+  assert_int_equal(tel_test_run(t), 0);
+
+  assert_true(t->flipped);
+  assert_int_equal(t->air_given, 1);
+  assert_int_equal(t->cfun, 1);
   tel_test_free(t);
 }
 
@@ -1562,6 +1625,7 @@ int main(void)
     cmocka_unit_test(test_telephony_life),
     cmocka_unit_test(test_telephony_left_on),
     cmocka_unit_test(test_telephony_airplane),
+    cmocka_unit_test(test_telephony_airplane_backstop),
     cmocka_unit_test(test_telephony_clock_before),
     cmocka_unit_test(test_telephony_clock_unset),
     cmocka_unit_test(test_telephony_slow),

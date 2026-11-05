@@ -218,8 +218,15 @@ struct messages_s
   struct messages_transport_s transports[MESSAGES_TRANSPORTS];
   pnut_messages_queued_t handing;
 
-  /* What it serves and announces */
+  /* What it serves and announces; an answer built apart from the
+   * server's own buffer, which the reply is encoded into
+   */
 
+  union
+    {
+      pnut_messages_page_t page;
+      pnut_messages_conversations_t conversations;
+    } answer;
   struct pnut_messages_server_s server;
   bool serving;
   FAR struct pnut_publisher_s *changes;

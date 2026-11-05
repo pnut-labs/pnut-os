@@ -55,6 +55,8 @@
 #define TEL_SETTINGS_MS   3000      /* For Settings' values, at start */
 #define TEL_TRIAL_MS      120000    /* For GSM to find a network */
 #define TEL_HOUR_MS       3600000   /* Between readings of its clock */
+#define TEL_AIR_CHECK_MS  60000     /* Between airplane mode given again
+                                     * by the backstop */
 #define TEL_BEFORE_MS     60000     /* A clock the network set before this
                                      * start: 100 ppm over a week */
 #define TEL_FRESH_MS      30000     /* A state that old is read again */
@@ -1822,6 +1824,40 @@ static void tel_air_kept(FAR void *arg, int result, FAR const char *reply)
   tel_air_done(arg, result, reply);
 }
 
+static void tel_air_keep(FAR struct telephony_s *tel, bool on_air);
+
+static void tel_air_check(FAR void *arg, int result, FAR const char *reply)
+{
+  FAR struct telephony_s *tel = arg;
+  char line[64];
+  FAR const char *p;
+
+  uint64_t now = tel_now();
+
+  if (result == -ECANCELED || !tel_answered(tel, result) ||
+      tel->step != STEP_ON)
+    {
+      return;
+    }
+
+  /* Once a minute at most: a modem that does not stay off the air, or
+   * refuses, is not told again at each refresh, which the answer starts
+   */
+
+  p = tel_find(reply, line, sizeof(line), "+CFUN:");
+  if (p != NULL && atoi(tel_args(p)) != 4 && !tel->air_keeping &&
+      (tel->air_checked == 0 || now - tel->air_checked >= TEL_AIR_CHECK_MS))
+    {
+      /* Counted only when given: airplane mode may be off meanwhile */
+
+      tel_air_keep(tel, true);
+      if (tel->air_keeping)
+        {
+          tel->air_checked = now;
+        }
+    }
+}
+
 static void tel_air_keep(FAR struct telephony_s *tel, bool on_air)
 {
   if (tel->step != STEP_ON || !tel->airplane || tel->air_keeping)
@@ -2323,6 +2359,15 @@ static void tel_refresh(FAR struct telephony_s *tel)
   tel->refreshing = true;
   tel->refreshed  = tel_now();
   tel_refresh_step(tel, 0);
+
+  /* Airplane mode's backstop: a modem back on the air but out of
+   * coverage reports nothing that would show it
+   */
+
+  if (tel->airplane && !tel->air_keeping)
+    {
+      tel_send(tel, "AT+CFUN?", "+CFUN:", 0, tel_air_check);
+    }
 }
 
 /****************************************************************************
@@ -2507,8 +2552,13 @@ static void tel_urc(FAR void *arg, FAR const char *line)
           tel->clock_at = now;
         }
 
-      pnut_log(&tel->module, PNUT_LOG_INFO, "The network's time%s",
-               t.has_time ? "" : ": its offset alone");
+      /* Which of the four forms the modem sends is still to be seen on
+       * the phone (BACKLOG): named
+       */
+
+      pnut_log(&tel->module, PNUT_LOG_INFO, "The network's time%s (%.*s)",
+               t.has_time ? "" : ": its offset alone",
+               (int)strcspn(line, ":"), line);
       tel_publish_time(tel, &t, 1000, now,
                        PNUT_NETWORK_TIME_KIND_MESSAGE);
     }

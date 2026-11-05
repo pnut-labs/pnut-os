@@ -131,8 +131,11 @@ static size_t mux_free(FAR struct mux_s *mux)
 
 static void mux_put(FAR struct mux_s *mux, FAR const void *buf, size_t n)
 {
-  memcpy(mux->queue + mux->len, buf, n);
-  mux->len += n;
+  if (n > 0)                      /* A frame with no data has no buffer */
+    {
+      memcpy(mux->queue + mux->len, buf, n);
+      mux->len += n;
+    }
 }
 
 /****************************************************************************
@@ -192,7 +195,11 @@ static int mux_control(FAR struct mux_s *mux, uint8_t type, bool command,
 
   msg[0] = type | (command ? MUX_CR : 0) | MUX_EA;
   msg[1] = (n << 1) | MUX_EA;
-  memcpy(msg + 2, value, n);
+  if (n > 0)
+    {
+      memcpy(msg + 2, value, n);
+    }
+
   return mux_frame(mux, MUX_CONTROL, MUX_UIH, true, msg, n + 2);
 }
 

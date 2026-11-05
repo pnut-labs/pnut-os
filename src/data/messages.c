@@ -857,7 +857,7 @@ static void msg_page_read(FAR struct pnut_loop_s *loop, FAR void *arg)
       return;
     }
 
-  page = (FAR pnut_messages_page_t *)m->server.out;
+  page = &m->answer.page;
   if (store_page(&m->store, &m->work.read, page) < 0)
     {
       msg_fail(m, &m->current.req, PNUT_STATUS_NOTFOUND,
@@ -1095,7 +1095,7 @@ static bool msg_start_job(FAR struct messages_s *m)
       case MESSAGES_LIST:
         {
           FAR pnut_messages_conversations_t *out =
-            (FAR pnut_messages_conversations_t *)m->server.out;
+            &m->answer.conversations;
 
           if (store_conversations(&m->store, job->in.list.after, out) < 0)
             {
@@ -1119,7 +1119,7 @@ static bool msg_start_job(FAR struct messages_s *m)
         if (m->work.read.n == 0)
           {
             FAR pnut_messages_page_t *page =
-              (FAR pnut_messages_page_t *)m->server.out;
+              &m->answer.page;
 
             memset(page, 0, sizeof(*page));
             pnut_messages_read_reply(&m->server, &job->req,
@@ -1641,7 +1641,7 @@ static void msg_allowed(FAR struct messages_s *m,
 
   if (kind == MESSAGES_LIST && m->loaded && !m->failed)
     {
-      out = (FAR pnut_messages_conversations_t *)m->server.out;
+      out = &m->answer.conversations;
       if (store_conversations(&m->store,
                               ((FAR const pnut_messages_page_request_t *)
                                in)->after, out) < 0)
