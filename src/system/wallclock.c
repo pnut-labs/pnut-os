@@ -809,14 +809,19 @@ static void wallclock_network(FAR struct pnut_network_time_reader_s *reader,
    * time saved.
    */
 
-  behind = wall->floor - msg->utc - (int64_t)((age + 500) / 1000);
-  if (msg->kind == PNUT_NETWORK_TIME_KIND_MODEM_CLOCK && msg->utc != 0 &&
-      wall->floor != 0 && behind > (int64_t)(msg->uncertainty / 1000))
+  if (msg->kind == PNUT_NETWORK_TIME_KIND_MODEM_CLOCK && wall->floor != 0 &&
+      msg->utc >= WALLCLOCK_EARLIEST && msg->utc <= WALLCLOCK_LATEST)
     {
-      pnut_log(&wall->module, PNUT_LOG_WARNING,
-               "The modem's clock %" PRId64 " s before the time saved: "
-               "left aside", behind);
-      return;
+      /* In range, as the floor is, so the sums cannot overflow */
+
+      behind = wall->floor - msg->utc - (int64_t)((age + 500) / 1000);
+      if (behind > (int64_t)(msg->uncertainty / 1000))
+        {
+          pnut_log(&wall->module, PNUT_LOG_WARNING,
+                   "The modem's clock %" PRId64 " s before the time saved: "
+                   "left aside", behind);
+          return;
+        }
     }
 
   if (msg->has_offset && (msg->offset > WALLCLOCK_OFFSET_MAX ||
