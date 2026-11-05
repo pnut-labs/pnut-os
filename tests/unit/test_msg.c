@@ -44,6 +44,7 @@ static void test_msg_roundtrip(void **state)
   in.seq      = 0xfffe;
   in.len      = PNUT_MSG_PAYLOAD_MAX;
   in.app      = 0x0102;
+  in.credit   = 0x0304;
 
   pnut_msg_encode(&in, buf);
 
@@ -61,6 +62,8 @@ static void test_msg_roundtrip(void **state)
   assert_int_equal(buf[9], 0xff);
   assert_int_equal(buf[12], 0x02);
   assert_int_equal(buf[13], 0x01);
+  assert_int_equal(buf[14], 0x04);
+  assert_int_equal(buf[15], 0x03);
 
   assert_int_equal(pnut_msg_decode(buf, &out), 0);
   assert_memory_equal(&in, &out, sizeof(in));
