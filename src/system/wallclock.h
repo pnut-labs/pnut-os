@@ -136,6 +136,7 @@ struct wallclock_s
 
   uint8_t source;                 /* pnut_time_info_source_t */
   int64_t since;
+  int64_t floor;                  /* The state file's time; 0 none */
   struct wallclock_held_s held;
 
   uint32_t seq;                   /* The last change's */
