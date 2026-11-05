@@ -197,6 +197,10 @@ static void test_smsjoin_copies(void **state)
   sj_part(&d, "+48333", 9, 2, 1, "gamma ");
   assert_int_equal(smsjoin_add(j, &d, 23, 200, m), 0);
   smsjoin_clear(j);
+  sj_part(&d, "+48333", 9, 2, 1, "alpha ");
+  d.sent += 60;                   /* Sent again, later: a new message */
+  assert_int_equal(smsjoin_add(j, &d, 27, 200, m), 0);
+  smsjoin_clear(j);
   sj_part(&d, "+48333", 9, 2, 2, "beta");
   assert_int_equal(smsjoin_add(j, &d, 24, 100 + SMSJOIN_WAIT, m), 0);
   smsjoin_clear(j);

@@ -47,16 +47,25 @@ static uint64_t smsjoin_fnv(uint64_t h, FAR const void *data, size_t n)
  * Name: smsjoin_part_hash
  *
  * Description:
- *   A part told apart: its sender, reference, place and text.
+ *   A part told apart: its sender, the service centre's time stamp,
+ *   reference, place and text.  A copy, resent by the network or stored
+ *   twice, has the same time stamp; a new message of the same text under
+ *   a reference used again has another.
  *
  ****************************************************************************/
 
-static uint64_t smsjoin_part_hash(FAR const char *sender, bool ref16,
-                                  uint16_t ref, uint8_t total, uint8_t part,
-                                  FAR const char *text)
+static uint64_t smsjoin_part_hash(FAR const char *sender, int64_t sent,
+                                  bool ref16, uint16_t ref, uint8_t total,
+                                  uint8_t part, FAR const char *text)
 {
   uint64_t h = 0xcbf29ce484222325ull;
-  uint8_t stamp[5];
+  uint8_t stamp[13];
+  int i;
+
+  for (i = 0; i < 8; i++)
+    {
+      stamp[5 + i] = (uint8_t)((uint64_t)sent >> (8 * i));
+    }
 
   stamp[0] = (uint8_t)ref;
   stamp[1] = (uint8_t)(ref >> 8);
@@ -147,8 +156,8 @@ static int smsjoin_make(FAR struct smsjoin_long_s *l,
 
       out->slots[out->nslots++] = l->parts[i].slot;
       out->hashes[out->nhashes++] =
-        smsjoin_part_hash(l->sender, l->ref16, l->ref, l->total, i + 1,
-                          l->parts[i].text);
+        smsjoin_part_hash(l->sender, l->parts[i].sent, l->ref16, l->ref,
+                          l->total, i + 1, l->parts[i].text);
       strlcat(out->text, l->parts[i].text, size);
     }
 
@@ -270,8 +279,9 @@ int smsjoin_add(FAR struct smsjoin_s *join,
 
   if (l == NULL)
     {
-      uint64_t h = smsjoin_part_hash(part->sender, part->ref16, part->ref,
-                                     part->total, part->part, part->text);
+      uint64_t h = smsjoin_part_hash(part->sender, part->sent, part->ref16,
+                                     part->ref, part->total, part->part,
+                                     part->text);
 
       for (i = 0; i < SMSJOIN_DONE; i++)
         {
