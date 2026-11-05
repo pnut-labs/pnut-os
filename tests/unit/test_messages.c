@@ -584,6 +584,56 @@ static void tr_end(FAR struct msgt_s *t)
   msgt_next(t);
 }
 
+/* A text as long as one can be, read back in a page and as a
+ * conversation's latest: the answers are built apart from the buffer
+ * they are encoded into
+ */
+
+static char g_long[1531];
+
+static void long_send(FAR struct msgt_s *t)
+{
+  int i;
+
+  for (i = 0; i < (int)sizeof(g_long) - 1; i++)
+    {
+      g_long[i] = (char)('a' + i % 26);
+    }
+
+  g_long[sizeof(g_long) - 1] = '\0';
+  msgt_send(t, "+9", g_long);
+}
+
+static void long_read(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  t->a = t->sent.conversation;
+  msgt_read(t, t->a);
+}
+
+static void long_list(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_int_equal(t->page.messages_count, 1);
+  assert_string_equal(t->page.messages[0].text, g_long);
+  msgt_convs(t);
+}
+
+static void long_end(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_int_equal(t->convs.conversations_count, 1);
+  assert_int_equal(t->convs.conversations[0].id, t->a);
+  assert_true(strncmp(t->convs.conversations[0].latest, g_long,
+                      strlen(t->convs.conversations[0].latest)) == 0);
+  msgt_next(t);
+}
+
+static const msgt_step_t g_long_steps[] =
+{
+  long_send, long_read, long_list, long_end, NULL
+};
+
 static const msgt_step_t g_transport[] =
 {
   tr_deliver0, tr_register, tr_deliver1, tr_deliver2, tr_other, tr_nopeer,
@@ -1019,6 +1069,22 @@ static void test_messages_life(void **state)
 }
 
 /****************************************************************************
+ * Name: test_messages_long
+ *
+ * Description:
+ *   A text of the longest kind read back whole.
+ *
+ ****************************************************************************/
+
+static void test_messages_long(void **state)
+{
+  FAR struct msgt_s *t = msgt_new(64 * 1024, STORE_SEGMENT_MAX);
+
+  assert_int_equal(msgt_run(t, g_long_steps), 0);
+  msgt_free(t);
+}
+
+/****************************************************************************
  * Name: test_messages_transport
  *
  * Description:
@@ -1230,6 +1296,7 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test(test_messages_life),
+    cmocka_unit_test(test_messages_long),
     cmocka_unit_test(test_messages_transport),
     cmocka_unit_test(test_messages_full),
     cmocka_unit_test(test_messages_unfull),
