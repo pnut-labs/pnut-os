@@ -100,7 +100,8 @@ struct smsjoin_long_s
 
 struct smsjoin_done_s
 {
-  uint64_t hash;                    /* A part's sender, reference and text */
+  uint64_t hash;                    /* A part's sender, time stamp,
+                                     * reference and text */
   uint64_t when;                    /* Delivered then, in s */
 };
 
