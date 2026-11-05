@@ -36,6 +36,7 @@
 
 #define TELEPHONY_BOARD     "board"
 #define TELEPHONY_SERVICES  "services"
+#define TELEPHONY_MESSAGES  "messages"
 
 /****************************************************************************
  * Private Functions
@@ -133,6 +134,7 @@ int main(int argc, FAR char *argv[])
   memset(&tconfig, 0, sizeof(tconfig));
   tconfig.board     = TELEPHONY_BOARD;
   tconfig.services  = TELEPHONY_SERVICES;
+  tconfig.messages  = TELEPHONY_MESSAGES;
   tconfig.open_uart = telephony_open_uart;
   tconfig.open_line = telephony_open_line;
   tconfig.set_line  = telephony_set_line;

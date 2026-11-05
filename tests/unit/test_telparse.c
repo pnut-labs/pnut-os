@@ -200,12 +200,16 @@ static void test_telparse_state(void **state)
  *
  * Description:
  *   SMS in the modem's memory: the slot one was stored in, one listed,
- *   the length of one read; lines of other kinds, or broken, refused.
+ *   the length of one read, the memory's counts; lines of other kinds, or
+ *   broken, refused.
  *
  ****************************************************************************/
 
 static void test_telparse_sms(void **state)
 {
+  uint16_t used;
+  uint16_t total;
+
   assert_int_equal(tel_sms_slot("+CMTI: \"ME\",3"), 3);
   assert_int_equal(tel_sms_slot("+CMTI: \"SM\",12"), -ENODEV);
   assert_int_equal(tel_sms_slot("+CMTI: \"ME\",40000"), -EINVAL);
@@ -222,6 +226,19 @@ static void test_telparse_sms(void **state)
   assert_int_equal(tel_sms_length("+CMGR: 1,,0"), -EINVAL);
   assert_int_equal(tel_sms_length("+CMGR: 1,,300"), -EINVAL);
   assert_int_equal(tel_sms_length("+CSQ: 20,99"), -EINVAL);
+
+  assert_int_equal(tel_sms_memory("+CPMS: 2,50,2,50,2,50", &used, &total),
+                   0);
+  assert_int_equal(used, 2);
+  assert_int_equal(total, 50);
+  assert_int_equal(tel_sms_memory("+CPMS: \"ME\",0,255,\"ME\",0,255", &used,
+                                  &total), 0);
+  assert_int_equal(used, 0);
+  assert_int_equal(total, 255);
+  assert_int_equal(tel_sms_memory("+CPMS: 3,2", &used, &total), -EINVAL);
+  assert_int_equal(tel_sms_memory("+CPMS: 0,0", &used, &total), -EINVAL);
+  assert_int_equal(tel_sms_memory("+CPMS: x,50", &used, &total), -EINVAL);
+  assert_int_equal(tel_sms_memory("+CMGR: 2,50", &used, &total), -EINVAL);
 }
 
 /****************************************************************************

@@ -311,6 +311,11 @@ static void tel_untime(FAR struct telephony_s *tel)
 
 static void tel_step(FAR struct telephony_s *tel, uint8_t step)
 {
+  if (tel->step == STEP_ON && step != STEP_ON)
+    {
+      transport_gone(&tel->transport);
+    }
+
   tel->step  = step;
   tel->since = tel_now();
   tel_publish(tel);
@@ -1916,6 +1921,15 @@ static void tel_sim_state(FAR struct telephony_s *tel, int sim)
 {
   int was = tel->state.sim;
 
+  /* The SMS read once the SIM is ready, also after the modem started
+   * again, which leaves the SIM's state as it was
+   */
+
+  if (sim == PNUT_TELEPHONY_INFO_SIM_READY && tel->step == STEP_ON)
+    {
+      transport_ready(&tel->transport);
+    }
+
   if (sim < 0 || (sim == was && sim != PNUT_TELEPHONY_INFO_SIM_NEEDS_PIN))
     {
       return;
@@ -2230,6 +2244,10 @@ static void tel_registered(FAR struct telephony_s *tel)
       s->operator_name[0] = '\0';
       s->tech             = PNUT_TELEPHONY_INFO_TECH_NO_TECH;
     }
+
+  /* SMS wait for the network */
+
+  transport_kick(&tel->transport);
 }
 
 static void tel_refresh_done(FAR void *arg, int result,
@@ -2484,6 +2502,11 @@ static void tel_urc(FAR void *arg, FAR const char *line)
     }
 
   if (tel->step != STEP_ON)
+    {
+      return;
+    }
+
+  if (transport_urc(&tel->transport, line))
     {
       return;
     }
@@ -3565,6 +3588,8 @@ static int tel_start(FAR struct pnut_module_s *module,
         }
     }
 
+  transport_start(&tel->transport, loop);
+
   ret = pnut_board_connect(loop, tel->config.board, tel_board, tel,
                            &tel->board);
   if (ret < 0)
@@ -3621,6 +3646,7 @@ static void tel_stop(FAR struct pnut_module_s *module,
   FAR struct telephony_s *tel = (FAR struct telephony_s *)module;
   int i;
 
+  transport_stop(&tel->transport);
   tel_untime(tel);
   at_cancel(&tel->at, -ECANCELED);
 
@@ -3708,4 +3734,6 @@ void telephony_init(FAR struct telephony_s *tel,
     {
       tel->line[i] = -1;
     }
+
+  transport_init(&tel->transport, tel, config->messages, config->sms_tick);
 }
