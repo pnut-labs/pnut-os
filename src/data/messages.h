@@ -42,6 +42,7 @@
 #define MESSAGES_RETRY     30000       /* ms before the store is read again,
                                         * when it could not be */
 #define MESSAGES_PUSH_MS   200         /* A hand-over with no room, again */
+#define MESSAGES_HAND_MS   10000       /* One that could not be planned */
 
 /****************************************************************************
  * Public Types
@@ -181,6 +182,10 @@ struct messages_s
   bool pushing;                   /* handing waits for room to go */
   char pushing_to[65];            /* to this transport */
   FAR struct pnut_timer_s *push;  /* Until it tries again */
+
+  /* Until a hand-over that could not be planned is tried again */
+
+  FAR struct pnut_timer_s *hand_later;
   FAR struct pnut_timer_s *retry; /* Until the store is read again */
   uint8_t retries;                /* Loads failed in a row */
   struct messages_job_s current;
