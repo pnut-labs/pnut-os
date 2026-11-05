@@ -394,15 +394,33 @@ int store_conversations(FAR struct store_s *store, uint64_t after,
  *
  * Returned Value:
  *   Zero (OK); -ENOENT for no such conversation, or no such message.
+ *   store_plan_one() plans the one message (deleted ones not).
  *
  ****************************************************************************/
 
 int store_plan_page(FAR struct store_s *store, uint64_t conversation,
                     uint64_t after, FAR struct store_read_s *r,
                     FAR bool *more);
+int store_plan_one(FAR struct store_s *store, uint64_t conversation,
+                   uint64_t message, FAR struct store_read_s *r);
 void store_read_run(FAR struct store_read_s *r);
 int store_page(FAR struct store_s *store, FAR const struct store_read_s *r,
                FAR pnut_messages_page_t *out);
+
+/****************************************************************************
+ * Name: store_oldest_queued
+ *
+ * Description:
+ *   The oldest message queued for a transport, among all its
+ *   conversations: the next to hand over.
+ *
+ * Returned Value:
+ *   Zero (OK), with its conversation and id; -ENOENT for none.
+ *
+ ****************************************************************************/
+
+int store_oldest_queued(FAR struct store_s *store, FAR const char *transport,
+                        FAR uint64_t *conversation, FAR uint64_t *message);
 
 /****************************************************************************
  * Name: store_plan_latest, store_latest

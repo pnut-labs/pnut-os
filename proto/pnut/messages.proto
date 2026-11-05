@@ -65,8 +65,19 @@ service Messages {
     option (pnut.method) = 7;
   }
 
-  // Methods 8 and 9 are kept for Take and Report, the queue sent to a
-  // transport and its statuses, which come with the streams
+  // A transport takes its queue, oldest first, as it gives credit, on
+  // the connection it registered on.  Each message is written as sending
+  // before it is handed over, so none is handed over twice, even across a
+  // reset.  A newer Take replaces the transport's stream.
+  rpc Take (MessagesTakeRequest) returns (stream MessagesQueued) {
+    option (pnut.method) = 8;
+  }
+
+  // A message's status, as its transport learns it: sent, delivered, or
+  // failed with the network's reason.  A deleted message is not found.
+  rpc Report (MessagesReportRequest) returns (MessagesReply) {
+    option (pnut.method) = 9;
+  }
 }
 
 // The detail of an error answer (pnut.Error's code)
@@ -185,6 +196,24 @@ message MessagesDeliverRequest {
   int64 sent = 4;                 // When the network says it was sent; 0
   string key = 5 [(nanopb).max_size = 65];       // Names it on its network:
                                                  // stored once for each key
+}
+
+message MessagesTakeRequest {
+}
+
+// A queued message, handed over to its transport
+message MessagesQueued {
+  uint64 conversation = 1;
+  uint64 message = 2;
+  string peer = 3 [(nanopb).max_size = 33];
+  string text = 4 [(nanopb).max_size = 1531];
+}
+
+message MessagesReportRequest {
+  uint64 conversation = 1;
+  uint64 message = 2;
+  MessagesMessage.Status status = 3;            // SENT, DELIVERED, FAILED
+  string reason = 4 [(nanopb).max_size = 65];   // A failure's
 }
 
 message MessagesDelivered {

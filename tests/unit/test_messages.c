@@ -78,6 +78,15 @@ struct msgt_s
   int changes_seen;
   pnut_messages_change_t change;
   int sends;
+
+  /* Take: events (answers and items) a step waits for, and the items */
+
+  int waits;
+  uint16_t sno;
+  int take_open;
+  int take_end;
+  int taken;
+  pnut_messages_queued_t items[4];
 };
 
 /****************************************************************************
@@ -135,7 +144,50 @@ static void msgt_got(FAR struct msgt_s *t, int status,
 {
   t->status = status;
   t->code   = err != NULL ? err->code : 0;
+  if (t->waits > 1)
+    {
+      t->waits--;
+      return;
+    }
+
+  t->waits = 0;
   msgt_next(t);
+}
+
+/* Take's items: kept; a step waiting for them goes on */
+
+static void msgt_take_opened(FAR struct pnut_messages_client_s *client,
+                             int status, FAR const pnut_error_t *err,
+                             FAR void *arg)
+{
+  FAR struct msgt_s *t = arg;
+
+  t->take_open = status;
+}
+
+static void msgt_taken(FAR struct pnut_messages_client_s *client,
+                       int status, FAR const pnut_messages_queued_t *item,
+                       FAR void *arg)
+{
+  FAR struct msgt_s *t = arg;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      t->take_end = status;
+      return;
+    }
+
+  t->items[t->taken % 4] = *item;
+  t->taken++;
+  if (t->waits > 1)
+    {
+      t->waits--;
+    }
+  else if (t->waits == 1)
+    {
+      t->waits = 0;
+      msgt_next(t);
+    }
 }
 
 static void msgt_convs_done(FAR struct pnut_messages_client_s *client,
@@ -248,6 +300,20 @@ static void msgt_deliver(FAR struct msgt_s *t,
   in.sent = 1000;
   assert_int_equal(pnut_messages_deliver(client, &in, 0,
                                          msgt_delivered_done, t), 0);
+}
+
+static void msgt_report(FAR struct msgt_s *t,
+                        FAR struct pnut_messages_client_s *client,
+                        uint64_t message, int status, FAR const char *why)
+{
+  pnut_messages_report_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.conversation = t->a;
+  in.message      = message;
+  in.status       = status;
+  strlcpy(in.reason, why, sizeof(in.reason));
+  assert_int_equal(pnut_messages_report(client, &in, 0, msgt_done, t), 0);
 }
 
 static void msgt_convs(FAR struct msgt_s *t)
@@ -616,6 +682,159 @@ static void tr_again_end(FAR struct msgt_s *t)
 static const msgt_step_t g_transport_again[] =
 {
   tr_again_register, tr_again_deliver, tr_again_end, NULL
+};
+
+/* Take: the queue handed over oldest first, as credit comes; statuses
+ * reported; a send taken at once
+ */
+
+static void tk_reg(FAR struct msgt_s *t)
+{
+  t->take_open = -1;
+  t->take_end  = -1;
+  msgt_register(t, &t->client, "sms");
+}
+
+static void tk_send1(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_send(t, "+7", "first");
+}
+
+static void tk_take(FAR struct msgt_s *t)
+{
+  pnut_messages_take_request_t in;
+
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  memset(&in, 0, sizeof(in));
+  t->waits = 1;
+  assert_int_equal(pnut_messages_take(&t->client, &in, 1, 0,
+                                      msgt_take_opened, msgt_taken, t,
+                                      &t->sno), 0);
+}
+
+static void tk_got1(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->take_open, PNUT_STATUS_OK);
+  assert_int_equal(t->taken, 1);
+  assert_string_equal(t->items[0].text, "first");
+  assert_string_equal(t->items[0].peer, "+7");
+  t->a      = t->items[0].conversation;
+  t->second = t->items[0].message;
+  msgt_send(t, "+7", "second");
+}
+
+static void tk_nocredit(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_wait(t);
+}
+
+static void tk_credit(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->taken, 1);  /* No credit, nothing handed over */
+  t->waits = 1;
+  assert_int_equal(pnut_messages_take_credit(&t->client, t->sno, 1), 0);
+}
+
+static void tk_got2(FAR struct msgt_s *t)
+{
+  assert_string_equal(t->items[1].text, "second");
+  msgt_report(t, &t->client, t->second, PNUT_MESSAGES_MESSAGE_STATUS_SENT,
+              "");
+}
+
+static void tk_rep2(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_report(t, &t->client, t->items[1].message,
+              PNUT_MESSAGES_MESSAGE_STATUS_FAILED, "no network");
+}
+
+static void tk_rep_bad(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  msgt_report(t, &t->client, 999, PNUT_MESSAGES_MESSAGE_STATUS_SENT, "");
+}
+
+static void tk_rep_other(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_NOTFOUND);
+  msgt_report(t, &t->other, t->second, PNUT_MESSAGES_MESSAGE_STATUS_SENT,
+              "");
+}
+
+static void tk_read(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_DENIED);
+  assert_int_equal(t->code, PNUT_MESSAGES_ERROR_CODE_UNREGISTERED);
+  msgt_read(t, t->a);
+}
+
+static void tk_atonce(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_int_equal(t->page.messages_count, 2);
+  assert_string_equal(t->page.messages[0].text, "second");
+  assert_int_equal(t->page.messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_FAILED);
+  assert_string_equal(t->page.messages[0].reason, "no network");
+  assert_int_equal(t->page.messages[1].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_SENT);
+
+  /* Credit, nothing queued: a send goes at once, answered and handed
+   * over
+   */
+
+  assert_int_equal(pnut_messages_take_credit(&t->client, t->sno, 1), 0);
+  t->waits = 2;
+  msgt_send(t, "+7", "third");
+}
+
+static void tk_check(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_int_equal(t->taken, 3);
+  assert_string_equal(t->items[2].text, "third");
+  msgt_read(t, t->a);
+}
+
+static void tk_end(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_string_equal(t->page.messages[0].text, "third");
+  assert_int_equal(t->page.messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_SENDING);
+  assert_int_equal(t->take_end, -1);
+  msgt_next(t);
+}
+
+static const msgt_step_t g_take[] =
+{
+  tk_reg, tk_send1, tk_take, tk_got1, tk_nocredit, tk_credit, tk_got2,
+  tk_rep2, tk_rep_bad, tk_rep_other, tk_read, tk_atonce, tk_check, tk_end,
+  NULL
+};
+
+/* After a restart: the one left sending is not known to be sent */
+
+static void tk_again_read(FAR struct msgt_s *t)
+{
+  msgt_read(t, t->a);
+}
+
+static void tk_again_end(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_string_equal(t->page.messages[0].text, "third");
+  assert_int_equal(t->page.messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_UNCONFIRMED);
+  msgt_next(t);
+}
+
+static const msgt_step_t g_take_again[] =
+{
+  tk_again_read, tk_again_end, NULL
 };
 
 /* A store too small for unread messages, which never go to make room:
@@ -1049,6 +1268,27 @@ static void test_messages_transport(void **state)
 }
 
 /****************************************************************************
+ * Name: test_messages_take
+ *
+ * Description:
+ *   A transport takes its queue: the oldest first, one for each credit
+ *   and none without; each written as sending before it goes; statuses
+ *   reported, a failure with its reason, an unknown message not found,
+ *   another connection refused; a send taken at once; after a restart
+ *   the one left sending is not known to be sent.
+ *
+ ****************************************************************************/
+
+static void test_messages_take(void **state)
+{
+  FAR struct msgt_s *t = msgt_new(64 * 1024, STORE_SEGMENT_MAX);
+
+  assert_int_equal(msgt_run(t, g_take), 0);
+  assert_int_equal(msgt_run(t, g_take_again), 0);
+  msgt_free(t);
+}
+
+/****************************************************************************
  * Name: test_messages_full
  *
  * Description:
@@ -1231,6 +1471,7 @@ int main(void)
   {
     cmocka_unit_test(test_messages_life),
     cmocka_unit_test(test_messages_transport),
+    cmocka_unit_test(test_messages_take),
     cmocka_unit_test(test_messages_full),
     cmocka_unit_test(test_messages_unfull),
     cmocka_unit_test(test_messages_retry),
