@@ -206,9 +206,13 @@ static void tr_at(FAR struct transport_s *tr, FAR const char *command,
  *
  * Description:
  *   The answer to what is out, unless the modem went since it was sent:
- *   then it is left aside.  A delivery stays out across the modem's going
- *   (Messages answers it all the same), so that its late answer is never
- *   taken for a newer one's.
+ *   then it is left aside.  A delivery is still waited for when the modem
+ *   goes (transport_gone() leaves it busy), so that no newer one is sent
+ *   before Messages answers it, and its late answer is never taken for a
+ *   newer one's; that answer is then left aside here, and the message,
+ *   read again from the modem once it is back, is delivered again
+ *   (Messages stores it once, by its key).  A report's answer is taken
+ *   whatever the modem did (tr_reported() does not come here).
  *
  ****************************************************************************/
 
