@@ -70,7 +70,48 @@ struct pnut_request_s
   pid_t pid;                      /* The caller, from SO_PEERCRED */
   uid_t uid;
   gid_t gid;
+  uint16_t credit;                /* A stream's first items, at most */
   uint16_t reserve;               /* The library's: room kept to answer */
+};
+
+/* A stream a method answers with (RFC 0004, RFC 0005): once accepted, its
+ * items go to the caller as the caller's credit allows, until either end
+ * ends it or the connection goes.  The module keeps it, zeroed before its
+ * first use; the library links it to the service while it is open.
+ */
+
+struct pnut_stream_s;
+
+/* Called on the loop when credit came (push more), and when the stream is
+ * over: the caller ended it, or its connection went; then the stream is
+ * the module's again, unlinked.  A connection that fails while the
+ * module sends to it (a push, an answer, an event) calls closed from
+ * inside that call.  An open stream keeps room for its end, which
+ * therefore always goes.
+ */
+
+typedef CODE void (*pnut_stream_ready_t)(FAR struct pnut_stream_s *stream,
+                                         FAR void *arg);
+typedef CODE void (*pnut_stream_closed_t)(FAR struct pnut_stream_s *stream,
+                                          int status, FAR void *arg);
+
+struct pnut_stream_s
+{
+  struct pnut_endpoint_s to;
+  uint16_t iface;
+  uint16_t method;
+  uint8_t mversion;
+  uint16_t seq;
+  uint16_t credit;                /* Items it may push now */
+  bool open;
+  pnut_stream_ready_t ready;
+  pnut_stream_closed_t closed;
+  FAR void *arg;
+
+  /* The library's */
+
+  FAR struct pnut_service_s *service;
+  FAR struct pnut_stream_s *next;
 };
 
 /* Called on the loop for a request.  It answers with pnut_reply(), now or
@@ -184,5 +225,63 @@ int pnut_reply(FAR const struct pnut_request_s *req, int status,
 
 int pnut_event(FAR const struct pnut_endpoint_s *to, uint16_t iface,
                uint16_t method, FAR const void *payload, uint16_t len);
+
+/****************************************************************************
+ * Name: pnut_stream_accept
+ *
+ * Description:
+ *   Answer a request with a stream: an OK answer, with no body, and the
+ *   stream open with the credit the request gave.
+ *
+ * Input Parameters:
+ *   service - The request's service.
+ *   req     - The request.
+ *   stream  - The stream, kept by the module while it is open.
+ *   ready   - Called when credit comes, or NULL.
+ *   closed  - Called when the stream is over but not by the module, or
+ *             NULL.
+ *   arg     - Passed to both.
+ *
+ * Returned Value:
+ *   As pnut_reply(), and -EBUSY for a stream still open; the stream is
+ *   open only on success.
+ *
+ ****************************************************************************/
+
+int pnut_stream_accept(FAR struct pnut_service_s *service,
+                       FAR const struct pnut_request_s *req,
+                       FAR struct pnut_stream_s *stream,
+                       pnut_stream_ready_t ready,
+                       pnut_stream_closed_t closed, FAR void *arg);
+
+/****************************************************************************
+ * Name: pnut_stream_push
+ *
+ * Description:
+ *   An item to the caller, for one of its credit.
+ *
+ * Returned Value:
+ *   Zero (OK); -EAGAIN with no credit left, until ready is called;
+ *   -EBUSY when the send buffer has no room beside what is kept for
+ *   answers, which nothing announces: try again later; -EMSGSIZE;
+ *   -ENOTCONN when the stream is over, which the stream then is,
+ *   unlinked; another negated errno value if the connection failed while
+ *   sending, and then closed has been called.
+ *
+ ****************************************************************************/
+
+int pnut_stream_push(FAR struct pnut_stream_s *stream,
+                     FAR const void *payload, uint16_t len);
+
+/****************************************************************************
+ * Name: pnut_stream_end
+ *
+ * Description:
+ *   End a stream: the caller is told the status, PNUT_STATUS_ENDED when
+ *   it simply ends.  The stream is unlinked, and closed is not called.
+ *
+ ****************************************************************************/
+
+void pnut_stream_end(FAR struct pnut_stream_s *stream, int status);
 
 #endif /* __PNUT_OS_LIB_PNUT_SERVICE_H */

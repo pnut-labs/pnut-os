@@ -28,6 +28,7 @@ static FAR const char * const g_status[] =
   "unavailable",
   "timeout",
   "internal",
+  "ended",
 };
 
 /****************************************************************************
@@ -60,7 +61,7 @@ void pnut_msg_encode(FAR const struct pnut_msghdr_s *hdr, FAR uint8_t *buf)
   put16(&buf[8], hdr->seq);
   put16(&buf[10], hdr->len);
   put16(&buf[12], hdr->app);
-  put16(&buf[14], hdr->reserved);
+  put16(&buf[14], hdr->credit);
 }
 
 int pnut_msg_decode(FAR const uint8_t *buf, FAR struct pnut_msghdr_s *hdr)
@@ -74,7 +75,7 @@ int pnut_msg_decode(FAR const uint8_t *buf, FAR struct pnut_msghdr_s *hdr)
   hdr->seq      = get16(&buf[8]);
   hdr->len      = get16(&buf[10]);
   hdr->app      = get16(&buf[12]);
-  hdr->reserved = get16(&buf[14]);
+  hdr->credit   = get16(&buf[14]);
 
   if (hdr->version != PNUT_MSG_VERSION ||
       hdr->kind < PNUT_KIND_REQUEST || hdr->kind > PNUT_KIND_STREAM ||

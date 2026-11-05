@@ -19,7 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 
 #include <cmocka.h>
 
@@ -57,6 +59,29 @@ struct fixture_s
   pnut_test_say_reply_t out[PNUT_CLIENT_INFLIGHT + 2];
   bool detail[PNUT_CLIENT_INFLIGHT + 2];
   pnut_error_t err[PNUT_CLIENT_INFLIGHT + 2];
+
+  /* Ticks: the server's stream, and what the client saw of it */
+
+  struct pnut_stream_s stream;
+  uint32_t total;                 /* Ticks asked for */
+  uint32_t sent;
+  bool closed;                    /* The server was told it is over */
+  int closed_status;
+  uint16_t credit;                /* The client's first */
+  uint16_t give;                  /* It gives one more after each tick */
+  uint32_t cancel_after;          /* Ticks, then it cancels; 0 never */
+  uint32_t drop_after;            /* Ticks, then it disconnects; 0 never */
+  uint32_t end_after;             /* Ticks, then the server fails it */
+  uint16_t sno;                   /* The stream's number */
+  int opened;                     /* Its opening answer; -1 none yet */
+  bool opened_detail;
+  uint32_t got;
+  uint32_t numbers[16];
+  int ended;                      /* Its end's status; -1 none yet */
+  bool cancel_gone;               /* It cancels after the service went */
+  int cancel_ret;
+  int raw;                        /* A caller of the test's own */
+  bool raw_request;               /* It asks, rather than gives credit */
 };
 
 /****************************************************************************
@@ -196,6 +221,177 @@ static const struct pnut_test_echo_handlers_s g_all =
   .say   = on_say,
   .count = on_count,
 };
+
+/* The server's Ticks: as many as asked for, as credit allows, then the
+ * end
+ */
+
+static void ticks_push(FAR struct fixture_s *f)
+{
+  pnut_test_ticked_t out = PNUT_TEST_TICKED_INIT_ZERO;
+  int ret;
+
+  while (f->stream.open && f->sent < f->total)
+    {
+      if (f->end_after > 0 && f->sent == f->end_after)
+        {
+          pnut_stream_end(&f->stream, PNUT_STATUS_INTERNAL);
+          return;
+        }
+
+      out.number = f->sent + 1;
+      ret = pnut_test_echo_ticks_push(&f->server, &f->stream, &out);
+      if (ret == -EAGAIN)
+        {
+          return;                 /* Until credit comes */
+        }
+
+      assert_int_equal(ret, 0);
+      f->sent++;
+    }
+
+  if (f->stream.open)
+    {
+      pnut_stream_end(&f->stream, PNUT_STATUS_OK);
+    }
+}
+
+static void ticks_ready(FAR struct pnut_stream_s *stream, FAR void *arg)
+{
+  ticks_push(arg);
+}
+
+static void ticks_closed(FAR struct pnut_stream_s *stream, int status,
+                         FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  assert_false(stream->open);
+  f->closed        = true;
+  f->closed_status = status;
+  pnut_loop_stop(f->loop, 0);
+}
+
+static void on_ticks(FAR struct pnut_test_echo_server_s *server,
+                     FAR const struct pnut_request_s *req,
+                     FAR const pnut_test_ticks_request_t *in, FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  if (f->failwith != PNUT_STATUS_OK)
+    {
+      assert_int_equal(pnut_test_echo_fail(server, req, f->failwith, 4,
+                                           "no ticks"), 0);
+      return;
+    }
+
+  f->total = in->count;
+  assert_int_equal(pnut_test_echo_ticks_accept(server, req, &f->stream,
+                                               ticks_ready, ticks_closed, f),
+                   0);
+  ticks_push(f);
+}
+
+static const struct pnut_test_echo_handlers_s g_ticks =
+{
+  .say   = on_say,
+  .ticks = on_ticks,
+};
+
+/* The client's side of Ticks */
+
+static void ticks_opened(FAR struct pnut_test_echo_client_s *client,
+                         int status, FAR const pnut_error_t *err,
+                         FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  f->opened        = status;
+  f->opened_detail = err != NULL;
+  if (status != PNUT_STATUS_OK)
+    {
+      pnut_loop_stop(f->loop, 0);
+    }
+}
+
+static void ticks_item(FAR struct pnut_test_echo_client_s *client,
+                       int status, FAR const pnut_test_ticked_t *item,
+                       FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      assert_null(item);
+      f->ended = status;
+      pnut_loop_stop(f->loop, 0);
+      return;
+    }
+
+  assert_non_null(item);
+  assert_int_equal(f->ended, -1);
+  if (f->got < 16)
+    {
+      f->numbers[f->got] = item->number;
+    }
+
+  f->got++;
+  if (f->cancel_gone)
+    {
+      pnut_test_echo_close(&f->server);
+      f->cancel_ret = pnut_test_echo_ticks_cancel(client, f->sno);
+      pnut_loop_stop(f->loop, 0);
+      return;
+    }
+
+  if (f->cancel_after > 0 && f->got == f->cancel_after)
+    {
+      assert_int_equal(pnut_test_echo_ticks_cancel(client, f->sno), 0);
+      return;
+    }
+
+  if (f->drop_after > 0 && f->got == f->drop_after)
+    {
+      pnut_test_echo_disconnect(client);
+      return;
+    }
+
+  if (f->give > 0)
+    {
+      assert_int_equal(pnut_test_echo_ticks_credit(client, f->sno, f->give),
+                       0);
+    }
+}
+
+static void ticks_state(FAR struct pnut_test_echo_client_s *client, bool up,
+                        FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+  pnut_test_ticks_request_t in = PNUT_TEST_TICKS_REQUEST_INIT_ZERO;
+
+  if (up && f->opened == -1)
+    {
+      in.count = f->total;
+      assert_int_equal(pnut_test_echo_ticks(client, &in, f->credit, 0,
+                                            ticks_opened, ticks_item, f,
+                                            &f->sno), 0);
+    }
+}
+
+/* Serve Ticks, and set the client's part */
+
+static void ticks_setup(FAR struct fixture_s *f, uint32_t total,
+                        uint16_t credit, uint16_t give)
+{
+  pnut_test_echo_close(&f->server);
+  assert_int_equal(pnut_test_echo_serve(f->loop, "echo", 0, &g_ticks, f,
+                                        &f->server), 0);
+  f->total  = total;
+  f->credit = credit;
+  f->give   = give;
+  f->opened = -1;
+  f->ended  = -1;
+}
 
 static void on_said(FAR struct pnut_test_echo_client_s *client,
                     int status, FAR const pnut_test_say_reply_t *out,
@@ -590,6 +786,281 @@ static void test_gen_fail_junk(void **state)
   pnut_service_close(junk);
 }
 
+/* Streams: five ticks, with credit for two at first and one more after
+ * each: all come, in order, then the end
+ */
+
+static void test_gen_stream(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  uint32_t i;
+
+  ticks_setup(f, 5, 2, 1);
+  run(f, ticks_state, 1);
+  assert_int_equal(f->opened, PNUT_STATUS_OK);
+  assert_int_equal(f->got, 5);
+  for (i = 0; i < 5; i++)
+    {
+      assert_int_equal(f->numbers[i], i + 1);
+    }
+
+  assert_int_equal(f->ended, PNUT_STATUS_ENDED);
+  assert_false(f->stream.open);
+  assert_false(f->closed);
+}
+
+/* No credit, no ticks: a stream opened with none stays open and silent;
+ * opened with three, three come and no more
+ */
+
+static void test_gen_stream_credit(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  ticks_setup(f, 5, 0, 0);
+  run(f, ticks_state, 0);
+  assert_int_equal(f->opened, PNUT_STATUS_OK);
+  assert_int_equal(f->got, 0);
+  assert_int_equal(f->sent, 0);
+  assert_true(f->stream.open);
+  assert_int_equal(f->ended, -1);
+}
+
+static void test_gen_stream_some(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  ticks_setup(f, 5, 3, 0);
+  run(f, ticks_state, 0);
+  assert_int_equal(f->opened, PNUT_STATUS_OK);
+  assert_int_equal(f->got, 3);
+  assert_int_equal(f->sent, 3);
+  assert_true(f->stream.open);
+  assert_int_equal(f->ended, -1);
+}
+
+/* The client cancels after two ticks: the server is told, and nothing
+ * more comes to the client
+ */
+
+static void test_gen_stream_cancel(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  ticks_setup(f, 10, 2, 1);
+  f->cancel_after = 2;
+  run(f, ticks_state, 1);
+  assert_true(f->closed);
+  assert_int_equal(f->closed_status, PNUT_STATUS_ENDED);
+  assert_int_equal(f->got, 2);
+  assert_int_equal(f->ended, -1);
+  assert_false(f->stream.open);
+}
+
+/* The client goes after one tick: the server's stream is over,
+ * unavailable
+ */
+
+static void test_gen_stream_gone(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  ticks_setup(f, 10, 2, 1);
+  f->drop_after = 1;
+  run(f, ticks_state, 1);
+  assert_true(f->closed);
+  assert_int_equal(f->closed_status, PNUT_STATUS_UNAVAILABLE);
+  assert_false(f->stream.open);
+}
+
+/* The server fails a stream after two ticks: the client is told */
+
+static void test_gen_stream_failed(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  ticks_setup(f, 10, 5, 0);
+  f->end_after = 2;
+  run(f, ticks_state, 1);
+  assert_int_equal(f->got, 2);
+  assert_int_equal(f->ended, PNUT_STATUS_INTERNAL);
+  assert_false(f->closed);
+  assert_false(f->stream.open);
+}
+
+/* A stream refused, with a detail: its opening answer says so, no item
+ * comes, and its call is free again
+ */
+
+static void test_gen_stream_refused(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  int i;
+
+  ticks_setup(f, 3, 1, 1);
+  f->failwith = PNUT_STATUS_DENIED;
+  run(f, ticks_state, 1);
+  assert_int_equal(f->opened, PNUT_STATUS_DENIED);
+  assert_true(f->opened_detail);
+  assert_int_equal(f->got, 0);
+  assert_int_equal(f->ended, -1);
+  for (i = 0; i < PNUT_CLIENT_INFLIGHT; i++)
+    {
+      assert_false(f->client.calls[i].used);
+    }
+}
+
+/* A cancel that cannot be sent, the service gone: the stream is over
+ * here all the same, its call free
+ */
+
+static void test_gen_stream_cancel_gone(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  int i;
+
+  ticks_setup(f, 10, 1, 0);
+  f->cancel_gone = true;
+  run(f, ticks_state, 1);
+  assert_int_equal(f->got, 1);
+  for (i = 0; i < PNUT_CLIENT_INFLIGHT; i++)
+    {
+      assert_false(f->client.calls[i].used);
+    }
+}
+
+/* A caller that goes while the service answers it, a stream's closed
+ * handler closing the service from inside that answer: nothing of the
+ * service is used after (the reviewer's reproductions, ASan's to judge)
+ */
+
+static void raw_closed(FAR struct pnut_stream_s *stream, int status,
+                       FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  f->closed        = true;
+  f->closed_status = status;
+  pnut_test_echo_close(&f->server);
+}
+
+static void raw_ticks(FAR struct pnut_test_echo_server_s *server,
+                      FAR const struct pnut_request_s *req,
+                      FAR const pnut_test_ticks_request_t *in, FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  assert_int_equal(pnut_test_echo_ticks_accept(server, req, &f->stream,
+                                               NULL, raw_closed, f), 0);
+}
+
+static const struct pnut_test_echo_handlers_s g_raw =
+{
+  .ticks = raw_ticks,
+};
+
+static void raw_send(int fd, uint8_t kind, uint16_t method, uint16_t seq,
+                     uint16_t credit, FAR const uint8_t *body, uint16_t len)
+{
+  struct pnut_msghdr_s hdr;
+  uint8_t buf[PNUT_MSG_HEADER + 8];
+
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.version  = PNUT_MSG_VERSION;
+  hdr.kind     = kind;
+  hdr.iface    = PNUT_TEST_ECHO_IFACE;
+  hdr.method   = method;
+  hdr.mversion = 1;
+  hdr.seq      = seq;
+  hdr.len      = len;
+  hdr.credit   = credit;
+  pnut_msg_encode(&hdr, buf);
+  if (len > 0)
+    {
+      memcpy(buf + PNUT_MSG_HEADER, body, len);
+    }
+
+  assert_int_equal(write(fd, buf, PNUT_MSG_HEADER + len),
+                   PNUT_MSG_HEADER + len);
+}
+
+static void raw_open(FAR struct pnut_loop_s *loop,
+                     FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+  static const uint8_t count[] =
+  {
+    0x08, 0x05                    /* count = 5 */
+  };
+
+  struct sockaddr_un addr;
+
+  f->raw = socket(AF_UNIX, SOCK_STREAM, 0);
+  assert_true(f->raw >= 0);
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/echo", f->rundir);
+  assert_int_equal(connect(f->raw, (FAR struct sockaddr *)&addr,
+                           sizeof(addr)), 0);
+  raw_send(f->raw, PNUT_KIND_REQUEST, PNUT_TEST_ECHO_TICKS, 1, 0, count,
+           sizeof(count));
+}
+
+static void raw_leave(FAR struct pnut_loop_s *loop,
+                      FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+  struct pnut_msghdr_s hdr;
+  uint8_t buf[PNUT_MSG_HEADER];
+
+  assert_int_equal(read(f->raw, buf, sizeof(buf)), PNUT_MSG_HEADER);
+  assert_int_equal(pnut_msg_decode(buf, &hdr), 0);
+  assert_int_equal(hdr.kind, PNUT_KIND_REPLY);
+  assert_int_equal(hdr.status, PNUT_STATUS_OK);
+
+  /* Something the service answers, then gone before the answer */
+
+  if (f->raw_request)
+    {
+      raw_send(f->raw, PNUT_KIND_REQUEST, 77, 2, 0, NULL, 0);
+    }
+  else
+    {
+      raw_send(f->raw, PNUT_KIND_STREAM, PNUT_TEST_ECHO_TICKS, 999, 1,
+               NULL, 0);
+    }
+
+  close(f->raw);
+  f->raw = -1;
+}
+
+static void raw_run(FAR struct fixture_s *f, bool request)
+{
+  pnut_test_echo_close(&f->server);
+  assert_int_equal(pnut_test_echo_serve(f->loop, "echo", 0, &g_raw, f,
+                                        &f->server), 0);
+  f->raw_request = request;
+  assert_int_equal(pnut_timer_start(f->loop, 0, 0, raw_open, f, NULL), 0);
+  assert_int_equal(pnut_timer_start(f->loop, 150, 0, raw_leave, f, NULL),
+                   0);
+  assert_int_equal(pnut_timer_start(f->loop, 400, 0, stop_timer, NULL,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(f->loop), 0);
+  assert_true(f->closed);
+  assert_int_equal(f->closed_status, PNUT_STATUS_UNAVAILABLE);
+  assert_false(f->stream.open);
+}
+
+static void test_gen_stream_closing(void **state)
+{
+  raw_run(*state, false);
+}
+
+static void test_gen_stream_closing_answer(void **state)
+{
+  raw_run(*state, true);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -609,6 +1080,20 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_gen_fail_bare, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_fail_long, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_fail_junk, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_credit, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_some, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_cancel, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_gone, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_failed, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_refused, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_cancel_gone, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_closing, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_closing_answer, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("gen", tests, NULL, NULL);
