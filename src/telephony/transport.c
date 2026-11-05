@@ -51,6 +51,7 @@
 #define TR_TEXT_MAX     (sizeof(((FAR pnut_messages_deliver_request_t *)0) \
                                 ->text) - 1)
 #define TR_STORAGE      "AT+CPMS=\"ME\",\"ME\",\"ME\""
+#define TR_SEND_MS      60000       /* A part's AT+CMGS, network and all */
 
 /****************************************************************************
  * Private Types
@@ -65,7 +66,9 @@ enum transport_what_e
   TR_READ,                        /* AT+CMGR */
   TR_DROP,                        /* AT+CMGD, of one slot to forget */
   TR_DELIVER,                     /* To Messages */
-  TR_DELETE                       /* AT+CMGD, of a delivered one's slot */
+  TR_DELETE,                      /* AT+CMGD, of a delivered one's slot */
+  TR_SEND,                        /* AT+CMGS, a part of out */
+  TR_REPORT                       /* out's status, to Messages */
 };
 
 /****************************************************************************
@@ -739,6 +742,305 @@ static void tr_delete(FAR struct transport_s *tr)
 }
 
 /****************************************************************************
+ * Name: tr_network
+ *
+ * Description:
+ *   Whether the modem has the network: then SMS can go.
+ *
+ ****************************************************************************/
+
+static bool tr_network(FAR struct transport_s *tr)
+{
+  uint32_t reg = tr->tel->state.registration;
+
+  return !tr->tel->airplane &&
+         (reg == PNUT_TELEPHONY_INFO_REGISTRATION_HOME ||
+          reg == PNUT_TELEPHONY_INFO_REGISTRATION_ROAMING);
+}
+
+/****************************************************************************
+ * Name: tr_report, tr_reported
+ *
+ * Description:
+ *   The message out reported to Messages: sent, or failed with why.  Then
+ *   the next may be taken.  Not taken by Messages, it stays sending there,
+ *   not known to be sent after its next start.
+ *
+ ****************************************************************************/
+
+static void tr_reported(FAR struct pnut_messages_client_s *client,
+                        int status, FAR const pnut_messages_reply_t *out,
+                        FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct transport_s *tr = arg;
+
+  /* Messages' answer, whatever the modem did meanwhile */
+
+  if (!tr->busy || tr->what != TR_REPORT)
+    {
+      return;
+    }
+
+  tr->busy = false;
+  tr->what = TR_NONE;
+
+  /* Messages away, slow or busy: reported again, once it is back or in a
+   * moment (a status given twice is taken once)
+   */
+
+  if (status == PNUT_STATUS_UNAVAILABLE || status == PNUT_STATUS_TIMEOUT ||
+      status == PNUT_STATUS_BUSY)
+    {
+      pnut_log(&tr->tel->module, PNUT_LOG_INFO,
+               "An SMS's status not taken yet: %d", status);
+      if (status != PNUT_STATUS_UNAVAILABLE)
+        {
+          tr_later(tr, TR_LATER_MS);
+        }
+
+      return;
+    }
+
+  if (status != PNUT_STATUS_OK)
+    {
+      pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
+               "Messages did not take an SMS's status: %d", status);
+    }
+
+  tr->reporting = false;
+  tr->sending   = false;
+  tr->lost      = false;
+  tr_next(tr);
+}
+
+static void tr_report_send(FAR struct transport_s *tr)
+{
+  int ret;
+
+  tr->busy     = true;
+  tr->what     = TR_REPORT;
+  tr->sent_gen = tr->gen;
+  ret = pnut_messages_report(&tr->messages, &tr->report, TR_DELIVER_MS,
+                             tr_reported, tr);
+  if (ret < 0)
+    {
+      tr->busy = false;
+      tr->what = TR_NONE;
+      tr_later(tr, TR_LATER_MS);
+    }
+}
+
+static void tr_report(FAR struct transport_s *tr, int status,
+                      FAR const char *why)
+{
+  FAR pnut_messages_report_request_t *in = &tr->report;
+
+  memset(in, 0, sizeof(*in));
+  in->conversation = tr->out.conversation;
+  in->message      = tr->out.message;
+  in->status       = status;
+  strlcpy(in->reason, why, sizeof(in->reason));
+  tr->reporting = true;
+  tr_report_send(tr);
+}
+
+/****************************************************************************
+ * Name: tr_send, tr_sent
+ *
+ * Description:
+ *   The message out, a part at a time: AT+CMGS with the part's PDU after
+ *   the modem's prompt.  A part that fails ends it, failed with the
+ *   modem's word; a modem gone with a part out ends it too, rather than
+ *   sending parts twice.
+ *
+ ****************************************************************************/
+
+static void tr_sent(FAR void *arg, int result, FAR const char *reply)
+{
+  FAR struct transport_s *tr = arg;
+  char why[sizeof(tr->report.reason)];
+
+  /* Cancelled, the modem going: it may have gone, or never have left the
+   * queue; the engine cannot tell, so it counts as gone
+   */
+
+  if (result == -ECANCELED && tr->busy && tr->what == TR_SEND)
+    {
+      tr->lost = true;
+    }
+
+  if (!tr_answered(tr, result, TR_SEND))
+    {
+      return;
+    }
+
+  if (result < 0)
+    {
+      if (tr_line(reply, "+CMS ERROR", why, sizeof(why), NULL) == NULL &&
+          tr_line(reply, "+CME ERROR", why, sizeof(why), NULL) == NULL)
+        {
+          strlcpy(why, result == -ETIMEDOUT ? "no answer from the modem" :
+                  "not sent", sizeof(why));
+        }
+
+      pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
+               "An SMS not sent, part %u of %u: %d", tr->out_part,
+               tr->out_parts,
+               result);
+      tr_report(tr, PNUT_MESSAGES_MESSAGE_STATUS_FAILED, why);
+      return;
+    }
+
+  tr->out_part++;
+  tr_next(tr);
+}
+
+static void tr_send(FAR struct transport_s *tr)
+{
+  char command[24];
+  int ret;
+
+  if (tr->reporting)
+    {
+      tr_report_send(tr);         /* Again: Messages was away */
+      return;
+    }
+
+  /* Every part sent: sent, whatever the modem did since */
+
+  if (tr->out_parts > 0 && tr->out_part > tr->out_parts)
+    {
+      pnut_log(&tr->tel->module, PNUT_LOG_INFO, "An SMS sent, %u part%s",
+               tr->out_parts, tr->out_parts == 1 ? "" : "s");
+      tr_report(tr, PNUT_MESSAGES_MESSAGE_STATUS_SENT, "");
+      return;
+    }
+
+  if (tr->lost)
+    {
+      tr_report(tr, PNUT_MESSAGES_MESSAGE_STATUS_FAILED,
+                "the modem restarted while sending");
+      return;
+    }
+
+  if (tr->out_parts == 0)
+    {
+      tr_report(tr, PNUT_MESSAGES_MESSAGE_STATUS_FAILED,
+                "the text cannot be sent as SMS");
+      return;
+    }
+
+  /* A part waits for the network (RFC 0029): the registration's change
+   * goes on
+   */
+
+  if (!tr_network(tr))
+    {
+      return;
+    }
+
+  ret = sms_encode(tr->out.peer, tr->out.text, tr->ref, false, tr->out_part,
+                   &tr->pdu);
+  if (ret < 0)
+    {
+      tr_report(tr, PNUT_MESSAGES_MESSAGE_STATUS_FAILED,
+                "the number or text cannot be sent as SMS");
+      return;
+    }
+
+  snprintf(command, sizeof(command), "AT+CMGS=%u", tr->pdu.tpdu);
+  tr->busy     = true;
+  tr->what     = TR_SEND;
+  tr->sent_gen = tr->gen;
+  ret = at_command_text(&tr->tel->at, command, tr->pdu.hex, "+CMGS:",
+                        TR_SEND_MS, tr_sent, tr);
+  if (ret < 0)
+    {
+      tr->busy = false;
+      tr->what = TR_NONE;
+      tr_later(tr, TR_LATER_MS);
+    }
+}
+
+/****************************************************************************
+ * Name: tr_take, tr_take_opened, tr_taken
+ *
+ * Description:
+ *   Messages' queue taken, with no credit at first: one is given while
+ *   the modem has the network and nothing is out (RFC 0029).
+ *
+ ****************************************************************************/
+
+static void tr_take_opened(FAR struct pnut_messages_client_s *client,
+                           int status, FAR const pnut_error_t *err,
+                           FAR void *arg)
+{
+  FAR struct transport_s *tr = arg;
+
+  tr->take_out = false;
+  if (status != PNUT_STATUS_OK)
+    {
+      pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
+               "Messages' queue not taken: %d", status);
+      return;
+    }
+
+  tr->taking   = true;
+  tr->credited = false;
+  tr_next(tr);
+}
+
+static void tr_taken(FAR struct pnut_messages_client_s *client, int status,
+                     FAR const pnut_messages_queued_t *item, FAR void *arg)
+{
+  FAR struct transport_s *tr = arg;
+  bool ucs2;
+  int n;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      pnut_log(&tr->tel->module, PNUT_LOG_INFO,
+               "Messages' queue no longer taken: %d", status);
+      tr->taking   = false;
+      tr->credited = false;
+      return;
+    }
+
+  tr->credited = false;
+  if (tr->sending)
+    {
+      /* One credit at a time: never; it stays sending in Messages */
+
+      pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
+               "A message handed over while another is out");
+      return;
+    }
+
+  tr->out     = *item;
+  tr->sending = true;
+  tr->lost    = false;
+  tr->out_part = 1;
+  tr->ref++;
+  n = sms_parts(item->text, &ucs2);
+  tr->out_parts = n > 0 ? (uint8_t)n : 0;
+  pnut_log(&tr->tel->module, PNUT_LOG_INFO, "An SMS to send, %u part%s",
+           tr->out_parts, tr->out_parts == 1 ? "" : "s");
+  tr_next(tr);
+}
+
+static void tr_take(FAR struct transport_s *tr)
+{
+  pnut_messages_take_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  if (pnut_messages_take(&tr->messages, &in, 0, TR_REGISTER_MS,
+                         tr_take_opened, tr_taken, tr, &tr->take) == 0)
+    {
+      tr->take_out = true;
+    }
+}
+
+/****************************************************************************
  * Name: tr_next
  *
  * Description:
@@ -822,10 +1124,29 @@ static void tr_next(FAR struct transport_s *tr)
       return;
     }
 
+  /* A long message given up on, before what leaves, which may wait for
+   * the network a long while
+   */
+
   if (smsjoin_expired(&tr->join, tr_now(), &tr->msg) == 1)
     {
       tr_hold(tr);
       tr_next(tr);
+      return;
+    }
+
+  /* Then what leaves: the message out, or a credit for the next */
+
+  if (tr->sending)
+    {
+      tr_send(tr);
+      return;
+    }
+
+  if (tr->taking && !tr->credited && tr_network(tr) &&
+      pnut_messages_take_credit(&tr->messages, tr->take, 1) == 0)
+    {
+      tr->credited = true;
     }
 }
 
@@ -878,6 +1199,11 @@ static void tr_tick(FAR struct pnut_loop_s *loop,
       tr_register(tr);
     }
 
+  if (tr->registered && !tr->taking && !tr->take_out)
+    {
+      tr_take(tr);
+    }
+
   if (tr->paused || tr->again)
     {
       tr->paused  = false;
@@ -912,6 +1238,13 @@ static void tr_registered(FAR struct pnut_messages_client_s *client,
 
   pnut_log(&tr->tel->module, PNUT_LOG_INFO, "sms registered with Messages");
   tr->registered = true;
+  tr->taking     = false;
+  tr->credited   = false;
+  if (!tr->take_out)
+    {
+      tr_take(tr);
+    }
+
   tr->storage    = false;         /* What came meanwhile: read through */
   tr->paused     = false;         /* A failure there was Messages' going */
   tr->refused    = false;
@@ -925,6 +1258,9 @@ static void tr_state(FAR struct pnut_messages_client_s *client,
 
   tr->connected  = connected;
   tr->registered = false;
+  tr->taking     = false;
+  tr->take_out   = false;
+  tr->credited   = false;
   if (connected)
     {
       tr_register(tr);
@@ -942,6 +1278,12 @@ void transport_init(FAR struct transport_s *tr, FAR struct telephony_s *tel,
   tr->tel     = tel;
   tr->service = service;
   tr->tick    = tick != 0 ? tick : TRANSPORT_TICK;
+
+  /* Long messages' reference, from where the last start would not have
+   * left it
+   */
+
+  tr->ref     = (uint8_t)(time(NULL) ^ tr_now());
 }
 
 int transport_start(FAR struct transport_s *tr,
@@ -1030,8 +1372,14 @@ void transport_gone(FAR struct transport_s *tr)
    */
 
   tr->modem    = false;
+  if (tr->sending && tr->out_part <= tr->out_parts &&
+      (tr->what == TR_SEND || tr->out_part > 1))
+    {
+      tr->lost = true;            /* A part may have gone, not all */
+    }
+
   tr->gen++;
-  if (tr->what != TR_DELIVER)
+  if (tr->what != TR_DELIVER && tr->what != TR_REPORT)
     {
       tr->busy = false;
       tr->what = TR_NONE;
@@ -1117,4 +1465,12 @@ bool transport_urc(FAR struct transport_s *tr, FAR const char *line)
 
   tr_next(tr);
   return true;
+}
+
+void transport_kick(FAR struct transport_s *tr)
+{
+  if (tr->service != NULL)
+    {
+      tr_next(tr);
+    }
 }

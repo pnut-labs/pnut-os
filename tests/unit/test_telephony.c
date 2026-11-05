@@ -106,7 +106,7 @@ struct tel_test_s
   bool no_ua;                     /* Opens no channel */
   bool off_seen;                  /* The rail went off with the modem off */
   int rails_off;                  /* Times the rail went off */
-  char line[256];
+  char line[512];
   size_t llen;
   uint8_t frame[300];
   size_t flen;
@@ -128,6 +128,11 @@ struct tel_test_s
   int cmti_after;                 /* Deletes before an SMS comes */
   int cmti_slot;                  /* Where it is stored; -1 none */
   FAR const char *cmti_pdu;
+  int cmgs;                       /* SMS parts sent */
+  int expect_cmgs;                /* Then the run ends */
+  uint64_t cmgs_at;
+  bool cmgs_fail;                 /* Every part refused */
+  bool texting;                   /* After the prompt, the PDU comes */
 
   /* What the program announced */
 
@@ -184,6 +189,30 @@ static void tel_test_frame(FAR struct tel_test_s *t, uint8_t dlci,
   buf[4 + n] = tel_test_fcs(buf + 1, 3);
   buf[5 + n] = 0xf9;
   tel_test_send(t, buf, n + 6);
+}
+
+/* A part's PDU, after the prompt: sent, or refused */
+
+static void tel_test_say(FAR struct tel_test_s *t, FAR const char *text);
+
+static void tel_test_pdu(FAR struct tel_test_s *t, FAR const char *pdu)
+{
+  char line[32];
+
+  strlcat(t->commands, "PDU;", sizeof(t->commands));
+  assert_true(strlen(pdu) >= 2 * 8);
+  if (t->cmgs_fail)
+    {
+      tel_test_say(t, "+CMS ERROR: 500");
+    }
+  else
+    {
+      snprintf(line, sizeof(line), "+CMGS: %d", ++t->cmgs);
+      tel_test_say(t, line);
+      tel_test_say(t, "OK");
+    }
+
+  t->cmgs_at = pnut_now();
 }
 
 /* A line of the modem's, plain or on the AT channel */
@@ -255,6 +284,25 @@ static bool tel_test_sms(FAR struct tel_test_s *t, FAR const char *cmd)
         }
 
       tel_test_say(t, "OK");
+      return true;
+    }
+
+  if (strncmp(cmd, "AT+CMGS=", 8) == 0)
+    {
+      static const char prompt[] = "\r\n> ";
+
+      /* The prompt has no line end */
+
+      t->texting = true;
+      if (t->mux)
+        {
+          tel_test_frame(t, 1, 0xef, prompt, sizeof(prompt) - 1);
+        }
+      else
+        {
+          tel_test_send(t, prompt, sizeof(prompt) - 1);
+        }
+
       return true;
     }
 
@@ -411,7 +459,20 @@ static void tel_test_text(FAR struct tel_test_s *t, FAR const uint8_t *p,
 
   for (i = 0; i < n; i++)
     {
-      if (p[i] == '\r')
+      if (t->texting && (p[i] == 0x1a || p[i] == 0x1b))
+        {
+          /* The PDU ends with Ctrl-Z; ESC drops it */
+
+          t->line[t->llen] = '\0';
+          t->texting = false;
+          if (p[i] == 0x1a)
+            {
+              tel_test_pdu(t, t->line);
+            }
+
+          t->llen = 0;
+        }
+      else if (p[i] == '\r')
         {
           t->line[t->llen] = '\0';
           if (t->llen > 0)
@@ -481,7 +542,13 @@ static void tel_test_uart(FAR struct pnut_loop_s *loop, int fd,
 
   for (i = 0; i < n; i++)
     {
-      if (buf[i] == 0xf9)
+      /* A flag, unless the length says the frame goes on: the length
+       * octet itself is 0xf9 for 124 bytes
+       */
+
+      if (buf[i] == 0xf9 &&
+          (t->flen <= 2 ||
+           (t->flen >= 4 && t->flen >= 5 + (size_t)(t->frame[3] >> 1))))
         {
           if (t->flen >= 5)
             {
@@ -643,7 +710,10 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
       /* Every SMS dealt with, and a moment for anything more */
 
       if (t->stop_at == 0 && t->deletes >= t->expect_deletes &&
-          pnut_now() - t->deleted_at > 300)
+          (t->expect_cmgs == 0 || t->cmgs >= t->expect_cmgs ||
+           (t->cmgs_fail && t->cmgs_at != 0)) &&
+          pnut_now() - t->deleted_at > 300 &&
+          pnut_now() - t->cmgs_at > 300)
         {
           t->stop_at = pnut_now();
           pnut_loop_stop(loop, 0);
@@ -1291,6 +1361,110 @@ static void test_telephony_sms_scan(void **state)
   tel_test_free(t);
 }
 
+/* A message queued in Messages' store before the run */
+
+static void tel_test_queue(FAR struct tel_test_s *t, FAR const char *peer,
+                           FAR const char *text)
+{
+  FAR struct store_write_s *w = calloc(1, sizeof(*w));
+  FAR pnut_messages_message_record_t *m = calloc(1, sizeof(*m));
+  struct store_s store;
+
+  assert_non_null(w);
+  assert_non_null(m);
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  m->out    = true;
+  m->status = PNUT_MESSAGES_MESSAGE_STATUS_QUEUED;
+  strlcpy(m->text, text, sizeof(m->text));
+  assert_int_equal(store_plan_message(&store, "sms", peer, m, w), 0);
+  store_write_run(w);
+  assert_int_equal(w->ret, 0);
+  assert_int_equal(store_commit(&store, w), 0);
+  store_free(&store);
+  free(m);
+  free(w);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_send
+ *
+ * Description:
+ *   Messages' queue taken once the modem has the network: a message of
+ *   one part and one of two sent, each part after the modem's prompt,
+ *   and both reported sent.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_send(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR pnut_messages_page_t *page = calloc(1, sizeof(*page));
+  char longer[201];
+  struct store_s store;
+
+  assert_non_null(page);
+  memset(longer, 'a', 200);
+  longer[200] = '\0';
+  tel_test_queue(t, "+48123456789", "hello there");
+  tel_test_queue(t, "+48123456789", longer);
+
+  t->sms         = true;
+  t->sms_total   = 10;
+  t->expect_cmgs = 3;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_int_equal(t->cmgs, 3);
+  assert_non_null(strstr(t->commands, "AT+CMGS="));
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  tel_test_page(&store, "+48123456789", page);
+  assert_int_equal(page->messages_count, 2);
+  assert_int_equal(page->messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_SENT);
+  assert_int_equal(page->messages[1].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_SENT);
+
+  store_free(&store);
+  free(page);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_sms_send_fail
+ *
+ * Description:
+ *   A part the network refuses: the message reported failed, with the
+ *   modem's word for why.
+ *
+ ****************************************************************************/
+
+static void test_telephony_sms_send_fail(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+  FAR pnut_messages_page_t *page = calloc(1, sizeof(*page));
+  struct store_s store;
+
+  assert_non_null(page);
+  tel_test_queue(t, "+48123456789", "will fail");
+  t->sms         = true;
+  t->sms_total   = 10;
+  t->cmgs_fail   = true;
+  t->expect_cmgs = 1;
+  assert_int_equal(tel_test_run(t), 0);
+
+  store_init(&store, t->store, 64 * 1024, STORE_SEGMENT_MAX);
+  assert_int_equal(store_load(&store), 0);
+  tel_test_page(&store, "+48123456789", page);
+  assert_int_equal(page->messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_FAILED);
+  assert_string_equal(page->messages[0].reason, "+CMS ERROR: 500");
+
+  store_free(&store);
+  free(page);
+  tel_test_free(t);
+}
+
 /****************************************************************************
  * Name: test_telephony_sms_undeleted
  *
@@ -1397,6 +1571,8 @@ int main(void)
     cmocka_unit_test(test_telephony_sms_full),
     cmocka_unit_test(test_telephony_sms_scan),
     cmocka_unit_test(test_telephony_sms_undeleted),
+    cmocka_unit_test(test_telephony_sms_send),
+    cmocka_unit_test(test_telephony_sms_send_fail),
   };
 
   return cmocka_run_group_tests_name("telephony", tests, NULL, NULL);
