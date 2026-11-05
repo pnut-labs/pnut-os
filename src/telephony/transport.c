@@ -44,6 +44,8 @@
 
 #define TR_DELIVER_MS   10000       /* For Messages' answer */
 #define TR_REGISTER_MS  5000
+#define TR_AGAIN_MS     2000        /* A registration Messages could not
+                                     * take yet, asked again */
 #define TR_LATER_MS     1000        /* When the modem's queue is full */
 #define TR_CHOOSE_MS    5000        /* The memory not chosen, at start */
 #define TR_CHOOSE_TRIES 6
@@ -73,6 +75,7 @@ enum transport_what_e
  ****************************************************************************/
 
 static void tr_next(FAR struct transport_s *tr);
+static void tr_register(FAR struct transport_s *tr);
 
 /****************************************************************************
  * Private Functions
@@ -141,6 +144,11 @@ static void tr_later_fired(FAR struct pnut_loop_s *loop,
   FAR struct transport_s *tr = arg;
 
   tr->later = NULL;
+  if (tr->connected && !tr->registered && !tr->registering)
+    {
+      tr_register(tr);
+    }
+
   tr_next(tr);
 }
 
@@ -903,6 +911,20 @@ static void tr_registered(FAR struct pnut_messages_client_s *client,
   FAR struct transport_s *tr = arg;
 
   tr->registering = false;
+
+  /* Not yet: Messages starting (it could not tell who calls), busy, or
+   * its store unread; asked again in a moment, not at the tick
+   */
+
+  if (status == PNUT_STATUS_UNAVAILABLE || status == PNUT_STATUS_BUSY ||
+      status == PNUT_STATUS_TIMEOUT || status == PNUT_STATUS_INTERNAL)
+    {
+      pnut_log(&tr->tel->module, PNUT_LOG_INFO,
+               "Messages cannot take sms yet: %d", status);
+      tr_later(tr, TR_AGAIN_MS);
+      return;
+    }
+
   if (status != PNUT_STATUS_OK)
     {
       pnut_log(&tr->tel->module, PNUT_LOG_WARNING,
@@ -1063,6 +1085,13 @@ bool transport_urc(FAR struct transport_s *tr, FAR const char *line)
             {
               pnut_timer_cancel(tr->tel->module.loop, tr->later);
               tr->later = NULL;
+            }
+
+          /* The timer may have held a registration asked again */
+
+          if (tr->connected && !tr->registered && !tr->registering)
+            {
+              tr_register(tr);
             }
 
           tr_next(tr);
