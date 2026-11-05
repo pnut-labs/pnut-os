@@ -589,7 +589,7 @@ static void tr_end(FAR struct msgt_s *t)
  * they are encoded into
  */
 
-static char g_long[1531];
+static char g_long[STORE_TEXT_MAX + 1];
 
 static void long_send(FAR struct msgt_s *t)
 {
