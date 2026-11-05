@@ -142,6 +142,7 @@ struct telephony_s
   bool airplane;
   bool air_set;                   /* As the modem was last told */
   bool air_keeping;               /* AT+CFUN=4 given again, unanswered */
+  uint64_t air_checked;           /* The backstop's last CFUN=4, ms */
   struct pnut_services_client_s services;
   bool services_open;
   struct telephony_ask_s asks[TELEPHONY_ASKS];
