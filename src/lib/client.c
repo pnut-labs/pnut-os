@@ -590,10 +590,16 @@ static int client_tell(FAR struct pnut_client_s *client, uint16_t seq,
       return -ENOTCONN;
     }
 
+  /* A stream not open yet, its opening answer still to come, is
+   * cancelled too: its call is dropped, the late answer with it, and an
+   * item that still comes is answered with its end
+   */
+
   for (i = 0; i < client->ncalls; i++)
     {
-      if (client->calls[i].used && client->calls[i].streaming &&
-          client->calls[i].seq == seq)
+      if (client->calls[i].used && client->calls[i].item != NULL &&
+          client->calls[i].seq == seq &&
+          (client->calls[i].streaming || status != PNUT_STATUS_OK))
         {
           call = &client->calls[i];
           break;
@@ -603,6 +609,12 @@ static int client_tell(FAR struct pnut_client_s *client, uint16_t seq,
   if (call == NULL)
     {
       return -ENOENT;
+    }
+
+  if (!call->streaming)
+    {
+      call->used = false;
+      return OK;
     }
 
   memset(&hdr, 0, sizeof(hdr));

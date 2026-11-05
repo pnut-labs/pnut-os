@@ -79,6 +79,8 @@ struct fixture_s
   uint32_t numbers[16];
   int ended;                      /* Its end's status; -1 none yet */
   bool cancel_gone;               /* It cancels after the service went */
+  bool cancel_early;              /* It cancels before the opening answer,
+                                   * then says something */
   int cancel_ret;
   int raw;                        /* A caller of the test's own */
   bool raw_request;               /* It asks, rather than gives credit */
@@ -87,6 +89,10 @@ struct fixture_s
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
+
+static void on_said(FAR struct pnut_test_echo_client_s *client,
+                    int status, FAR const pnut_test_say_reply_t *out,
+                    FAR const pnut_error_t *err, FAR void *arg);
 
 static void h_junk(FAR struct pnut_service_s *service,
                    FAR const struct pnut_request_s *req,
@@ -375,6 +381,19 @@ static void ticks_state(FAR struct pnut_test_echo_client_s *client, bool up,
       assert_int_equal(pnut_test_echo_ticks(client, &in, f->credit, 0,
                                             ticks_opened, ticks_item, f,
                                             &f->sno), 0);
+      if (f->cancel_early)
+        {
+          pnut_test_say_request_t say = PNUT_TEST_SAY_REQUEST_INIT_ZERO;
+
+          /* Its call's place taken by another call at once: the late
+           * opening answer must not reach it
+           */
+
+          assert_int_equal(pnut_test_echo_ticks_cancel(client, f->sno), 0);
+          strcpy(say.text, "after");
+          assert_int_equal(pnut_test_echo_say(client, &say, 0, on_said, f),
+                           0);
+        }
     }
 }
 
@@ -929,6 +948,25 @@ static void test_gen_stream_cancel_gone(void **state)
     }
 }
 
+/* A stream cancelled before its opening answer, its call's place taken
+ * by another call: the late answer is dropped, the other call answered
+ * as its own, and the service's stream ended when it pushes
+ */
+
+static void test_gen_stream_cancel_early(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  ticks_setup(f, 10, 2, 0);
+  f->cancel_early = true;
+  run(f, ticks_state, 1);
+  assert_int_equal(f->answers, 1);
+  assert_int_equal(f->status[0], PNUT_STATUS_OK);
+  assert_string_equal(f->out[0].text, "after");
+  assert_int_equal(f->opened, -1);
+  assert_int_equal(f->got, 0);
+}
+
 /* A caller that goes while the service answers it, a stream's closed
  * handler closing the service from inside that answer: nothing of the
  * service is used after (the reviewer's reproductions, ASan's to judge)
@@ -1089,6 +1127,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_gen_stream_refused, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_gen_stream_cancel_gone, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_gen_stream_cancel_early, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_gen_stream_closing, setup,
                                     teardown),

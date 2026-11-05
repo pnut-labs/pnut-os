@@ -190,9 +190,10 @@ int pnut_stream_call(FAR struct pnut_client_s *client, uint16_t iface,
  *
  * Description:
  *   Let an open stream's service send credit items more; end the stream,
- *   without its item handler called again: over here even when the
- *   service cannot be told, which then learns of it from the next item's
- *   answer.
+ *   without its handlers called again: over here even when the service
+ *   cannot be told, which then learns of it from the next item's answer.
+ *   A stream whose opening answer has not come yet may be cancelled: the
+ *   answer is dropped when it comes.
  *
  * Returned Value:
  *   Zero (OK); -ENOENT for no open stream of that number; -ENOTCONN;
