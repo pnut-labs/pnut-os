@@ -99,6 +99,8 @@ struct at_s
   uint8_t count;
   bool sent;                      /* The first in the queue is out */
   bool texting;                   /* Its text, or Ctrl-Z, waits for room */
+  bool escaping;                  /* An ESC waits for room: nothing goes
+                                   * before it */
   uint8_t cancelling;             /* In at_cancel(), nested perhaps:
                                    * nothing is sent */
   FAR struct pnut_timer_s *timer; /* Its timeout */
