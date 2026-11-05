@@ -163,7 +163,8 @@ int at_command(FAR struct at_s *at, FAR const char *command,
  *   (at_cancel()) sends nothing: the modem is going.
  *
  * Input Parameters:
- *   As at_command(), and:
+ *   As at_command(), without flags: the command is logged as any, at
+ *   debug; the text never, only its length.  And:
  *   text - The text, without its Ctrl-Z: the caller's, unchanged, until
  *          done is called.  It must fit the channel's queue whole.
  *
