@@ -32,11 +32,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <syslog.h>
 #include <unistd.h>
 
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/un.h>
 
 #include <netutils/md5.h>
 
@@ -105,17 +109,17 @@ static int adbkeys_b64(char c)
   return c == '/' ? 63 : -1;
 }
 
-/* A line's fingerprint into out (48 bytes and a NUL), or "not a key" */
+/* A line's key, decoded as adbd decodes it (to the first character that
+ * is not base64): false unless it is a key's size exactly
+ */
 
-static void adbkeys_fingerprint(FAR const char *line, FAR char *out)
+static bool adbkeys_decode(FAR const char *line,
+                           FAR uint8_t key[ADBKEYS_KEY_BYTES])
 {
-  uint8_t key[ADBKEYS_KEY_BYTES];
-  uint8_t md5[16];
   uint32_t bits = 0;
   size_t len = 0;
   int nbits = 0;
   int v;
-  int i;
 
   for (; (v = adbkeys_b64(*line)) >= 0; line++)
     {
@@ -124,17 +128,66 @@ static void adbkeys_fingerprint(FAR const char *line, FAR char *out)
       if (nbits >= 8)
         {
           nbits -= 8;
-          if (len >= sizeof(key))
+          if (len >= ADBKEYS_KEY_BYTES)
             {
-              len = 0;            /* Longer than a key */
-              break;
+              return false;       /* Longer than a key */
             }
 
           key[len++] = (uint8_t)(bits >> nbits);
         }
     }
 
-  if (len != sizeof(key))
+  return len == ADBKEYS_KEY_BYTES;
+}
+
+/* A key in base64, padded, as adbkey.pub has it: 700 characters and a
+ * NUL into out
+ */
+
+static void adbkeys_encode(FAR const uint8_t key[ADBKEYS_KEY_BYTES],
+                           FAR char *out)
+{
+  static const char alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  uint32_t v;
+  size_t i;
+
+  for (i = 0; i + 2 < ADBKEYS_KEY_BYTES; i += 3)
+    {
+      v = ((uint32_t)key[i] << 16) | ((uint32_t)key[i + 1] << 8) |
+          key[i + 2];
+      *out++ = alphabet[(v >> 18) & 63];
+      *out++ = alphabet[(v >> 12) & 63];
+      *out++ = alphabet[(v >> 6) & 63];
+      *out++ = alphabet[v & 63];
+    }
+
+  if (i < ADBKEYS_KEY_BYTES)
+    {
+      v = (uint32_t)key[i] << 16;
+      if (i + 1 < ADBKEYS_KEY_BYTES)
+        {
+          v |= (uint32_t)key[i + 1] << 8;
+        }
+
+      *out++ = alphabet[(v >> 18) & 63];
+      *out++ = alphabet[(v >> 12) & 63];
+      *out++ = i + 1 < ADBKEYS_KEY_BYTES ? alphabet[(v >> 6) & 63] : '=';
+      *out++ = '=';
+    }
+
+  *out = '\0';
+}
+
+/* A line's fingerprint into out (48 bytes and a NUL), or "not a key" */
+
+static void adbkeys_fingerprint(FAR const char *line, FAR char *out)
+{
+  uint8_t key[ADBKEYS_KEY_BYTES];
+  uint8_t md5[16];
+  int i;
+
+  if (!adbkeys_decode(line, key))
     {
       strlcpy(out, "not a key", 49);
       return;
@@ -218,26 +271,38 @@ static void adbkeys_read(FAR const char *path, FAR struct adbkeys_s *keys)
   fclose(f);
 }
 
-/* Whether path holds this line already */
+/* Whether path holds a key of this fingerprint already: every line of it
+ * read
+ */
 
-static bool adbkeys_has(FAR const char *path, FAR const char *line)
+static bool adbkeys_has(FAR const char *path, FAR const char *fingerprint)
 {
-  FAR struct adbkeys_s *keys = malloc(sizeof(*keys));
+  char line[ADBKEYS_LINE];
+  char other[49];
   bool has = false;
-  int i;
+  FAR FILE *f;
+  int c;
 
-  if (keys == NULL)
+  f = fopen(path, "r");
+  if (f == NULL)
     {
       return false;
     }
 
-  adbkeys_read(path, keys);
-  for (i = 0; i < keys->count && !has; i++)
+  while (!has && fgets(line, sizeof(line), f) != NULL)
     {
-      has = strcmp(keys->line[i], line) == 0;
+      if (strchr(line, '\n') == NULL)
+        {
+          while ((c = fgetc(f)) != EOF && c != '\n')
+            {
+            }
+        }
+
+      adbkeys_fingerprint(line, other);
+      has = strcmp(other, fingerprint) == 0;
     }
 
-  free(keys);
+  fclose(f);
   return has;
 }
 
@@ -299,8 +364,11 @@ static int adbkeys_write(int fd, FAR const char *buf, size_t len)
 
 static int adbkeys_allow(int n)
 {
+  uint8_t key[ADBKEYS_KEY_BYTES];
+  char line[ADBKEYS_LINE];
   FAR struct adbkeys_s *waiting;
   char fingerprint[49];
+  char comment[64];
   struct stat st;
   int ret = EXIT_FAILURE;
   size_t len;
@@ -339,16 +407,28 @@ static int adbkeys_allow(int n)
    * fails half way
    */
 
-  if (!adbkeys_has(ADBKEYS_FILE, waiting->line[n - 1]))
+  if (!adbkeys_has(ADBKEYS_FILE, fingerprint))
     {
-      len = strlen(waiting->line[n - 1]);
-      waiting->line[n - 1][len] = '\n';
+      /* The line let in is the key fingerprinted, encoded again, and its
+       * comment as shown: nothing else of the line waiting
+       */
+
+      adbkeys_decode(waiting->line[n - 1], key);
+      adbkeys_encode(key, line);
+      len = strlen(line);
+      adbkeys_comment(waiting->line[n - 1], comment, sizeof(comment));
+      if (comment[0] != '\0')
+        {
+          line[len++] = ' ';
+          len += strlcpy(line + len, comment, sizeof(line) - len);
+        }
+
+      line[len++] = '\n';
       st.st_size = -1;
       fd = open(ADBKEYS_FILE, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
                 0600);
       if (fd < 0 || fstat(fd, &st) < 0 ||
-          adbkeys_write(fd, waiting->line[n - 1], len + 1) < 0 ||
-          fsync(fd) < 0)
+          adbkeys_write(fd, line, len) < 0 || fsync(fd) < 0)
         {
           fprintf(stderr, "adbkeys: cannot write %s: %d\n", ADBKEYS_FILE,
                   -errno);
@@ -366,7 +446,6 @@ static int adbkeys_allow(int n)
         }
 
       close(fd);
-      waiting->line[n - 1][len] = '\0';
     }
 
   printf("Let in: %s\n", fingerprint);
@@ -425,6 +504,89 @@ out:
   return ret;
 }
 
+/* adbd started again, so that no computer stays connected: its pid from
+ * NxInit's control socket ("state adbd": "ok adbd ready <pid>"), then
+ * SIGTERM, on which adbd closes every connection and exits, and NxInit
+ * starts it again.  0, or a negated errno value; -ESRCH when it does not
+ * run, so nobody is connected.
+ */
+
+static int adbkeys_restart(void)
+{
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+  static const char command[] = "state adbd\n";
+  struct sockaddr_un addr;
+  struct timeval tv;
+  char buf[128];
+  char state[16];
+  FAR char *line;
+  size_t len = 0;
+  int lines = 0;
+  ssize_t n;
+  long pid;
+  int fd;
+
+  fd = socket(AF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0)
+    {
+      return -errno;
+    }
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_LOCAL;
+  strlcpy(addr.sun_path, CONFIG_SYSTEM_NXINIT_CONTROL_PATH,
+          sizeof(addr.sun_path));
+  tv.tv_sec  = 3;
+  tv.tv_usec = 0;
+  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0 ||
+      connect(fd, (FAR struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+      adbkeys_write(fd, command, sizeof(command) - 1) < 0)
+    {
+      n = -errno;
+      close(fd);
+      return (int)n;
+    }
+
+  /* The version line, then the answer */
+
+  while (lines < 2 && len < sizeof(buf) - 1)
+    {
+      n = read(fd, buf + len, sizeof(buf) - 1 - len);
+      if (n <= 0)
+        {
+          break;
+        }
+
+      for (; n > 0; n--)
+        {
+          lines += buf[len++] == '\n';
+        }
+    }
+
+  close(fd);
+  buf[len] = '\0';
+
+  /* No answer, or an error (NxInit busy): not known to be stopped */
+
+  line = strchr(buf, '\n');
+  if (line == NULL || lines < 2 ||
+      sscanf(line + 1, "ok adbd %15s %ld", state, &pid) != 2)
+    {
+      return -EIO;
+    }
+
+  if (pid <= 0 ||
+      (strcmp(state, "ready") != 0 && strcmp(state, "starting") != 0))
+    {
+      return -ESRCH;              /* Not running: nobody connected */
+    }
+
+  return kill((pid_t)pid, SIGTERM) < 0 ? -errno : 0;
+#else
+  return -ENOSYS;
+#endif
+}
+
 /* Every computer let in forgotten, once the owner says yes */
 
 static int adbkeys_forget(void)
@@ -433,6 +595,7 @@ static int adbkeys_forget(void)
   char answer[8];
   bool yes;
   int count;
+  int ret;
   int c;
 
   keys = malloc(sizeof(*keys));
@@ -479,7 +642,23 @@ static int adbkeys_forget(void)
       return EXIT_FAILURE;
     }
 
-  printf("Forgotten: none is let in\n");
+  /* Computers still connected let go too */
+
+  ret = adbkeys_restart();
+  if (ret == 0)
+    {
+      printf("Forgotten: none is let in, and adbd started again\n");
+    }
+  else if (ret == -ESRCH)
+    {
+      printf("Forgotten: none is let in\n");
+    }
+  else
+    {
+      printf("Forgotten: none gets in again; a computer still connected "
+             "stays until adbd starts again: %d\n", ret);
+    }
+
   syslog(LOG_NOTICE, "adbkeys: the %d computers let in forgotten\n",
          count);
   return EXIT_SUCCESS;
