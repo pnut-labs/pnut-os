@@ -1605,6 +1605,75 @@ static bool wall_test_ntp_retry_steps(FAR struct wall_test_s *t)
   return true;
 }
 
+/* A kiss-o'-death after failures: a new link does not ask again before
+ * the interval, as it would after the failures alone
+ */
+
+static bool wall_test_ntp_kod_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        t->ntp_mode = NTP_STRAY;
+        wall_test_setting(t, "ntp_server", "127.0.0.1", 0);
+        break;
+
+      case 1:
+        wall_test_wifi(t, true);
+        break;
+
+      case 2:                     /* Failed once: a kiss-o'-death next */
+        if (t->wall.ntp_fails == 0)
+          {
+            return false;
+          }
+
+        t->ntp_mode = NTP_KOD;
+        t->mark     = t->asked;
+        break;
+
+      case 3:                     /* Told: the link lost and back */
+        if ((uint64_t)t->asked < t->mark + 1 || t->wall.ntp_working)
+          {
+            return false;
+          }
+
+        t->mark = t->asked;
+        wall_test_wifi(t, false);
+        wall_test_wifi(t, true);
+        break;
+
+      case 4:                     /* Not asked for a while */
+        if (ntp_test_now() < t->asked_at + 300)
+          {
+            return false;
+          }
+
+        assert_int_equal(t->asked, (int)t->mark);
+        wall_test_wifi(t, false);
+        break;
+
+      case 5:
+        pnut_loop_stop(t->loop, 0);
+        break;
+    }
+
+  return true;
+}
+
+static void test_wallclock_ntp_kod(void **state)
+{
+  FAR struct wall_test_s *t = wall_test_new(true);
+
+  ntp_test_server(t);
+  t->ntp_every = 600;
+  t->ntp_retry = 50;
+  t->ntp_wait  = 100;
+  wall_test_run(t, wall_test_ntp_kod_steps);
+  assert_int_equal(t->step, 6);
+  wall_test_free(t);
+}
+
 static void test_wallclock_ntp_retry(void **state)
 {
   FAR struct wall_test_s *t = wall_test_new(true);
@@ -1639,6 +1708,7 @@ int main(void)
 #ifdef CONFIG_PNUT_TIME_NTP
     cmocka_unit_test(test_wallclock_ntp),
     cmocka_unit_test(test_wallclock_ntp_retry),
+    cmocka_unit_test(test_wallclock_ntp_kod),
 #endif
   };
 

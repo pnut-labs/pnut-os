@@ -995,10 +995,11 @@ static void wallclock_ntp_done(FAR struct pnut_loop_s *loop, FAR void *arg)
   else if (n->ret == -ECONNREFUSED)
     {
       /* A kiss-o'-death: the server wants fewer questions, a new link's
-       * too
+       * too.  It answered: the failures before it no longer count.
        */
 
-      wall->ntp_asap = false;
+      wall->ntp_fails = 0;
+      wall->ntp_asap  = false;
       wall->ntp_due  = now + wallclock_or(wall->config.ntp_every,
                                           WALLCLOCK_NTP_EVERY);
       pnut_log(&wall->module, PNUT_LOG_WARNING,
