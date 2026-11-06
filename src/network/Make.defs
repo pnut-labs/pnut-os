@@ -1,0 +1,11 @@
+############################################################################
+# pnut-os/src/network/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+
+ifneq ($(CONFIG_PNUT_NETWORK),)
+CONFIGURED_APPS += $(APPDIR)/external/network
+endif

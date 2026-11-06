@@ -56,6 +56,24 @@ on property:svc.system.state=ready
    start telephony
 #endif
 
+#ifdef CONFIG_PNUT_NETWORK
+
+/* The network program (RFC 0031): Wi-Fi, once the system program is
+ * ready: it reads its settings and Service states.  Asked to stop, it
+ * takes the radio down, once a scan or join under way ends (up to about
+ * 35 s): unless killed first, as gentle_kill does after a while.
+ */
+
+service network pnut_network
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on property:svc.system.state=ready
+   start network
+#endif
+
 #ifdef CONFIG_PNUT_DATA
 /* The data program (RFC 0007): Messages (RFC 0029), once the system
  * program is ready.  It reads its store's files on a worker, and says it
