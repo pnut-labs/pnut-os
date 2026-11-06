@@ -93,6 +93,21 @@ static FAR const char * const g_wifi_failures[] =
  * Private Functions
  ****************************************************************************/
 
+/* A network's name, printed: any access point names itself, so control
+ * bytes (a terminal's escapes) are shown as '?'.  The log cleans its own
+ * lines (log.c); printf() to the console does not.
+ */
+
+static void wifi_print_name(FAR const char *name, size_t size)
+{
+  size_t i;
+
+  for (i = 0; i < size && name[i] != '\0'; i++)
+    {
+      putchar((uint8_t)name[i] < 0x20 || name[i] == 0x7f ? '?' : name[i]);
+    }
+}
+
 static void wifi_usage(void)
 {
   fprintf(stderr,
@@ -171,7 +186,9 @@ static void wifi_info(FAR struct pnut_wifi_info_reader_s *reader,
          "?");
   if (msg->name[0] != '\0')
     {
-      printf("network   %s\n", msg->name);
+      printf("network   ");
+      wifi_print_name(msg->name, sizeof(msg->name));
+      putchar('\n');
     }
 
   if (msg->state == PNUT_WIFI_INFO_STATE_JOINED)
@@ -206,10 +223,12 @@ static void wifi_item(FAR struct pnut_wifi_client_s *client, int status,
 
   if (status == PNUT_STATUS_OK)
     {
-      printf("%4d dBm  ch %-3u %-6s  %s\n", (int)item->signal,
+      printf("%4d dBm  ch %-3u %-6s  ", (int)item->signal,
              (unsigned int)item->channel,
              item->security == PNUT_WIFI_SECURITY_WIFI_SECURITY_OPEN ?
-             "open" : "secure", item->name);
+             "open" : "secure");
+      wifi_print_name(item->name, sizeof(item->name));
+      putchar('\n');
       cmd->found++;
       return;
     }
