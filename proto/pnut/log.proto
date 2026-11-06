@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Log (RFC 0026): the log kept in files across restarts, by a module of
+// the system program, read a page at a time from a position on, filtered
+// by level and by service; and the crash reports.  For the system UI's
+// Logs screen and the developer's shell (RFC 0012), which have the same
+// rights; nobody else.
+//
+// The files are read as one sequence, oldest first.  A position is a file
+// and an offset in it: the file's number grows by one at each rotation,
+// so a reader goes on where it stopped across a rotation.  A position
+// whose file was rotated away is answered from the oldest file kept, with
+// `lost` set.  Numbers count from Log's start: a position kept across a
+// restart of the device may point elsewhere.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Log {
+  option (pnut.iface) = 7;
+
+  // Lines from a position on, those of a level and a service only
+  rpc Read (LogReadRequest) returns (LogPage) {
+    option (pnut.method) = 1;
+  }
+
+  // The crash reports kept, newest first
+  rpc Crashes (LogCrashesRequest) returns (LogCrashes) {
+    option (pnut.method) = 2;
+  }
+
+  // A part of a crash report, from an offset on
+  rpc ReadCrash (LogCrashRequest) returns (LogCrash) {
+    option (pnut.method) = 3;
+  }
+}
+
+// The detail of an error answer (pnut.Error's code)
+message LogError {
+  enum Code {
+    NONE = 0;
+    DENIED = 1;                   // For the system UI and the shell only
+    NOT_FOUND = 2;                // No such crash report
+    UNREADABLE = 3;               // A file could not be read
+  }
+}
+
+message LogPosition {
+  uint32 file = 1;                // The file's number (above)
+  uint32 offset = 2;              // Bytes into it
+}
+
+message LogReadRequest {
+  // From the oldest line kept when absent
+  LogPosition from = 1;
+
+  // The least level read: 0 every line, 1 debug, 2 info, 3 notice,
+  // 4 warning, 5 error, 6 critical, 7 alert, 8 emergency
+  uint32 level = 2;
+
+  // A service's or a program's lines only, as named in them; any when
+  // empty
+  string service = 3 [(nanopb).max_size = 33];
+}
+
+message LogPage {
+  repeated string lines = 1 [(nanopb).max_size = 257,
+                             (nanopb).max_count = 8];
+  LogPosition next = 2;           // Where to go on from
+  bool lost = 3;                  // The position asked for was rotated
+                                  // away: read from the oldest file
+  bool more = 4;                  // Lines are left after next
+}
+
+message LogCrashesRequest {
+}
+
+message LogCrashes {
+  repeated string names = 1 [(nanopb).max_size = 32,
+                             (nanopb).max_count = 8];
+}
+
+message LogCrashRequest {
+  string name = 1 [(nanopb).max_size = 32];
+  uint32 offset = 2;
+}
+
+message LogCrash {
+  bytes text = 1 [(nanopb).max_size = 1024];
+  bool more = 2;                  // Bytes are left after offset + text
+}
