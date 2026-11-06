@@ -1025,6 +1025,7 @@ static void test_logs_read(void **state)
     {
       len += snprintf(text + len, sizeof(text) - len,
                       "[%5d.000000] [  WARN] sh: c%d\n", 10 + i, i);
+      assert_true(len < (int)sizeof(text));
     }
 
   test_path(&r->t, "system.log", path, sizeof(path));

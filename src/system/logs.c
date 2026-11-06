@@ -784,7 +784,7 @@ static void logs_prepare(FAR struct logs_s *logs)
   write->crash_len = logs->crash_len;
   write->ret       = OK;
   write->crash_ret = OK;
-  write->finished  = false;
+  __atomic_store_n(&write->finished, false, __ATOMIC_RELAXED);
   strlcpy(write->crash_name, logs->crash_name, sizeof(write->crash_name));
 
   buffer        = logs->spare;
@@ -2168,7 +2168,7 @@ static void logs_read_start(FAR struct logs_s *logs)
   r->dir       = logs->config.dir;
   r->files     = logs->config.files;
   r->rotations = logs->rotations;
-  r->finished  = false;
+  __atomic_store_n(&r->finished, false, __ATOMIC_RELAXED);
   logs->reading = true;
   if (pnut_job_submit(logs->module.loop, logs_read_run, logs_read_done,
                       r) < 0)
