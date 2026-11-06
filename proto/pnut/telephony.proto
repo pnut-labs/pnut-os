@@ -129,21 +129,22 @@ message TelephonyInfo {
 // The PIN: sensitive (RFC 0026), never logged, never kept.  Up to 8
 // digits; nanopb counts the string's end in max_size.
 message TelephonyPinRequest {
-  string pin = 1 [(nanopb).max_size = 9];
+  string pin = 1 [(nanopb).max_size = 9, (pnut.sensitive) = true];
 }
 
 // The PUK, always 8 digits, and a new PIN
 message TelephonyPukRequest {
-  string puk = 1 [(nanopb).max_size = 9];
-  string pin = 2 [(nanopb).max_size = 9];
+  string puk = 1 [(nanopb).max_size = 9, (pnut.sensitive) = true];
+  string pin = 2 [(nanopb).max_size = 9, (pnut.sensitive) = true];
 }
 
 message TelephonyReply {
 }
 
 message TelephonyCommandRequest {
-  string command = 1 [(nanopb).max_size = 256];  // "AT+CSQ"; the "AT" may
-                                                 // be left out
+  // "AT+CSQ"; the "AT" may be left out.  Sensitive: it may be
+  // AT+CPIN=<PIN>
+  string command = 1 [(nanopb).max_size = 256, (pnut.sensitive) = true];
   uint32 timeout = 2;             // In ms; 0 for the default
 }
 

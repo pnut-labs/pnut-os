@@ -121,6 +121,12 @@ static int conn_flush(FAR struct pnut_conn_s *conn)
 
       conn->txlen -= n;
       memmove(conn->tx, conn->tx + n, conn->txlen);
+
+      /* What was sent is not left behind: it may be a secret's
+       * (pnut.sensitive), as may any message
+       */
+
+      explicit_bzero(conn->tx + conn->txlen, n);
     }
 
   return conn_watch(conn);
@@ -188,6 +194,7 @@ static void conn_receive(FAR struct pnut_conn_s *conn)
 
           conn->rxlen -= size;
           memmove(conn->rx, conn->rx + size, conn->rxlen);
+          explicit_bzero(conn->rx + conn->rxlen, size);  /* As tx's */
         }
 
       /* Never asked for nothing: a full buffer holds a whole message */
@@ -358,6 +365,18 @@ void pnut_conn_close(FAR struct pnut_conn_s *conn)
       close(conn->fd);
       conn->fd = -1;
       conn->gen++;
+    }
+
+  /* Nothing of what was in flight is left behind */
+
+  if (conn->rx != NULL)
+    {
+      explicit_bzero(conn->rx, conn->rxlen);
+    }
+
+  if (conn->tx != NULL)
+    {
+      explicit_bzero(conn->tx, conn->txlen);
     }
 
   conn->rxlen    = 0;

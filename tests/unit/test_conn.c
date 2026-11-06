@@ -49,6 +49,7 @@ struct fixture_s
   int msgs;
   int closed;
   bool blocked;
+  bool echo;                      /* Answer with the request's payload */
   uint8_t rx[8 * PNUT_MSG_MAX];
   size_t rxlen;
 };
@@ -72,6 +73,16 @@ static int on_message(FAR struct pnut_conn_s *conn,
     }
 
   f->msgs++;
+  if (f->echo)
+    {
+      memset(&reply, 0, sizeof(reply));
+      reply.version = PNUT_MSG_VERSION;
+      reply.kind    = PNUT_KIND_REPLY;
+      reply.seq     = hdr->seq;
+      reply.len     = hdr->len;
+      assert_int_equal(pnut_conn_send(conn, &reply, payload), 0);
+      return PNUT_CONN_NEXT;
+    }
 
   memset(big, (uint8_t)hdr->seq, sizeof(big));
   memset(&reply, 0, sizeof(reply));
@@ -185,6 +196,61 @@ static int teardown(void **state)
   return 0;
 }
 
+/* Every message's bytes go once used, as a secret's must
+ * (pnut.sensitive): a request's from the receive buffer once handled, an
+ * answer's from the send buffer once sent, and what a closed connection
+ * held
+ */
+
+#define SECRET "s3cret-pin-1234"
+
+static void write_secret(FAR struct fixture_s *f, uint16_t seq)
+{
+  uint8_t buf[PNUT_MSG_HEADER + sizeof(SECRET)];
+  struct pnut_msghdr_s hdr;
+
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.version  = PNUT_MSG_VERSION;
+  hdr.kind     = PNUT_KIND_REQUEST;
+  hdr.iface    = 7;
+  hdr.method   = 1;
+  hdr.mversion = 1;
+  hdr.seq      = seq;
+  hdr.len      = sizeof(SECRET);
+  pnut_msg_encode(&hdr, buf);
+  memcpy(buf + PNUT_MSG_HEADER, SECRET, sizeof(SECRET));
+  assert_int_equal(write(f->peer, buf, sizeof(buf)), sizeof(buf));
+}
+
+static bool holds(FAR const uint8_t *buf, size_t size)
+{
+  return memmem(buf, size, SECRET, sizeof(SECRET) - 1) != NULL;
+}
+
+static void test_conn_wipes(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  f->echo = true;
+  write_secret(f, 1);
+  assert_int_equal(pnut_timer_start(f->loop, 1, 1, drain_timer, f, NULL),
+                   0);
+  run_for(f, 100);
+  assert_int_equal(f->msgs, 1);
+  assert_true(holds(f->rx, f->rxlen));      /* The peer has its answer */
+  assert_false(holds(f->conn.rx, PNUT_MSG_MAX));
+  assert_false(holds(f->conn.tx, f->conn.txsize));
+
+  /* Held, unread: gone with the connection's close */
+
+  f->blocked = true;
+  write_secret(f, 2);
+  run_for(f, 50);
+  assert_true(holds(f->conn.rx, PNUT_MSG_MAX));
+  pnut_conn_close(&f->conn);
+  assert_false(holds(f->conn.rx, PNUT_MSG_MAX));
+}
+
 /* Six requests in one write, each answered with a whole message: the
  * connection is held after two or three, reading nothing more, goes on as
  * the peer drains it, and every answer arrives whole and in order.
@@ -285,6 +351,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_conn_held_peer_closes, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_conn_recheck, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_conn_wipes, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("conn", tests, NULL, NULL);
