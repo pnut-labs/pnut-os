@@ -7,7 +7,8 @@
 
 system        states settings power time notifications log board
 telephony     telephony
-radios        radio wifi bluetooth nfc network
+radios        radio bluetooth nfc
+network       wifi network
 sensors       location motion sensors health
 data          messages contacts packages storage
 media         audio camera haptics

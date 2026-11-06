@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Wi-Fi (RFC 0031): the Wi-Fi radio, kept by a module of the network
+// program.  It scans, joins a network, and says the link's state on the
+// wifi topic.  For the system UI and the developer's shell (RFC 0012),
+// which have the same rights; apps reach the network through Network
+// (RFC 0015), never here.
+//
+// The networks joined before, kept with their passphrases as secrets in
+// Settings, come with Settings' secrets (RFC 0031's first step): until
+// then a passphrase is given with each join, and kept in Wi-Fi's memory
+// only, to join a lost network again.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Wifi {
+  option (pnut.iface) = 8;
+
+  // The networks in reach, one at a time as credit allows; the stream
+  // ends when the scan is over.  The radio is brought up for it if it is
+  // off, and taken down again after.
+  rpc Scan (WifiScanRequest) returns (stream WifiNetwork) {
+    option (pnut.method) = 1;
+  }
+
+  // Join a network: answered once it is joined and has an address, or
+  // failed.  Wi-Fi must be on (wifi.enabled).  It takes up to about 35 s
+  // (the access point 15 s, DHCP the rest): a caller waits a minute.
+  rpc Join (WifiJoinRequest) returns (WifiReply) {
+    option (pnut.method) = 2;
+  }
+
+  // Leave the network joined, until the next join
+  rpc Leave (WifiLeaveRequest) returns (WifiReply) {
+    option (pnut.method) = 3;
+  }
+}
+
+// The detail of an error answer (pnut.Error's code)
+message WifiError {
+  enum Code {
+    NONE = 0;
+    DENIED = 1;                   // For the system UI and the shell only
+    OFF = 2;                      // Wi-Fi is off (wifi.enabled)
+    NO_RADIO = 3;                 // The radio would not come up
+    NOT_FOUND = 4;                // No such network in reach
+    REFUSED = 5;                  // The network did not take the device:
+                                  // a wrong passphrase, or out of reach
+                                  // (the driver cannot tell them apart)
+    NO_ADDRESS = 6;               // Joined, but DHCP gave no address
+    CANCELLED = 7;                // Left, or Wi-Fi turned off, first
+  }
+}
+
+enum WifiSecurity {
+  WIFI_SECURITY_OPEN = 0;
+  WIFI_SECURITY_SECURED = 1;      // WPA2 or WPA3, Personal
+}
+
+message WifiScanRequest {
+}
+
+message WifiNetwork {
+  string name = 1 [(nanopb).max_size = 33];  // Up to 32 bytes
+  sint32 signal = 2;              // dBm
+  WifiSecurity security = 3;
+  uint32 channel = 4;             // 0 if not known
+}
+
+message WifiJoinRequest {
+  string name = 1 [(nanopb).max_size = 33];
+
+  // For a secured network: 8 to 63 characters; empty for an open one
+  string passphrase = 2 [(nanopb).max_size = 64, (pnut.sensitive) = true];
+}
+
+message WifiLeaveRequest {
+}
+
+message WifiReply {
+}
+
+// The link's state, on the wifi topic.  The network's name is shown to
+// the device's owner; no passphrase goes anywhere.
+message WifiInfo {
+  option (pnut.topic) = "wifi";
+
+  enum State {
+    OFF = 0;                      // wifi.enabled off, or the radio
+                                  // would not come up (failure NO_RADIO)
+    ON = 1;                       // On, no network joined
+    JOINING = 2;
+    JOINED = 3;
+  }
+
+  State state = 1;
+  string name = 2 [(nanopb).max_size = 33];   // The network, when joining
+                                              // or joined
+  sint32 signal = 3;              // dBm, when joined
+  fixed32 address = 4;            // IPv4, network order, when joined
+  WifiError.Code failure = 5;     // Why the last join failed; NONE if not
+}
+
+// Wi-Fi's settings (RFC 0025)
+message WifiSettings {
+  option (pnut.settings) = "wifi";
+
+  // Wi-Fi on: the radio up, joining what it is asked to.  Off by default
+  // (RFC 0031): a radio up keeps the device from its light sleep.
+  bool enabled = 1 [(pnut.setting) = { default: "false",
+                                       label: "wifi.enabled",
+                                       public: true }];
+}

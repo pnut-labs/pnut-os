@@ -1,0 +1,43 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_NETWORK
+	bool "The network program"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB && PNUT_SYSTEM && WIRELESS_WAPI && NETUTILS_DHCPC && NETUTILS_NETLIB
+	---help---
+		The network program (RFC 0031): Wi-Fi, which scans, joins a
+		network and takes an address, and says the link's state on the
+		wifi topic; RFC 0015's Network later.
+
+if PNUT_NETWORK
+
+config PNUT_NETWORK_STACKSIZE
+	int "The program's stack, in bytes"
+	default 8192
+
+config PNUT_NETWORK_WORKER_STACKSIZE
+	int "A worker's stack, in bytes"
+	default 6144
+	---help---
+		The worker makes the radio's calls: the driver's association
+		and DHCP run on its stack, as they ran on the system before
+		this one's 6 KB thread.
+
+config PNUT_WIFI_IFNAME
+	string "The Wi-Fi interface"
+	default "wlan0"
+
+config PNUT_WIFI_ENABLE
+	string "The board's device that brings the Wi-Fi driver up"
+	default ""
+	---help---
+		A GPIO device written 1 once, as the T-Deck Max's /dev/wifi_en,
+		where the board leaves the driver down until asked; empty where
+		the driver is up from the start.
+
+endif
