@@ -208,6 +208,16 @@ int main(int argc, FAR char *argv[])
 
   config.fds    = 32;
 
+#ifdef CONFIG_PNUT_TIME_NTP
+  /* Two workers: Time's NTP question may wait half a minute for a name
+   * server, and Settings' and Log's writes should not wait behind it
+   * (each runs one write at a time itself; Settings' loads at start, one
+   * per owner, read files of their own)
+   */
+
+  config.workers = 2;
+#endif
+
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)
     {

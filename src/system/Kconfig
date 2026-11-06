@@ -206,6 +206,14 @@ config PNUT_POWER_HALT_WAIT
 		CONFIG_SYSTEM_NXINIT_SERVICE_GENTLE_KILL_TIMEOUT, after which
 		NxInit kills a program that has not stopped.
 
+config PNUT_TIME_NTP
+	bool "Time asks NTP"
+	default y
+	depends on NET_UDP && LIBC_NETDB
+	---help---
+		Time reads the time from an NTP server (its setting ntp_server)
+		while Wi-Fi is joined to a network (RFC 0028, RFC 0031).
+
 config PNUT_TIME_STATE
 	string "Time's state file"
 	default "/tmp/time"

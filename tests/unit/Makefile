@@ -33,6 +33,10 @@ CMOCKA_LIBS   ?= -lcmocka
 CFLAGS  := -std=gnu11 -O1 -g -Wall -Werror -I$(LIB)/include -I$(LIB)
 CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA) -I$(NETWORK)
 CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
+
+# Time's NTP, which the host's network can serve the tests
+
+CFLAGS  += -DCONFIG_PNUT_TIME_NTP=1
 LDLIBS  := $(CMOCKA_LIBS) -lpthread
 
 # libpnut, the programs' modules, the interfaces' generated code

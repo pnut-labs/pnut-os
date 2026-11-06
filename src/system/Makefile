@@ -20,6 +20,10 @@ CSRCS     = board.c logs.c power.c programs.c settings.c settings_store.c
 CSRCS    += states.c
 CSRCS    += wallclock.c
 
+ifeq ($(CONFIG_PNUT_TIME_NTP),y)
+CSRCS    += ntp.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
