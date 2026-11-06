@@ -50,6 +50,10 @@
 #define STORE_PATH_MAX      96
 #define STORE_NAME_LEN      29        /* A segment's file name */
 #define STORE_TEMP          ".new"    /* A rewrite's file, renamed after */
+#define STORE_IDS           "ids"     /* The next ids, as they were at the
+                                       * last removal: a floor at start */
+#define STORE_ASIDE         ".bad"    /* A segment that could not be read,
+                                       * renamed: kept, out of the store */
 #define STORE_DIR_MAX \
   (STORE_PATH_MAX - 1 - 1 - STORE_NAME_LEN - (int)sizeof(STORE_TEMP))
 #define STORE_PAGE          2         /* Messages in a page (messages.proto) */
@@ -130,6 +134,11 @@ struct store_s
   uint32_t reasons_cap;
   uint32_t cut;                   /* Segments cut back as they loaded */
   uint32_t bad;                   /* Files left aside: no head */
+  bool set_aside;                 /* Given to store_load(): a segment
+                                   * that cannot be read is renamed to
+                                   * <name>.bad (.bad1 to .bad9 if taken),
+                                   * the rest loaded */
+  uint32_t aside;                 /* Segments so renamed */
 
   /* Plans' records, on the loop: too large for its stack */
 
@@ -187,6 +196,9 @@ struct store_remove_s
   FAR char (*paths)[STORE_PATH_MAX];
   uint32_t done;                  /* The files removed, first to last */
   int ret;
+  char ids[STORE_PATH_MAX];       /* Written first: ids never go back */
+  uint64_t next_msg;
+  uint64_t next_conv;
 };
 
 /* A segment rewritten without the messages that may go, to make room:
@@ -215,6 +227,8 @@ struct store_rewrite_s
                                    * other segments, sorted: records about
                                    * them stay */
   uint64_t next;                  /* The next message's id, for its head */
+  uint64_t next_conv;
+  char ids[STORE_PATH_MAX];       /* Written before a segment goes */
   uint32_t size;                  /* The new file's; 0 when removed */
   int ret;
 };
@@ -421,6 +435,9 @@ int store_page(FAR struct store_s *store, FAR const struct store_read_s *r,
 
 int store_oldest_queued(FAR struct store_s *store, FAR const char *transport,
                         FAR uint64_t *conversation, FAR uint64_t *message);
+int store_oldest_status(FAR struct store_s *store, FAR const char *transport,
+                        uint8_t status, FAR uint64_t *conversation,
+                        FAR uint64_t *message);
 
 /****************************************************************************
  * Name: store_plan_latest, store_latest

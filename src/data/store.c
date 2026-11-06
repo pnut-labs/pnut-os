@@ -816,6 +816,122 @@ static bool store_name(FAR const char *name, FAR uint64_t *conversation,
 }
 
 /****************************************************************************
+ * Name: store_ids_write, store_ids_read
+ *
+ * Description:
+ *   The next ids, written before files go: the newest messages or
+ *   conversation may be in them, and their ids must not be given again
+ *   after a restart (a transport's late report names a message by its
+ *   id).  Written beside, then renamed over; read at start as a floor.
+ *   Best effort: a removal frees room, so it goes on without it.
+ *
+ ****************************************************************************/
+
+static int store_ids_write(FAR const char *path, uint64_t next_msg,
+                           uint64_t next_conv)
+{
+  char temp[STORE_PATH_MAX + sizeof(STORE_TEMP)];
+  char line[64];
+  int len;
+  ssize_t n;
+  int done;
+  int fd;
+  int ret = OK;
+
+  snprintf(temp, sizeof(temp), "%s" STORE_TEMP, path);
+  len = snprintf(line, sizeof(line), "pnut-ids 1 %" PRIu64 " %" PRIu64 "\n",
+                 next_msg, next_conv);
+  if (len < 0 || len >= (int)sizeof(line))
+    {
+      return -EINVAL;             /* Cannot be: 53 characters at most */
+    }
+
+  fd = open(temp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0)
+    {
+      return -errno;
+    }
+
+  /* Whole, however the writes come; the error as it is */
+
+  for (done = 0; done < len && ret == OK; )
+    {
+      n = write(fd, line + done, len - done);
+      if (n > 0)
+        {
+          done += (int)n;
+        }
+      else if (n < 0 && errno != EINTR)
+        {
+          ret = -errno;
+        }
+      else if (n == 0)
+        {
+          ret = -EIO;
+        }
+    }
+
+  if (ret == OK && fsync(fd) < 0)
+    {
+      ret = -errno;
+    }
+
+  close(fd);
+  if (ret == OK && rename(temp, path) < 0)
+    {
+      ret = -errno;
+    }
+
+  if (ret < 0)
+    {
+      unlink(temp);
+    }
+
+  return ret;
+}
+
+static void store_ids_read(FAR struct store_s *store)
+{
+  char path[STORE_PATH_MAX];
+  char line[64];
+  uint64_t next_msg;
+  uint64_t next_conv;
+  ssize_t n;
+  int fd;
+
+  snprintf(path, sizeof(path), "%s/" STORE_IDS, store->dir);
+  fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    {
+      return;
+    }
+
+  n = read(fd, line, sizeof(line) - 1);
+  close(fd);
+  if (n <= 0)
+    {
+      return;
+    }
+
+  line[n] = '\0';
+  if (sscanf(line, "pnut-ids 1 %" SCNu64 " %" SCNu64, &next_msg,
+             &next_conv) != 2)
+    {
+      return;
+    }
+
+  if (next_msg > store->next_msg)
+    {
+      store->next_msg = next_msg;
+    }
+
+  if (next_conv > store->next_conv)
+    {
+      store->next_conv = next_conv;
+    }
+}
+
+/****************************************************************************
  * Name: store_found_cmp, store_conv_cmp
  *
  * Description:
@@ -1033,6 +1149,8 @@ static int store_plan_rewrite(FAR struct store_s *store, uint32_t idx,
   rw->conversation = conv->id;
   rw->segment      = segment;
   rw->next         = store->next_msg;
+  rw->next_conv    = store->next_conv;
+  snprintf(rw->ids, sizeof(rw->ids), "%s/" STORE_IDS, store->dir);
   ret = store_path(store, conv->id, segment, rw->path);
   if (ret < 0 ||
       snprintf(rw->temp, sizeof(rw->temp), "%s" STORE_TEMP, rw->path) >=
@@ -1130,6 +1248,7 @@ int store_load(FAR struct store_s *store)
 {
   FAR struct store_found_s *found = NULL;
   FAR struct dirent *de;
+  uint32_t asides = 0;
   uint32_t nfound = 0;
   uint32_t cap = 0;
   char path[STORE_PATH_MAX];
@@ -1219,14 +1338,65 @@ int store_load(FAR struct store_s *store)
         }
 
       /* Any other failure fails the load: a file left out of the index
-       * could be written over, as a new segment of its number
+       * could be written over, as a new segment of its number.  Unless
+       * the caller says to, after failing so a few times: the file is
+       * renamed aside, kept as it is, and the rest of the store loads.
+       * Not for want of memory, which passes.
        */
+
+      if (ret < 0 && ret != -ENOMEM && store->set_aside)
+        {
+          char aside[STORE_PATH_MAX + sizeof(STORE_ASIDE) + 1];
+          int n;
+
+          /* Never over one set aside before: a digit after it, up to 9 */
+
+          snprintf(aside, sizeof(aside), "%s" STORE_ASIDE, path);
+          for (n = 1; n < 10 && access(aside, F_OK) == 0; n++)
+            {
+              snprintf(aside, sizeof(aside), "%s" STORE_ASIDE "%c", path,
+                       '0' + n);
+            }
+
+          if (access(aside, F_OK) != 0 && rename(path, aside) == 0)
+            {
+              /* Its conversation's id is never given again, though
+               * nothing of it loaded
+               */
+
+              if (found[i].conversation >= store->next_conv)
+                {
+                  store->next_conv = found[i].conversation + 1;
+                }
+
+              store->aside++;
+              asides++;
+              ret = OK;
+            }
+        }
     }
 
   free(found);
   if (ret < 0)
     {
       return ret;
+    }
+
+  store_ids_read(store);
+
+  /* Segments set aside may have held the newest ids: the next skips past
+   * them by segmax per segment (a file of segmax bytes holds fewer than
+   * segmax records; one rewritten many times without a removal could in
+   * principle have covered more ids than it holds, past any device's
+   * use), kept in the ids file, since the next start reads no set-aside
+   * file
+   */
+
+  if (asides > 0)
+    {
+      store->next_msg += (uint64_t)asides * store->segmax;
+      snprintf(path, sizeof(path), "%s/" STORE_IDS, store->dir);
+      store_ids_write(path, store->next_msg, store->next_conv);
     }
 
   /* A conversation whose newest was deleted: the text of the one before
@@ -1792,6 +1962,15 @@ int store_plan_one(FAR struct store_s *store, uint64_t conversation,
 int store_oldest_queued(FAR struct store_s *store, FAR const char *transport,
                         FAR uint64_t *conversation, FAR uint64_t *message)
 {
+  return store_oldest_status(store, transport,
+                             PNUT_MESSAGES_MESSAGE_STATUS_QUEUED,
+                             conversation, message);
+}
+
+int store_oldest_status(FAR struct store_s *store, FAR const char *transport,
+                        uint8_t status, FAR uint64_t *conversation,
+                        FAR uint64_t *message)
+{
   FAR struct store_conv_s *conv;
   FAR struct store_msg_s *msg;
   uint64_t best = UINT64_MAX;
@@ -1806,13 +1985,12 @@ int store_oldest_queued(FAR struct store_s *store, FAR const char *transport,
           continue;
         }
 
-      /* Ids grow: a conversation's first queued is its oldest */
+      /* Ids grow: a conversation's first of a status is its oldest */
 
       for (j = 0; j < conv->nmsgs; j++)
         {
           msg = &conv->msgs[j];
-          if ((msg->flags & STORE_DELETED) == 0 &&
-              msg->status == PNUT_MESSAGES_MESSAGE_STATUS_QUEUED)
+          if ((msg->flags & STORE_DELETED) == 0 && msg->status == status)
             {
               if (msg->id < best)
                 {
@@ -1994,7 +2172,10 @@ int store_plan_remove(FAR struct store_s *store, uint64_t conversation,
         }
     }
 
-  rm->n = conv->nsegs;
+  rm->n         = conv->nsegs;
+  rm->next_msg  = store->next_msg;
+  rm->next_conv = store->next_conv;
+  snprintf(rm->ids, sizeof(rm->ids), "%s/" STORE_IDS, store->dir);
   return OK;
 }
 
@@ -2005,6 +2186,8 @@ void store_remove_run(FAR struct store_remove_s *rm)
   /* First to last, stopping at a file that stays: those left are always
    * the last ones, which hold every deletion about the messages in them
    */
+
+  store_ids_write(rm->ids, rm->next_msg, rm->next_conv);
 
   rm->ret = OK;
   for (i = 0; i < rm->n; i++)
@@ -2290,6 +2473,7 @@ void store_rewrite_run(FAR struct store_rewrite_s *rw)
 
   if (!body)
     {
+      store_ids_write(rw->ids, rw->next, rw->next_conv);
       rw->size = 0;
       if (unlink(rw->path) < 0 && errno != ENOENT)
         {

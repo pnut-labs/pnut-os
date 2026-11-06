@@ -658,7 +658,8 @@ static void wifi_next(FAR struct wifi_s *wifi)
 
   if (!wifi->enabled && wifi->radio && !wifi->scan.open)
     {
-      job = WIFI_JOB_DOWN;
+      job    = WIFI_JOB_DOWN;
+      wanted = &wifi->leave_wanted;   /* Left, too, once down */
     }
   else if (wifi->leave_wanted)
     {
@@ -987,17 +988,36 @@ static void wifi_settings(FAR struct pnut_settings_cache_s *cache,
            enabled ? "on" : "off");
   if (!enabled)
     {
+      /* Off on the topic at once, for its readers: the radio goes down
+       * after a job that holds it, a scan, has ended
+       */
+
       wifi_drop_join(wifi, PNUT_WIFI_ERROR_CODE_OFF);
       wifi_cancel(wifi, &wifi->link);
       wifi->link_due = false;
-      if (!wifi->radio)
+
+      /* A network joined, or being joined, is left even if Wi-Fi is on
+       * again before the radio goes down: its passphrase is gone
+       */
+
+      if (wifi->state.state == PNUT_WIFI_INFO_STATE_JOINED ||
+          wifi_joining(wifi))
         {
-          wifi_set_state(wifi, PNUT_WIFI_INFO_STATE_OFF);
+          wifi->leave_wanted = true;
         }
+
+      wifi_set_state(wifi, PNUT_WIFI_INFO_STATE_OFF);
     }
   else
     {
       wifi->radio_failed = false;   /* Off and on: tried again */
+
+      /* On again before the radio went down */
+
+      if (wifi->radio && wifi->state.state == PNUT_WIFI_INFO_STATE_OFF)
+        {
+          wifi_set_state(wifi, PNUT_WIFI_INFO_STATE_ON);
+        }
     }
 
   wifi_next(wifi);

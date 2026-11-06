@@ -281,6 +281,13 @@ int main(int argc, FAR char *argv[])
   lconfig.crash_size = CONFIG_PNUT_LOG_CRASH_SIZE;
   lconfig.delay      = CONFIG_PNUT_LOG_DELAY;
   lconfig.batch      = CONFIG_PNUT_LOG_BATCH;
+  lconfig.service    = LOGS_SERVICE;
+  lconfig.who        = system_who;
+  lconfig.identity   = states;
+#ifdef CONFIG_PNUT_SETTINGS_SHELLS
+  lconfig.origin     = system_origin;
+  lconfig.shells     = CONFIG_PNUT_SETTINGS_SHELLS;
+#endif
   logs_init(logs, &lconfig);
 
   /* Without a way to power off, the guard never acts: it would only stop

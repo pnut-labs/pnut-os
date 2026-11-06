@@ -871,6 +871,28 @@ static void tk_end(FAR struct msgt_s *t)
   assert_int_equal(t->page.messages[0].status,
                    PNUT_MESSAGES_MESSAGE_STATUS_SENDING);
   assert_int_equal(t->take_end, -1);
+
+  /* The transport's Take closes, as when its program restarts: what it
+   * had taken is not known to be sent
+   */
+
+  assert_int_equal(pnut_messages_take_cancel(&t->client, t->sno), 0);
+  msgt_wait(t);
+}
+
+static void tk_closed_read(FAR struct msgt_s *t)
+{
+  msgt_read(t, t->a);
+}
+
+static void tk_closed(FAR struct msgt_s *t)
+{
+  assert_int_equal(t->status, PNUT_STATUS_OK);
+  assert_string_equal(t->page.messages[0].text, "third");
+  assert_int_equal(t->page.messages[0].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_UNCONFIRMED);
+  assert_int_equal(t->page.messages[1].status,
+                   PNUT_MESSAGES_MESSAGE_STATUS_FAILED);
   msgt_next(t);
 }
 
@@ -878,7 +900,7 @@ static const msgt_step_t g_take[] =
 {
   tk_reg, tk_send1, tk_take, tk_got1, tk_nocredit, tk_credit, tk_got2,
   tk_rep2, tk_rep_bad, tk_rep_other, tk_read, tk_atonce, tk_check, tk_end,
-  NULL
+  tk_closed_read, tk_closed, NULL
 };
 
 /* After a restart: the one left sending is not known to be sent */

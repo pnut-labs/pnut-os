@@ -586,7 +586,7 @@ static bool wifit_off(FAR struct wifit_s *t)
         wifit_enable(t, false);
         break;
 
-      case 3:                     /* Up while the stream is open */
+      case 3:                     /* Up while the stream is open, off */
         if (t->ticks < 5)
           {
             return false;
@@ -594,6 +594,7 @@ static bool wifit_off(FAR struct wifit_s *t)
 
         assert_true(t->up);
         assert_false(t->scan_over);
+        assert_int_equal(t->state.state, PNUT_WIFI_INFO_STATE_OFF);
         assert_int_equal(pnut_wifi_scan_credit(&t->client, t->sno, 4), 0);
         break;
 
@@ -636,6 +637,80 @@ static bool wifit_off(FAR struct wifit_s *t)
 
         assert_int_equal(t->jstatus, PNUT_STATUS_UNAVAILABLE);
         assert_int_equal(t->jcode, PNUT_WIFI_ERROR_CODE_OFF);
+        break;
+    }
+
+  return true;
+}
+
+/* Joined, Wi-Fi off and on again while a scan holds the radio: the
+ * network is still left, and the radio taken down and up again
+ */
+
+static bool wifit_off_on(FAR struct wifit_s *t)
+{
+  static int downs;
+
+  if (t->waiting || t->jwaiting)
+    {
+      return false;
+    }
+
+  switch (t->step)
+    {
+      case 0:                     /* Off at first: turned on */
+        wifit_enable(t, true);
+        break;
+
+      case 1:                     /* On: joined */
+        if (t->state.state != PNUT_WIFI_INFO_STATE_ON)
+          {
+            return false;
+          }
+
+        wifit_join(t, HOME_PASS);
+        break;
+
+      case 2:                     /* Joined: a slow scan */
+        if (t->state.state != PNUT_WIFI_INFO_STATE_JOINED)
+          {
+            return false;
+          }
+
+        t->scan_ms = 300;
+        wifit_scan(t, 4);
+        break;
+
+      case 3:                     /* Scanning: off */
+        if (t->ticks < 5)
+          {
+            return false;
+          }
+
+        assert_false(t->scan_over);
+        downs = t->downs;
+        wifit_enable(t, false);
+        break;
+
+      case 4:                     /* Off at once: on again, mid-scan */
+        if (t->state.state != PNUT_WIFI_INFO_STATE_OFF)
+          {
+            return false;
+          }
+
+        assert_false(t->scan_over);
+        wifit_enable(t, true);
+        break;
+
+      case 5:                     /* Left: down, up, on */
+        if (!t->scan_over || t->downs == downs || !t->up ||
+            t->state.state != PNUT_WIFI_INFO_STATE_ON)
+          {
+            return false;
+          }
+
+        assert_false(t->linked);
+        t->scan_ms = 0;
         break;
     }
 
@@ -790,6 +865,11 @@ static void test_wifi_off(void **state)
   wifit_run(wifit_off, 7);
 }
 
+static void test_wifi_off_on(void **state)
+{
+  wifit_run(wifit_off_on, 5);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -802,6 +882,7 @@ int main(void)
     cmocka_unit_test(test_wifi_no_radio),
     cmocka_unit_test(test_wifi_busy),
     cmocka_unit_test(test_wifi_off),
+    cmocka_unit_test(test_wifi_off_on),
   };
 
   return cmocka_run_group_tests_name("wifi", tests, NULL, NULL);
