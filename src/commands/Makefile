@@ -17,6 +17,13 @@ MODULE    = $(CONFIG_PNUT_COMMANDS)
 
 MAINSRC   = settings.c telephony.c messages.c logs.c wifi.c
 
+# The computers adb lets in, while adbd keeps the keys offered (RFC 0012)
+
+ifneq ($(CONFIG_ADBD_AUTH_PUBKEY),)
+PROGNAME += adbkeys
+MAINSRC  += adbkeys.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen

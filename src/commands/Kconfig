@@ -16,9 +16,10 @@ config PNUT_COMMANDS
 		through (RFC 0030); messages, the messages store's
 		conversations, read, sent and deleted (RFC 0029); logs, the
 		log kept in files and the crash reports (RFC 0026); wifi,
-		Wi-Fi's state, a scan, a network joined and left (RFC 0031).
-		A command typed in the developer's shell may do what the system
-		UI may (PNUT_SETTINGS_SHELLS).
+		Wi-Fi's state, a scan, a network joined and left (RFC 0031);
+		adbkeys, with adbd keeping the keys offered, the computers adb
+		lets in (RFC 0012).  A command typed in the developer's shell
+		may do what the system UI may (PNUT_SETTINGS_SHELLS).
 
 if PNUT_COMMANDS
 
