@@ -2445,6 +2445,20 @@ static void logs_stop(FAR struct pnut_module_s *module,
       logs->watching = false;
     }
 
+  /* Still reading: never written beside, so the last lines are not kept,
+   * as when a write runs on (below)
+   */
+
+  if (logs->reading &&
+      !__atomic_load_n(&logs->read.finished, __ATOMIC_ACQUIRE))
+    {
+      pnut_log(module, PNUT_LOG_ERROR,
+               "A read runs on: the last lines not kept");
+      close(logs->fd);
+      logs->fd = -1;
+      return;
+    }
+
   for (waited = 0;
        logs->writing && waited < LOGS_STOP_WAIT_MS &&
        !__atomic_load_n(&logs->write.finished, __ATOMIC_ACQUIRE);
