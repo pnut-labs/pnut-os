@@ -13,6 +13,8 @@ Every interface has a number, given in its `.proto` file with
 | 4 | `pnut.Board`, the device's description (RFC 0024) | `proto/pnut/board.proto` |
 | 5 | `pnut.Telephony`, the modem and the network (RFC 0030) | `proto/pnut/telephony.proto` |
 | 6 | `pnut.Messages`, the device's text messages (RFC 0029) | `proto/pnut/messages.proto` |
+| 7 | `pnut.Log`, the kept log and the crash reports (RFC 0026) | `proto/pnut/log.proto` |
+| 8 | `pnut.Wifi`, the Wi-Fi radio (RFC 0031) | `proto/pnut/wifi.proto` |
 | 65000 | `pnut.test.Echo`, libpnut's tests | `tests/proto/pnut/test/echo.proto` |
 
 Numbers from 65000 are for tests.
