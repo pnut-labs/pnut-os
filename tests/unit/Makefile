@@ -18,6 +18,7 @@ LIB    := $(ROOT)/src/lib
 SYSTEM := $(ROOT)/src/system
 TELEPHONY := $(ROOT)/src/telephony
 DATA   := $(ROOT)/src/data
+NETWORK := $(ROOT)/src/network
 BUILD  := $(ROOT)/build/unit
 
 # The interfaces' code and nanopb: the top-level Makefile names them
@@ -30,7 +31,7 @@ CMOCKA_CFLAGS ?=
 CMOCKA_LIBS   ?= -lcmocka
 
 CFLAGS  := -std=gnu11 -O1 -g -Wall -Werror -I$(LIB)/include -I$(LIB)
-CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA)
+CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA) -I$(NETWORK)
 CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
 LDLIBS  := $(CMOCKA_LIBS) -lpthread
 
@@ -42,8 +43,13 @@ SRCS    += $(shell find $(GEN) -name '*.c' 2> /dev/null)
 SRCS    += $(filter-out %/main.c,$(wildcard $(SYSTEM)/*.c))
 SRCS    += $(filter-out %/main.c,$(wildcard $(TELEPHONY)/*.c))
 SRCS    += $(filter-out %/main.c,$(wildcard $(DATA)/*.c))
+
+# The network program's Wi-Fi; its radio is NuttX's driver: the tests
+# give a fake
+
+SRCS    += $(NETWORK)/wifi.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
-HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h)
+HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)
 TESTS   := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 
