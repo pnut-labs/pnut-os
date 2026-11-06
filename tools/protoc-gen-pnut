@@ -92,6 +92,45 @@ class Msg:
 
 
 
+# Message types whose instances hold a field marked (pnut.sensitive), by
+# their full names (".pkg.Msg"); filled from every file protoc read
+
+SENSITIVE = {}
+
+
+def sensitive_types(proto_files):
+    """The messages holding a sensitive field, nested messages' included."""
+    descs = {}
+
+    def walk(prefix, messages):
+        for m in messages:
+            full = f"{prefix}.{m.name}"
+            descs[full] = m
+            walk(full, m.nested_type)
+
+    for f in proto_files:
+        walk(f".{f.package}" if f.package else "", f.message_type)
+
+    found = {}
+
+    def check(name, seen):
+        if name in found:
+            return found[name]
+        if name in seen or name not in descs:
+            return False
+        seen = seen | {name}
+        hit = False
+        for field in descs[name].field:
+            if field.options.Extensions[options_pb2.sensitive]:
+                hit = True
+            elif field.type_name and check(field.type_name, seen):
+                hit = True
+        found[name] = hit
+        return hit
+
+    return {name: check(name, frozenset()) for name in descs}
+
+
 class Method:
     def __init__(self, svc, desc):
         opts = desc.options
@@ -110,6 +149,14 @@ class Method:
         self.reply = Msg(desc.output_type)   # A stream's item
         self.stream = desc.server_streaming
         self.doc = ""
+
+        # A secret in the request or the reply: its copies are wiped
+
+        self.req_sensitive = SENSITIVE.get(desc.input_type, False)
+        self.reply_sensitive = SENSITIVE.get(desc.output_type, False)
+        if self.stream and (self.req_sensitive or self.reply_sensitive):
+            raise GenError(f"{svc.full}.{desc.name}: a stream's messages "
+                           "cannot hold a (pnut.sensitive) field")
 
         if not 0 < self.number < 0x10000:
             raise GenError(f"{svc.full}.{desc.name}: method {self.number}")
@@ -924,10 +971,11 @@ def header(path, svc, fdesc):
     w.append("/* The server: a program keeps one for each service of this")
     w.append(" * interface it serves.  A handler's request body is valid "
              "while the")
-    w.append(" * handler runs; to answer later, keep a copy of *req, and of "
-             "what is")
-    w.append(" * needed of the body.  A handler left NULL is not served.  An "
-             "error")
+    w.append(" * handler runs (one holding a (pnut.sensitive) field is "
+             "wiped then);")
+    w.append(" * to answer later, keep a copy of *req, and of what is "
+             "needed of the")
+    w.append(" * body.  A handler left NULL is not served.  An error")
     w.append(" * answer may carry a detail, pnut.Error, given with "
              f"{p}_fail();")
     w.append(" * its code is one of the interface's own (RFC 0023), and its "
@@ -1376,6 +1424,9 @@ def source(path, svc, fdesc):
         w.append(f"  if (!pb_decode(&stream, {m.req.fields}, "
                  f"&server->in.{m.snake}))")
         w.append("    {")
+        if m.req_sensitive:
+            w.append(f"      explicit_bzero(&server->in.{m.snake}, "
+                     f"sizeof(server->in.{m.snake}));")
         w.append("      pnut_reply(req, PNUT_STATUS_INVALID, NULL, 0);")
         w.append("      return;")
         w.append("    }")
@@ -1383,6 +1434,13 @@ def source(path, svc, fdesc):
         w.append(f"  server->handlers->{m.snake}(server, req, "
                  f"&server->in.{m.snake},")
         w.append("                     server->arg);")
+        if m.req_sensitive:
+            w.append("")
+            w.append("  /* A secret in it (pnut.sensitive): the handler "
+                     "copied what it keeps */")
+            w.append("")
+            w.append(f"  explicit_bzero(&server->in.{m.snake}, "
+                     f"sizeof(server->in.{m.snake}));")
         w.append("}")
         w.append("")
 
@@ -1454,6 +1512,13 @@ def source(path, svc, fdesc):
         w.append("    }")
         w.append("")
         w.append("  done(client, status, out, err, darg);")
+        if m.reply_sensitive:
+            w.append("")
+            w.append("  /* A secret in it (pnut.sensitive): done copied what "
+                     "it keeps */")
+            w.append("")
+            w.append(f"  explicit_bzero(&client->in.{m.snake}, "
+                     f"sizeof(client->in.{m.snake}));")
         w.append("}")
         w.append("")
 
@@ -1558,6 +1623,8 @@ def source(path, svc, fdesc):
                  "(server->out,")
         w.append("                                               "
                  "sizeof(server->out));")
+        if m.reply_sensitive:
+            w.append("  int ret;")
         w.append("")
         w.append("  /* Closed, the request's connection is gone with it */")
         w.append("")
@@ -1572,11 +1639,24 @@ def source(path, svc, fdesc):
         w.append("  if (status == PNUT_STATUS_OK && out != NULL &&")
         w.append(f"      !pb_encode(&stream, {m.reply.fields}, out))")
         w.append("    {")
+        if m.reply_sensitive:
+            w.append("      explicit_bzero(server->out, "
+                     "sizeof(server->out));")
         w.append("      return -EINVAL;")
         w.append("    }")
         w.append("")
-        w.append("  return pnut_reply(req, status, server->out, "
-                 "(uint16_t)stream.bytes_written);")
+        if m.reply_sensitive:
+            w.append("  /* A secret in it (pnut.sensitive): queued, the "
+                     "copy here goes */")
+            w.append("")
+            w.append("  ret = pnut_reply(req, status, server->out, "
+                     "(uint16_t)stream.bytes_written);")
+            w.append("  explicit_bzero(server->out, "
+                     "stream.bytes_written);")
+            w.append("  return ret;")
+        else:
+            w.append("  return pnut_reply(req, status, server->out, "
+                     "(uint16_t)stream.bytes_written);")
         w.append("}")
         w.append("")
 
@@ -1646,6 +1726,8 @@ def source(path, svc, fdesc):
                  "sizeof(client->out));")
         w.append(f"  if (!pb_encode(&stream, {m.req.fields}, in))")
         w.append("    {")
+        if m.req_sensitive:
+            w.append("      explicit_bzero(client->out, sizeof(client->out));")
         w.append("      return -EINVAL;")
         w.append("    }")
         w.append("")
@@ -1659,6 +1741,12 @@ def source(path, svc, fdesc):
         w.append("                  client->out, "
                  "(uint16_t)stream.bytes_written, timeout,")
         w.append(f"                  {p}_{m.snake}_answer, call);")
+        if m.req_sensitive:
+            w.append("")
+            w.append("  /* A secret in it (pnut.sensitive): queued, the "
+                     "copy here goes */")
+            w.append("")
+            w.append("  explicit_bzero(client->out, stream.bytes_written);")
         w.append("  if (ret < 0)")
         w.append("    {")
         w.append("      call->used = false;")
@@ -1733,6 +1821,7 @@ def generate(request):
     types = set()
     for f in request.proto_file:
         types |= message_names(f)
+    SENSITIVE.update(sensitive_types(request.proto_file))
     ifaces = {}
     names = {}
     owners = {}

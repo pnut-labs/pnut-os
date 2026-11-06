@@ -30,6 +30,19 @@ service Echo {
   rpc Ticks (TicksRequest) returns (stream Ticked) {
     option (pnut.method) = 3;
   }
+
+  // A secret, and the same back: no copy of it is left behind
+  rpc Whisper (WhisperRequest) returns (WhisperReply) {
+    option (pnut.method) = 4;
+  }
+}
+
+message WhisperRequest {
+  string secret = 1 [(nanopb).max_size = 32, (pnut.sensitive) = true];
+}
+
+message WhisperReply {
+  string secret = 1 [(nanopb).max_size = 32, (pnut.sensitive) = true];
 }
 
 message TicksRequest {

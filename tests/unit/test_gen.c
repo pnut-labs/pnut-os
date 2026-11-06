@@ -46,6 +46,8 @@ struct fixture_s
   struct pnut_test_echo_client_s client;
   char rundir[64];
   uint32_t said;                  /* The server's count */
+  char heard[32];                 /* Whisper's secret, at each end */
+  char whispered[32];
   struct pnut_request_s kept;     /* A request answered later */
   char text[64];
   bool later;                     /* Answer later */
@@ -217,9 +219,27 @@ static void on_count(FAR struct pnut_test_echo_server_s *server,
 
 /* Count is left unserved, except by g_all */
 
+/* Whisper: the secret copied, as a handler must, and sent back */
+
+static void on_whisper(FAR struct pnut_test_echo_server_s *server,
+                       FAR const struct pnut_request_s *req,
+                       FAR const pnut_test_whisper_request_t *in,
+                       FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+  pnut_test_whisper_reply_t out = PNUT_TEST_WHISPER_REPLY_INIT_ZERO;
+
+  strlcpy(f->heard, in->secret, sizeof(f->heard));
+  strlcpy(out.secret, in->secret, sizeof(out.secret));
+  assert_int_equal(pnut_test_echo_whisper_reply(server, req, PNUT_STATUS_OK,
+                                                &out), 0);
+  explicit_bzero(&out, sizeof(out));
+}
+
 static const struct pnut_test_echo_handlers_s g_handlers =
 {
-  .say = on_say,
+  .say     = on_say,
+  .whisper = on_whisper,
 };
 
 static const struct pnut_test_echo_handlers_s g_all =
@@ -529,6 +549,58 @@ static void test_gen_say(void **state)
   assert_int_equal(f->status[1], PNUT_STATUS_OK);
   assert_string_equal(f->out[1].text, "ho");
   assert_int_equal(f->out[1].count, 2);
+}
+
+/* A message with a secret (pnut.sensitive): it goes there and back, and
+ * no copy is left in the decoded request, the reply's encoding, the
+ * client's encoding or its decoded reply
+ */
+
+#define SECRET "s3cret-pin-1234"
+
+static void on_whispered(FAR struct pnut_test_echo_client_s *client,
+                         int status,
+                         FAR const pnut_test_whisper_reply_t *out,
+                         FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  assert_int_equal(status, PNUT_STATUS_OK);
+  strlcpy(f->whispered, out->secret, sizeof(f->whispered));
+  answered(f, status, err);
+}
+
+static void whisper_state(FAR struct pnut_test_echo_client_s *client,
+                          bool up, FAR void *arg)
+{
+  pnut_test_whisper_request_t in = PNUT_TEST_WHISPER_REQUEST_INIT_ZERO;
+
+  if (up)
+    {
+      strcpy(in.secret, SECRET);
+      assert_int_equal(pnut_test_echo_whisper(client, &in, 0, on_whispered,
+                                              arg), 0);
+      explicit_bzero(&in, sizeof(in));
+    }
+}
+
+static bool holds_secret(FAR const void *buf, size_t size)
+{
+  return memmem(buf, size, SECRET, sizeof(SECRET) - 1) != NULL;
+}
+
+static void test_gen_whisper(void **state)
+{
+  FAR struct fixture_s *f = *state;
+
+  run(f, whisper_state, 1);
+  assert_int_equal(f->answers, 1);
+  assert_string_equal(f->heard, SECRET);
+  assert_string_equal(f->whispered, SECRET);
+  assert_false(holds_secret(&f->server.in, sizeof(f->server.in)));
+  assert_false(holds_secret(f->server.out, sizeof(f->server.out)));
+  assert_false(holds_secret(&f->client.in, sizeof(f->client.in)));
+  assert_false(holds_secret(f->client.out, sizeof(f->client.out)));
 }
 
 /* A method its server leaves unserved is not found */
@@ -1108,6 +1180,7 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test_setup_teardown(test_gen_say, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gen_whisper, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_unserved, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_count, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gen_timeout, setup, teardown),

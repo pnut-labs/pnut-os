@@ -96,4 +96,12 @@ message SettingOptions {
 
 extend google.protobuf.FieldOptions {
   optional SettingOptions setting = 51000;
+
+  // A field that holds a secret: a PIN, a passphrase, a key (RFC 0026).
+  // The generated code wipes every copy of a message that has one once it
+  // is used: a request after its handler returns (a handler copies what
+  // it keeps), a reply once queued, and a client's decoded reply after its
+  // done callback; libpnut wipes its connections' buffers behind every
+  // message as it goes.  Not for a stream's messages.
+  optional bool sensitive = 51001;
 }
