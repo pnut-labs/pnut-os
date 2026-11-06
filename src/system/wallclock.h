@@ -27,6 +27,11 @@
 #include "pnut/time.settings.h"
 #include "pnut/time.topics.h"
 
+#ifdef CONFIG_PNUT_TIME_NTP
+#  include "pnut/wifi.topics.h"
+#  include "ntp.h"
+#endif
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -57,8 +62,13 @@ typedef CODE int (*wallclock_who_t)(FAR void *arg, pid_t pid,
  * gives way to a more preferred source's of the last hour (RFC 0028), and
  * does not move a clock within its own uncertainty.  The sleep clock's
  * rate is the device's description's, announced on the sleep_rate topic
- * for Power; NTP, and learning the unit's own rate from the readings,
- * come later.
+ * for Power; learning the unit's own rate from the readings comes later.
+ *
+ * NTP: Time asks its server itself (ntp_server) while Wi-Fi is joined to
+ * a network (the wifi topic, until the Network service announces links,
+ * RFC 0031), at once and then hourly at most, a failure tried again a
+ * minute later, the wait doubling up to the hour.  The question runs on
+ * a worker: the name's lookup and the answer's wait block.
  */
 
 struct wallclock_config_s
@@ -91,7 +101,31 @@ struct wallclock_config_s
                       FAR struct timespec *ts);
   CODE int (*settime)(FAR void *arg, FAR const struct timespec *ts);
   FAR void *clock;
+
+  /* NTP's port, and its times in ms: between readings, after a failure
+   * (doubled per failure up to the first), and for an answer; 0 for 123,
+   * an hour, a minute, 3 s (the tests give their own)
+   */
+
+  uint16_t ntp_port;
+  uint32_t ntp_every;
+  uint32_t ntp_retry;
+  uint32_t ntp_wait;
 };
+
+#ifdef CONFIG_PNUT_TIME_NTP
+
+/* A question to the NTP server, on a worker */
+
+struct wallclock_ntp_s
+{
+  char server[sizeof(((FAR pnut_time_settings_t *)0)->ntp_server)];
+  uint16_t port;
+  uint32_t wait;
+  int ret;
+  struct ntp_result_s result;
+};
+#endif
 
 /* A reading held, until another source agrees with it */
 
@@ -147,6 +181,20 @@ struct wallclock_s
   bool settings_open;
   bool network_open;
   bool gnss_open;
+
+#ifdef CONFIG_PNUT_TIME_NTP
+  /* NTP, while Wi-Fi is joined */
+
+  struct pnut_wifi_info_reader_s wifi;
+  bool wifi_open;
+  bool linked;                    /* Joined, with an address */
+  bool ntp_working;
+  bool ntp_asap;                  /* Asked for at once while one ran */
+  uint8_t ntp_fails;
+  uint64_t ntp_due;               /* CLOCK_MONOTONIC, ms; 0 at once */
+  FAR struct pnut_timer_s *ntp_timer;
+  struct wallclock_ntp_s ntp;
+#endif
 };
 
 /****************************************************************************

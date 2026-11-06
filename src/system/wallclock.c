@@ -14,9 +14,11 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -24,7 +26,9 @@
 #include <pnut/loop.h>
 #include <pnut/module.h>
 #include <pnut/service.h>
+#include <pnut/timer.h>
 #include <pnut/tz.h>
+#include <pnut/worker.h>
 
 #include "wallclock.h"
 
@@ -77,6 +81,15 @@
  */
 
 #define WALLCLOCK_STALE    60000
+
+/* NTP (RFC 0028): a reading hourly at most; a failure tried again after
+ * a minute, the wait doubling; an answer awaited 3 s, twice
+ */
+
+#define WALLCLOCK_NTP_EVERY 3600000
+#define WALLCLOCK_NTP_RETRY 60000
+#define WALLCLOCK_NTP_WAIT  3000
+#define WALLCLOCK_NTP_TRIES 2
 
 /****************************************************************************
  * Private Function Prototypes
@@ -878,6 +891,234 @@ static void wallclock_gnss(FAR struct pnut_gnss_time_reader_s *reader,
                     PNUT_TIME_INFO_SOURCE_GNSS);
 }
 
+#ifdef CONFIG_PNUT_TIME_NTP
+
+/****************************************************************************
+ * Name: wallclock_ntp_*
+ *
+ * Description:
+ *   NTP while Wi-Fi is joined: a question on a worker when one is due,
+ *   its answer a reading like a source's.
+ *
+ ****************************************************************************/
+
+static void wallclock_ntp_next(FAR struct wallclock_s *wall);
+
+static uint64_t wallclock_mono_ms(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static uint32_t wallclock_or(uint32_t value, uint32_t fallback)
+{
+  return value != 0 ? value : fallback;
+}
+
+static void wallclock_ntp_run(FAR void *arg)
+{
+  FAR struct wallclock_ntp_s *n = arg;
+
+  n->ret = ntp_query(n->server, n->port, n->wait, WALLCLOCK_NTP_TRIES,
+                     &n->result);
+}
+
+static void wallclock_ntp_timer(FAR struct pnut_loop_s *loop,
+                                FAR struct pnut_timer_s *timer,
+                                FAR void *arg)
+{
+  FAR struct wallclock_s *wall = arg;
+
+  wall->ntp_timer = NULL;
+  wallclock_ntp_next(wall);
+}
+
+static void wallclock_ntp_cancel(FAR struct wallclock_s *wall)
+{
+  if (wall->ntp_timer != NULL)
+    {
+      pnut_timer_cancel(wall->module.loop, wall->ntp_timer);
+      wall->ntp_timer = NULL;
+    }
+}
+
+/* The wait after a failure: a minute, doubled per failure, an hour at
+ * most
+ */
+
+static uint64_t wallclock_ntp_backoff(FAR struct wallclock_s *wall)
+{
+  uint64_t every = wallclock_or(wall->config.ntp_every,
+                                WALLCLOCK_NTP_EVERY);
+  uint64_t wait = wallclock_or(wall->config.ntp_retry,
+                               WALLCLOCK_NTP_RETRY);
+  uint8_t i;
+
+  for (i = 1; i < wall->ntp_fails && wait < every; i++)
+    {
+      wait *= 2;
+    }
+
+  return wait < every ? wait : every;
+}
+
+static void wallclock_ntp_done(FAR struct pnut_loop_s *loop, FAR void *arg)
+{
+  FAR struct wallclock_s *wall = (FAR struct wallclock_s *)
+    ((FAR char *)arg - offsetof(struct wallclock_s, ntp));
+  FAR struct wallclock_ntp_s *n = &wall->ntp;
+  uint64_t now = wallclock_mono_ms();
+  uint64_t age;
+  uint64_t wait;
+
+  wall->ntp_working = false;
+  if (n->ret == OK && n->result.utc_ms > 0)
+    {
+      /* Its age, the time's milliseconds too: the reading is whole
+       * seconds
+       */
+
+      age = now > n->result.taken_ms ? now - n->result.taken_ms : 0;
+      age += (uint64_t)(n->result.utc_ms % 1000);
+      wall->ntp_fails = 0;
+      wall->ntp_due   = now + wallclock_or(wall->config.ntp_every,
+                                           WALLCLOCK_NTP_EVERY);
+      pnut_log(&wall->module, PNUT_LOG_DEBUG,
+               "NTP: %" PRId64 " ms, within %" PRIu32 " ms",
+               n->result.utc_ms, n->result.uncertainty_ms);
+      wallclock_reading(wall, n->result.utc_ms / 1000,
+                        n->result.uncertainty_ms, age,
+                        PNUT_TIME_INFO_SOURCE_NTP);
+    }
+  else if (n->ret == -ECONNREFUSED)
+    {
+      /* A kiss-o'-death: the server wants fewer questions, a new link's
+       * too.  It answered: the failures before it no longer count.
+       */
+
+      wall->ntp_fails = 0;
+      wall->ntp_asap  = false;
+      wall->ntp_due  = now + wallclock_or(wall->config.ntp_every,
+                                          WALLCLOCK_NTP_EVERY);
+      pnut_log(&wall->module, PNUT_LOG_WARNING,
+               "The NTP server asks to be left alone: next in %" PRIu32
+               " s", wallclock_or(wall->config.ntp_every,
+                                  WALLCLOCK_NTP_EVERY) / 1000);
+    }
+  else
+    {
+      if (wall->ntp_fails < UINT8_MAX)
+        {
+          wall->ntp_fails++;
+        }
+
+      wait = wallclock_ntp_backoff(wall);
+      wall->ntp_due = now + wait;
+      pnut_log(&wall->module, PNUT_LOG_INFO,
+               "NTP failed: %d; again in %" PRIu64 " ms", n->ret, wait);
+    }
+
+  /* A new link or server came while it ran: asked again at once */
+
+  if (wall->ntp_asap)
+    {
+      wall->ntp_asap = false;
+      wall->ntp_due  = 0;
+    }
+
+  wallclock_ntp_next(wall);
+}
+
+static void wallclock_ntp_next(FAR struct wallclock_s *wall)
+{
+  FAR const char *server = wall->settings.values.ntp_server;
+  FAR struct wallclock_ntp_s *n = &wall->ntp;
+  uint64_t now;
+  uint64_t wait;
+  int ret;
+
+  if (wall->ntp_working || !wall->linked || server[0] == '\0')
+    {
+      return;
+    }
+
+  now = wallclock_mono_ms();
+  if (now < wall->ntp_due)
+    {
+      if (wall->ntp_timer == NULL)
+        {
+          wait = wall->ntp_due - now;
+          ret  = pnut_timer_start(wall->module.loop,
+                                  wait < UINT32_MAX ? (uint32_t)wait :
+                                  UINT32_MAX, 0, wallclock_ntp_timer, wall,
+                                  &wall->ntp_timer);
+          if (ret < 0)
+            {
+              pnut_log(&wall->module, PNUT_LOG_WARNING,
+                       "No timer for NTP: %d", ret);
+              wall->ntp_timer = NULL;
+            }
+        }
+
+      return;
+    }
+
+  wallclock_ntp_cancel(wall);
+  strlcpy(n->server, server, sizeof(n->server));
+  n->port = wall->config.ntp_port != 0 ? wall->config.ntp_port : NTP_PORT;
+  n->wait = wallclock_or(wall->config.ntp_wait, WALLCLOCK_NTP_WAIT);
+  ret = pnut_job_submit(wall->module.loop, wallclock_ntp_run,
+                        wallclock_ntp_done, n);
+  if (ret < 0)
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING,
+               "NTP not asked: %d", ret);
+      wall->ntp_due = now + wallclock_or(wall->config.ntp_retry,
+                                         WALLCLOCK_NTP_RETRY);
+      wallclock_ntp_next(wall);
+      return;
+    }
+
+  wall->ntp_working = true;
+}
+
+/* Wi-Fi joined, with an address, or not any more */
+
+static void wallclock_wifi(FAR struct pnut_wifi_info_reader_s *reader,
+                           FAR const pnut_wifi_info_t *msg, FAR void *arg)
+{
+  FAR struct wallclock_s *wall = arg;
+  bool linked = msg->state == PNUT_WIFI_INFO_STATE_JOINED &&
+                msg->address != 0;
+
+  if (linked == wall->linked)
+    {
+      return;
+    }
+
+  wall->linked = linked;
+  if (!linked)
+    {
+      wallclock_ntp_cancel(wall);
+      return;
+    }
+
+  /* A new link: a question failed on the last one is asked again now,
+   * one answered within the hour is not
+   */
+
+  if (wall->ntp_fails > 0)
+    {
+      wall->ntp_due  = 0;
+      wall->ntp_asap = wall->ntp_working;
+    }
+
+  wallclock_ntp_next(wall);
+}
+#endif
+
 /****************************************************************************
  * Name: wallclock_changed
  *
@@ -889,7 +1130,21 @@ static void wallclock_gnss(FAR struct pnut_gnss_time_reader_s *reader,
 static void wallclock_changed(FAR struct pnut_settings_cache_s *cache,
                               int index, FAR void *arg)
 {
-  wallclock_zone(arg);
+  FAR struct wallclock_s *wall = arg;
+
+  wallclock_zone(wall);
+
+#ifdef CONFIG_PNUT_TIME_NTP
+  /* Another server, maybe one that answers: asked now */
+
+  if (index == PNUT_TIME_SETTINGS_NTP_SERVER && wall->ntp_fails > 0)
+    {
+      wall->ntp_due  = 0;
+      wall->ntp_asap = wall->ntp_working;
+    }
+
+  wallclock_ntp_next(wall);
+#endif
 }
 
 /****************************************************************************
@@ -1157,6 +1412,18 @@ static int wallclock_start(FAR struct pnut_module_s *module,
       wall->gnss_open = true;
     }
 
+#ifdef CONFIG_PNUT_TIME_NTP
+  ret = pnut_wifi_info_subscribe(loop, wallclock_wifi, wall, &wall->wifi);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_WARNING, "No wifi topic: %d; no NTP", ret);
+    }
+  else
+    {
+      wall->wifi_open = true;
+    }
+#endif
+
   /* The sleep clock's rate: the device's, from Board's description */
 
   if (wall->config.board != NULL)
@@ -1219,6 +1486,21 @@ static void wallclock_stop(FAR struct pnut_module_s *module,
       pnut_gnss_time_unsubscribe(&wall->gnss);
       wall->gnss_open = false;
     }
+
+#ifdef CONFIG_PNUT_TIME_NTP
+  /* A question running is left to its worker: the loop's end joins it,
+   * its answer dropped
+   */
+
+  if (wall->wifi_open)
+    {
+      pnut_wifi_info_unsubscribe(&wall->wifi);
+      wall->wifi_open = false;
+    }
+
+  wall->linked = false;
+  wallclock_ntp_cancel(wall);
+#endif
 
   if (wall->network_open)
     {
