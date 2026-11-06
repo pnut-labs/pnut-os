@@ -1138,7 +1138,7 @@ static void logs_last_saved(FAR struct logs_s *logs, FAR char *last)
       snprintf(path, sizeof(path), pass == 0 ? "%s/%s" : "%s/%s.1",
                logs->config.dir, LOGS_FILE);
 
-      fd = open(path, O_RDONLY | O_CLOEXEC);
+      fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
       if (fd < 0)
         {
           continue;
@@ -1346,7 +1346,7 @@ static bool logs_crash_known(FAR struct logs_s *logs,
           continue;
         }
 
-      fd = open(path, O_RDONLY | O_CLOEXEC);
+      fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
       if (fd < 0)
         {
           continue;
@@ -1832,7 +1832,7 @@ static void logs_read_lines(FAR struct logs_read_s *r)
           break;
         }
 
-      fd = open(path, O_RDONLY | O_CLOEXEC);
+      fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
       if (fd < 0)
         {
           if (errno == ENOENT && file < r->rotations)
@@ -2057,7 +2057,7 @@ static void logs_read_crash(FAR struct logs_read_s *r)
     }
 
   snprintf(path, sizeof(path), "%s/%s", r->dir, in->name);
-  fd = open(path, O_RDONLY | O_CLOEXEC);
+  fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0)
     {
       r->ret = -errno;
