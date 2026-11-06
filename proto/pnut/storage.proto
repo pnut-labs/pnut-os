@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Storage (RFC 0011), a module of the data program: so far, its first
+// part, the device's external storage mounted under /media as it is
+// found (RFC 0010), and announced on the storage topic.  Apps' storage,
+// and the interface that reaches it, come later.
+//
+// Only FAT is mounted, and nothing is ever formatted: a card of another
+// kind is left as it is.  Storage itself writes nothing on a card.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+// An external storage, by the slot Board's description gives
+// (RFC 0024)
+message StorageVolume {
+  enum State {
+    ABSENT = 0;                   // No card in the slot, or none answers
+    MOUNTED = 1;                  // Mounted at path
+    UNSUPPORTED = 2;              // Not FAT: left as it is
+    FAILED = 3;                   // A card, which could not be mounted
+  }
+
+  string name = 1 [(nanopb).max_size = 8];    // Its kind and number: sd0
+  string path = 2 [(nanopb).max_size = 32];   // /media/<name>
+  State state = 3;
+  uint32 size_mb = 4;             // Its size, when mounted
+}
+
+// The external storage there is, on the storage topic: every slot, a
+// card in it or not
+message StorageInfo {
+  option (pnut.topic) = "storage";
+
+  repeated StorageVolume volumes = 1 [(nanopb).max_count = 2];
+}

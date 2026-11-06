@@ -22,6 +22,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/utsname.h>
 
 #include <pnut/log.h>
@@ -716,16 +717,96 @@ static int logs_crash_save(FAR struct logs_write_s *write)
  *
  ****************************************************************************/
 
+/****************************************************************************
+ * Name: logs_copy
+ *
+ * Description:
+ *   The lines appended to the copy too, in its folder, which is made if
+ *   it is not there: only while the storage is still mounted, of the
+ *   type of file system it was, so that nothing is made where it was;
+ *   and only at the root of that file system, its parent another (the
+ *   pseudo file system's /media), so that a folder of the storage's name
+ *   inside it is never taken for it.
+ *
+ ****************************************************************************/
+
+static int logs_copy(FAR struct logs_write_s *write)
+{
+  char volume[LOGS_COPY_PATH];
+  FAR char *slash;
+  struct statfs st;
+  uint32_t rotated = 0;
+
+  if (write->copy_fs != 0)
+    {
+      strlcpy(volume, write->copy, sizeof(volume));
+      slash = strrchr(volume, '/');
+      if (slash == NULL || slash == volume)
+        {
+          return -EINVAL;
+        }
+
+      *slash = '\0';
+      if (statfs(volume, &st) < 0)
+        {
+          return -errno;
+        }
+
+      if ((uint32_t)st.f_type != write->copy_fs)
+        {
+          return -ENODEV;
+        }
+
+      slash = strrchr(volume, '/');
+      if (slash == NULL)
+        {
+          return -EINVAL;
+        }
+
+      if (slash == volume)
+        {
+          slash[1] = '\0';         /* The root's */
+        }
+      else
+        {
+          *slash = '\0';
+        }
+
+      if (statfs(volume, &st) < 0)
+        {
+          return -errno;
+        }
+
+      if ((uint32_t)st.f_type == write->copy_fs)
+        {
+          return -ENOTDIR;          /* Inside the storage, not its root */
+        }
+    }
+
+  if (mkdir(write->copy, 0700) < 0 && errno != EEXIST)
+    {
+      return -errno;
+    }
+
+  return logs_append(write->copy, write->copy_size, write->copy_files,
+                     write->data, write->len, &rotated);
+}
+
 static void logs_write_run(FAR void *arg)
 {
   FAR struct logs_write_s *write = arg;
 
-  write->ret     = OK;
-  write->rotated = 0;
+  write->ret      = OK;
+  write->copy_ret = OK;
+  write->rotated  = 0;
   if (write->len > 0)
     {
       write->ret = logs_append(write->dir, write->file_size, write->files,
                                write->data, write->len, &write->rotated);
+      if (write->copy[0] != '\0')
+        {
+          write->copy_ret = logs_copy(write);
+        }
     }
 
   write->crash_ret = OK;
@@ -784,8 +865,18 @@ static void logs_prepare(FAR struct logs_s *logs)
   write->crash_len = logs->crash_len;
   write->ret       = OK;
   write->crash_ret = OK;
+  write->copy_ret  = OK;
   __atomic_store_n(&write->finished, false, __ATOMIC_RELAXED);
   strlcpy(write->crash_name, logs->crash_name, sizeof(write->crash_name));
+
+  write->copy[0]    = '\0';
+  write->copy_size  = logs->config.copy_size;
+  write->copy_files = logs->config.copy_files;
+  write->copy_fs    = logs->config.copy_fs;
+  if (!logs->copy_failing)
+    {
+      strlcpy(write->copy, logs->copy, sizeof(write->copy));
+    }
 
   buffer        = logs->spare;
   logs->spare   = logs->pending;
@@ -856,6 +947,19 @@ static void logs_written(FAR struct logs_s *logs)
       pnut_log(&logs->module, PNUT_LOG_INFO, "Writing %s/%s again",
                write->dir, LOGS_FILE);
       logs->failing = false;
+    }
+
+  /* A copy that fails stops, until the setting or the storage changes:
+   * a card taken out fails every write, and this line is not copied
+   */
+
+  if (write->copy[0] != '\0' && write->copy_ret < 0 &&
+      !logs->copy_failing && strcmp(write->copy, logs->copy) == 0)
+    {
+      pnut_log(&logs->module, PNUT_LOG_WARNING,
+               "Cannot write the copy in %s: %d; copy stopped", write->copy,
+               write->copy_ret);
+      logs->copy_failing = true;
     }
 
   if (write->crash != NULL)
@@ -2297,6 +2401,120 @@ static const struct pnut_log_handlers_s g_logs_handlers =
 };
 
 /****************************************************************************
+ * Name: logs_copy_named
+ *
+ * Description:
+ *   Whether a storage's path may hold the copy: absolute, no part that
+ *   starts with a dot, and ending in /<name>, a name of letters then
+ *   digits.  The storage topic is anyone's to publish on.
+ *
+ ****************************************************************************/
+
+static bool logs_copy_named(FAR const pnut_storage_volume_t *volume)
+{
+  size_t plen = strnlen(volume->path, sizeof(volume->path));
+  size_t nlen = strnlen(volume->name, sizeof(volume->name));
+  size_t i = 0;
+
+  while (i < nlen && volume->name[i] >= 'a' && volume->name[i] <= 'z')
+    {
+      i++;
+    }
+
+  if (i == 0 || i == nlen)
+    {
+      return false;
+    }
+
+  while (i < nlen && volume->name[i] >= '0' && volume->name[i] <= '9')
+    {
+      i++;
+    }
+
+  return i == nlen && nlen < sizeof(volume->name) &&
+         plen < sizeof(volume->path) && plen > nlen + 1 &&
+         volume->path[0] == '/' && strstr(volume->path, "/.") == NULL &&
+         volume->path[plen - nlen - 1] == '/' &&
+         strcmp(volume->path + plen - nlen, volume->name) == 0;
+}
+
+/****************************************************************************
+ * Name: logs_copy_where
+ *
+ * Description:
+ *   The copy's folder again, from the log.copy setting and the storage
+ *   topic: <path>/logs of the storage of that name while it is mounted,
+ *   or none.  A change of folder starts the copy again after a failure.
+ *
+ ****************************************************************************/
+
+static void logs_copy_where(FAR struct logs_s *logs)
+{
+  FAR const char *name = logs->settings.values.copy;
+  FAR const pnut_storage_volume_t *volume;
+  char where[LOGS_COPY_PATH];
+  pb_size_t i;
+  int n;
+
+  where[0] = '\0';
+  for (i = 0; name[0] != '\0' && i < logs->volumes.volumes_count &&
+              i < sizeof(logs->volumes.volumes) /
+                  sizeof(logs->volumes.volumes[0]); i++)
+    {
+      volume = &logs->volumes.volumes[i];
+      if (strncmp(volume->name, name, sizeof(volume->name)) != 0)
+        {
+          continue;
+        }
+
+      if (volume->state == PNUT_STORAGE_VOLUME_STATE_MOUNTED &&
+          logs_copy_named(volume))
+        {
+          n = snprintf(where, sizeof(where), "%s/logs", volume->path);
+          if (n < 0 || n >= (int)sizeof(where))
+            {
+              where[0] = '\0';
+            }
+        }
+
+      break;
+    }
+
+  if (strcmp(where, logs->copy) == 0)
+    {
+      return;
+    }
+
+  strlcpy(logs->copy, where, sizeof(logs->copy));
+  logs->copy_failing = false;
+  if (where[0] != '\0')
+    {
+      pnut_log(&logs->module, PNUT_LOG_INFO, "Copying the log to %s",
+               where);
+    }
+  else
+    {
+      pnut_log(&logs->module, PNUT_LOG_INFO, "The log's copy stopped");
+    }
+}
+
+static void logs_settings_changed(FAR struct pnut_settings_cache_s *cache,
+                                  int index, FAR void *arg)
+{
+  logs_copy_where(arg);
+}
+
+static void logs_storage(FAR struct pnut_storage_info_reader_s *reader,
+                         FAR const pnut_storage_info_t *msg,
+                         FAR void *arg)
+{
+  FAR struct logs_s *logs = arg;
+
+  logs->volumes = *msg;
+  logs_copy_where(logs);
+}
+
+/****************************************************************************
  * Name: logs_start
 
  ****************************************************************************/
@@ -2370,6 +2588,36 @@ static int logs_start(FAR struct pnut_module_s *module,
                logs->config.dir, -errno);
     }
 
+  /* The copy: its setting and the storage there is.  The lines caught
+   * up go to the files only, as they come before either is read.
+   */
+
+  if (logs->config.copy_files > 0)
+    {
+      ret = pnut_log_settings_open(module, logs_settings_changed, logs,
+                                   &logs->settings);
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_WARNING, "No settings: %d; no copy",
+                   ret);
+        }
+      else
+        {
+          logs->settings_open = true;
+          ret = pnut_storage_info_subscribe(loop, logs_storage, logs,
+                                            &logs->storage);
+          if (ret < 0)
+            {
+              pnut_log(module, PNUT_LOG_WARNING,
+                       "No storage topic: %d; no copy", ret);
+            }
+          else
+            {
+              logs->storage_open = true;
+            }
+        }
+    }
+
   logs_catch_up(logs);
 
   ret = pnut_loop_watch(loop, logs->fd, EPOLLIN, logs_readable, logs);
@@ -2410,6 +2658,20 @@ static void logs_stop(FAR struct pnut_module_s *module,
     {
       pnut_log_close(&logs->server);
       logs->serving = false;
+    }
+
+  /* The copy's folder stays as it is for the last write */
+
+  if (logs->storage_open)
+    {
+      pnut_storage_info_unsubscribe(&logs->storage);
+      logs->storage_open = false;
+    }
+
+  if (logs->settings_open)
+    {
+      pnut_log_settings_close(&logs->settings);
+      logs->settings_open = false;
     }
 
   /* A read in flight answers nobody now; its worker is let finish */
@@ -2542,6 +2804,11 @@ void logs_init(FAR struct logs_s *logs,
   if (logs->config.crash_size < LOGS_LINE_MAX)
     {
       logs->config.crash_size = LOGS_LINE_MAX;
+    }
+
+  if (logs->config.copy_size < 2 * LOGS_LINE_MAX)
+    {
+      logs->config.copy_size = 2 * LOGS_LINE_MAX;
     }
 }
 

@@ -24,6 +24,8 @@
 #include <pnut/timer.h>
 
 #include "pnut/log.pnut.h"
+#include "pnut/log.settings.h"
+#include "pnut/storage.topics.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -48,6 +50,10 @@
 #define LOGS_SERVICE      "log"
 #define LOGS_READ_CHUNK   2048
 
+/* The copy's folder: <storage's path>/logs, as the storage topic's path */
+
+#define LOGS_COPY_PATH    48
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -60,8 +66,10 @@
  * lines the RAM log kept that the files have not, those a reset cut off
  * included, and marks the start in system.log.  A crash's dump in the RAM
  * log, of this start or one before a reset, is saved as a crash report,
- * crash-<time>, the last few kept.  Each service's own level, the
- * Developer options, and Log's interface come later.
+ * crash-<time>, the last few kept.  A Developer option, the log.copy
+ * setting, copies the lines kept into a logs folder on external storage
+ * too, rotated the same way.  Each service's own level and the option
+ * that keeps every line come later.
  */
 
 struct logs_config_s
@@ -78,6 +86,18 @@ struct logs_config_s
   uint8_t files;                  /* system.log and the rotated ones */
   uint8_t crashes;                /* Crash reports kept */
   uint32_t crash_size;            /* A crash report's bytes, at most */
+
+  /* The copy on external storage (RFC 0026), when the log.copy setting
+   * names a storage the storage topic says is mounted: in its logs
+   * folder, copy_files files of copy_size bytes.  No copy, nor setting
+   * read, with copy_files zero.  copy_fs: the type of file system
+   * (statfs) the storage must still be when written, so that nothing is
+   * made where it was mounted; zero for any (the tests).
+   */
+
+  uint32_t copy_size;
+  uint8_t copy_files;
+  uint32_t copy_fs;
   uint32_t delay;                 /* From a line to its write, in ms */
 
   /* Bytes of lines waiting that start a write at once; the lines waiting
@@ -123,10 +143,15 @@ struct logs_write_s
   FAR char *crash;                /* A crash report, or NULL */
   size_t crash_len;
   char crash_name[LOGS_CRASH_NAME];
+  char copy[LOGS_COPY_PATH];      /* The copy's folder, or empty */
+  uint32_t copy_size;
+  uint8_t copy_files;
+  uint32_t copy_fs;
 
   /* The worker's */
 
   int ret;                        /* system.log's: a negated errno value */
+  int copy_ret;                   /* The copy's */
   int crash_ret;                  /* The report's */
   uint32_t rotated;               /* Rotations it made */
   bool finished;
@@ -194,6 +219,18 @@ struct logs_s
 
   uint32_t dropped;               /* Lines that found no room */
   bool failing;                   /* A write failed, logged */
+
+  /* The copy: the setting, the storage there is, and the folder they
+   * give, or empty.  A copy that failed stops until either changes.
+   */
+
+  struct pnut_log_settings_s settings;
+  bool settings_open;
+  struct pnut_storage_info_reader_s storage;
+  bool storage_open;
+  pnut_storage_info_t volumes;
+  char copy[LOGS_COPY_PATH];
+  bool copy_failing;
 
   /* The interface: system.log's number (log.proto), and the one request
    * read at a time, never while a write runs

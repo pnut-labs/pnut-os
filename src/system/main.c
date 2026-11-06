@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <sys/boardctl.h>
 #include <sys/ioctl.h>
+#include <sys/statfs.h>
 
 #include <nuttx/power/battery_ioctl.h>
 
@@ -269,6 +270,9 @@ int main(int argc, FAR char *argv[])
   lconfig.files      = CONFIG_PNUT_LOG_FILES;
   lconfig.crashes    = CONFIG_PNUT_LOG_CRASHES;
   lconfig.crash_size = CONFIG_PNUT_LOG_CRASH_SIZE;
+  lconfig.copy_size  = CONFIG_PNUT_LOG_COPY_SIZE;
+  lconfig.copy_files = CONFIG_PNUT_LOG_COPY_FILES;
+  lconfig.copy_fs    = MSDOS_SUPER_MAGIC;   /* Storage mounts FAT alone */
   lconfig.delay      = CONFIG_PNUT_LOG_DELAY;
   lconfig.batch      = CONFIG_PNUT_LOG_BATCH;
   lconfig.service    = LOGS_SERVICE;

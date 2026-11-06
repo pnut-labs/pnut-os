@@ -29,6 +29,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 
 #include <cmocka.h>
 
@@ -37,6 +38,7 @@
 #include <pnut/timer.h>
 
 #include "logs.h"
+#include "settings.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -1070,9 +1072,338 @@ static void test_logs_no_source(void **state)
   test_teardown(&t);
 }
 
+/* The copy on external storage: Settings, and a storage topic published
+ * here, around Log.  The test's module sets log.copy once Log's cache has
+ * registered the owner, then writes lines.
+ */
+
+struct copy_test_s
+{
+  struct pnut_module_s module;    /* First */
+  struct logs_test_s t;
+  struct settings_s settings;
+  struct pnut_settings_client_s client;
+  FAR struct pnut_publisher_s *topic;
+  pnut_storage_info_t info;
+  char run[96];                   /* Sockets and topics */
+  char sdir[96];                  /* Settings' files */
+  char volume[96];                /* The storage's "mount" */
+  bool asking;
+  bool set;                       /* log.copy is sd0 */
+  bool written;                   /* The lines after it */
+  bool refused;                   /* The path is not the name's */
+  int ticks;
+  int after;                      /* Ticks since set */
+};
+
+static void copy_set_done(FAR struct pnut_settings_client_s *client,
+                          int status, FAR const pnut_settings_reply_t *out,
+                          FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct copy_test_s *c = arg;
+
+  c->asking = false;
+  c->set    = status == PNUT_STATUS_OK;
+}
+
+static void copy_tick(FAR struct pnut_loop_s *loop,
+                      FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct copy_test_s *c = arg;
+  pnut_settings_set_request_t req;
+  char path[192];
+  struct stat st;
+
+  if (++c->ticks > 500)
+    {
+      pnut_loop_stop(loop, 0);
+      return;
+    }
+
+  if (!c->set)
+    {
+      /* Refused until Log's cache registered the owner */
+
+      if (!c->asking)
+        {
+          memset(&req, 0, sizeof(req));
+          strlcpy(req.owner, "log", sizeof(req.owner));
+          strlcpy(req.key, "copy", sizeof(req.key));
+          req.has_value = true;
+          req.value.which_value = PNUT_SETTING_VALUE_TEXT_TAG;
+          strlcpy(req.value.value.text, "sd0",
+                  sizeof(req.value.value.text));
+          c->asking = pnut_settings_set(&c->client, &req, 0,
+                                        copy_set_done, c) == 0;
+        }
+
+      return;
+    }
+
+  /* A path that does not end in the name: never a copy */
+
+  if (c->refused)
+    {
+      /* Counted once Log has both the setting and the storage */
+
+      if (strcmp(c->t.logs.settings.values.copy, "sd0") == 0 &&
+          c->t.logs.volumes.volumes_count == 1 && ++c->after >= 30)
+        {
+          pnut_loop_stop(loop, 0);
+        }
+
+      return;
+    }
+
+  if (!c->written)
+    {
+      if (c->t.logs.copy[0] == '\0')
+        {
+          return;
+        }
+
+      test_ring(&c->t, "[    2.000000] [  WARN] pnut_system: x: copied\r\n");
+      c->written = true;
+      return;
+    }
+
+  /* Done once the line was written, or the copy stopped */
+
+  snprintf(path, sizeof(path), "%s/logs/system.log", c->volume);
+  if ((stat(path, &st) == 0 && st.st_size > 0) || c->t.logs.copy_failing)
+    {
+      pnut_loop_stop(loop, 0);
+    }
+}
+
+static int copy_start(FAR struct pnut_module_s *module,
+                      FAR struct pnut_loop_s *loop)
+{
+  FAR struct copy_test_s *c = (FAR struct copy_test_s *)module;
+
+  assert_int_equal(pnut_storage_info_advertise(loop, &c->topic), 0);
+  assert_int_equal(pnut_storage_info_publish(c->topic, &c->info), 0);
+  assert_int_equal(pnut_settings_connect(loop, SETTINGS_SERVICE, NULL,
+                                         NULL, &c->client), 0);
+  assert_int_equal(pnut_timer_start(loop, 10, 10, copy_tick, c, NULL), 0);
+  pnut_module_ready(module);
+  return 0;
+}
+
+static void copy_stop(FAR struct pnut_module_s *module,
+                      FAR struct pnut_loop_s *loop)
+{
+  FAR struct copy_test_s *c = (FAR struct copy_test_s *)module;
+
+  pnut_settings_disconnect(&c->client);
+  pnut_topic_unadvertise(c->topic);
+}
+
+/* Run Log with Settings and the storage named sd0 at path, mounted */
+
+static void copy_run(FAR struct copy_test_s *c, FAR const char *path)
+{
+  static const struct settings_limits_s limits =
+  {
+    .owners   = 4,
+    .settings = 32,
+    .texts    = 8,
+    .choices  = 16,
+  };
+
+  struct pnut_loop_config_s config;
+  struct settings_config_s sconfig;
+  FAR pnut_storage_volume_t *v = &c->info.volumes[0];
+
+  c->info.volumes_count = 1;
+  strlcpy(v->name, "sd0", sizeof(v->name));
+  strlcpy(v->path, path, sizeof(v->path));
+  v->state = PNUT_STORAGE_VOLUME_STATE_MOUNTED;
+
+  c->t.config.copy_size  = 1024;
+  c->t.config.copy_files = 2;
+  logs_init(&c->t.logs, &c->t.config);
+
+  pnut_loop_defaults(&config);
+  config.rundir = c->run;
+  assert_int_equal(pnut_loop_create(&config, &c->t.loop), 0);
+
+  memset(&sconfig, 0, sizeof(sconfig));
+  sconfig.dir    = c->sdir;
+  sconfig.limits = limits;
+  sconfig.delay  = 20;
+  settings_init(&c->settings, &sconfig);
+  assert_int_equal(pnut_module_add(c->t.loop, &c->settings.module), 0);
+  assert_int_equal(pnut_module_add(c->t.loop, &c->t.logs.module), 0);
+
+  c->module.name  = "copy_test";
+  c->module.start = copy_start;
+  c->module.stop  = copy_stop;
+  assert_int_equal(pnut_module_add(c->t.loop, &c->module), 0);
+
+  assert_int_equal(pnut_loop_run(c->t.loop), 0);
+  pnut_loop_destroy(c->t.loop);
+  logs_deinit(&c->t.logs);
+  settings_deinit(&c->settings);
+  assert_true(c->ticks <= 500);
+}
+
+static void copy_setup(FAR struct copy_test_s *c)
+{
+  memset(c, 0, sizeof(*c));
+  test_setup(&c->t);
+  snprintf(c->run, sizeof(c->run), "%s/run", c->t.dir);
+  snprintf(c->sdir, sizeof(c->sdir), "%s/settings", c->t.dir);
+  snprintf(c->volume, sizeof(c->volume), "%s/sd0", c->t.dir);
+  assert_int_equal(mkdir(c->run, 0700), 0);
+  assert_int_equal(mkdir(c->sdir, 0700), 0);
+  assert_int_equal(mkdir(c->volume, 0700), 0);
+}
+
+/* log.copy names sd0, mounted: the lines kept go to its logs folder too,
+ * which Log makes
+ */
+
+static void test_logs_copy(void **state)
+{
+  FAR struct copy_test_s *c = calloc(1, sizeof(*c));
+  FAR char *lines[LINES_MAX];
+  FAR char *log;
+  char name[160];
+  int n;
+
+  assert_non_null(c);
+  copy_setup(c);
+
+  assert_true(strlen(c->volume) < sizeof(c->info.volumes[0].path));
+  copy_run(c, c->volume);
+  assert_true(c->written);
+  assert_false(c->t.logs.copy_failing);
+
+  snprintf(name, sizeof(name), "sd0/logs/system.log");
+  log = test_read(&c->t, name);
+  assert_non_null(log);
+
+  /* The start's mark too, if it waited for the setting: as it may */
+
+  n = test_lines(log, lines);
+  assert_true(n >= 2);
+  assert_string_equal(lines[n - 2],
+                      "[    2.000000] [  WARN] pnut_system: x: copied");
+  assert_string_equal(lines[n - 1], T0_STOP);
+  free(log);
+
+  log = test_read(&c->t, "system.log");
+  assert_non_null(log);
+  assert_non_null(strstr(log, "x: copied"));
+  free(log);
+
+  test_teardown(&c->t);
+  free(c);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
+
+/* The copy cannot be written (its folder's name taken by a file, as a
+ * card taken out fails every write): it stops, said once, and the files
+ * go on
+ */
+
+static void test_logs_copy_fails(void **state)
+{
+  FAR struct copy_test_s *c = calloc(1, sizeof(*c));
+  char path[192];
+  FAR char *log;
+
+  assert_non_null(c);
+  copy_setup(c);
+  snprintf(path, sizeof(path), "%s/logs", c->volume);
+  test_write_file(path, "a file\n");
+
+  copy_run(c, c->volume);
+  assert_true(c->written);
+  assert_true(c->t.logs.copy_failing);
+
+  log = test_read(&c->t, "system.log");
+  assert_non_null(log);
+  assert_non_null(strstr(log, "x: copied"));
+  free(log);
+
+  test_teardown(&c->t);
+  free(c);
+}
+
+/* A storage whose path does not end in its name: not taken, as the topic
+ * is anyone's to publish on
+ */
+
+static void test_logs_copy_refused(void **state)
+{
+  FAR struct copy_test_s *c = calloc(1, sizeof(*c));
+  char path[96];
+
+  assert_non_null(c);
+  copy_setup(c);
+  c->refused = true;
+  snprintf(path, sizeof(path), "%s/sdX", c->t.dir);
+  copy_run(c, path);
+  assert_true(c->set);
+  assert_int_equal(c->after, 30);
+  assert_string_equal(c->t.logs.copy, "");
+
+  /* A part starting with a dot: refused too */
+
+  test_teardown(&c->t);
+  copy_setup(c);
+  c->refused = true;
+  snprintf(path, sizeof(path), "%s/../sd0", c->t.dir);
+  copy_run(c, path);
+  assert_true(c->set);
+  assert_int_equal(c->after, 30);
+  assert_string_equal(c->t.logs.copy, "");
+
+  test_teardown(&c->t);
+  free(c);
+}
+
+/* The storage checked as written: of the type of file system it was
+ * mounted as, and that file system's root.  A storage of another type
+ * (unmounted, the pseudo file system left), or a folder of its name
+ * inside it, is refused, the copy stopped, nothing made there.
+ */
+
+static void test_logs_copy_not_root(void **state)
+{
+  FAR struct copy_test_s *c = calloc(1, sizeof(*c));
+  struct statfs st;
+  char path[192];
+  int i;
+
+  assert_non_null(c);
+  for (i = 0; i < 2; i++)
+    {
+      copy_setup(c);
+      assert_int_equal(statfs(c->volume, &st), 0);
+
+      /* Another type; then the test directory's own, of which the
+       * storage's folder is not the root
+       */
+
+      c->t.config.copy_fs = i == 0 ? (uint32_t)st.f_type + 1 :
+                                     (uint32_t)st.f_type;
+      copy_run(c, c->volume);
+      assert_true(c->written);
+      assert_true(c->t.logs.copy_failing);
+
+      snprintf(path, sizeof(path), "%s/logs", c->volume);
+      assert_int_equal(access(path, F_OK), -1);
+      test_teardown(&c->t);
+    }
+
+  free(c);
+}
 
 int main(void)
 {
@@ -1095,6 +1426,10 @@ int main(void)
     cmocka_unit_test(test_logs_crash_trim),
     cmocka_unit_test(test_logs_no_source),
     cmocka_unit_test(test_logs_read),
+    cmocka_unit_test(test_logs_copy),
+    cmocka_unit_test(test_logs_copy_fails),
+    cmocka_unit_test(test_logs_copy_refused),
+    cmocka_unit_test(test_logs_copy_not_root),
   };
 
   return cmocka_run_group_tests_name("logs", tests, NULL, NULL);

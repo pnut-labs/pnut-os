@@ -94,3 +94,14 @@ message LogCrash {
   bytes text = 1 [(nanopb).max_size = 1024];
   bool more = 2;                  // Bytes are left after offset + text
 }
+
+// Log's settings (RFC 0026)
+message LogSettings {
+  option (pnut.settings) = "log";
+
+  // A Developer option: a copy of the lines kept, in a logs folder on the
+  // external storage of this name (sd0: the storage topic names them);
+  // none when empty
+  string copy = 1 [(pnut.setting) = { label: "log.copy" },
+                   (nanopb).max_size = 8];
+}

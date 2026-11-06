@@ -12,7 +12,11 @@ config PNUT_DATA
 	---help---
 		The data program (RFC 0007): Messages, the device's one store
 		of text messages (RFC 0029), kept in files appended to in
-		/var/lib/messages.  Contacts, Packages and Storage come later.
+		/var/lib/messages; and Storage's first part (RFC 0011), the
+		external storage of the slots Board's description gives,
+		mounted as the program starts, FAT only and never formatted,
+		and announced on the storage topic.  Contacts and Packages
+		come later.
 
 if PNUT_DATA
 
@@ -26,6 +30,12 @@ config PNUT_DATA_WORKER_STACKSIZE
 	---help---
 		The workers read and write the store's files: littlefs, and
 		nanopb's decoding of a record, deep under them.
+
+config PNUT_STORAGE_MEDIA
+	string "Where external storage is mounted"
+	default "/media"
+	---help---
+		A card in the first slot is mounted at <this>/sd0 (RFC 0010).
 
 config PNUT_MESSAGES_DIR
 	string "Where the messages store's files are"
