@@ -136,7 +136,8 @@ struct store_s
   uint32_t bad;                   /* Files left aside: no head */
   bool set_aside;                 /* Given to store_load(): a segment
                                    * that cannot be read is renamed to
-                                   * <name>.bad, the rest loaded */
+                                   * <name>.bad (.bad1 to .bad9 if taken),
+                                   * the rest loaded */
   uint32_t aside;                 /* Segments so renamed */
 
   /* Plans' records, on the loop: too large for its stack */

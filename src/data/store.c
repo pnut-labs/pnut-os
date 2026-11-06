@@ -833,6 +833,8 @@ static int store_ids_write(FAR const char *path, uint64_t next_msg,
   char temp[STORE_PATH_MAX + sizeof(STORE_TEMP)];
   char line[64];
   int len;
+  ssize_t n;
+  int done;
   int fd;
   int ret = OK;
 
@@ -850,9 +852,28 @@ static int store_ids_write(FAR const char *path, uint64_t next_msg,
       return -errno;
     }
 
-  if (write(fd, line, len) != len || fsync(fd) < 0)
+  /* Whole, however the writes come; the error as it is */
+
+  for (done = 0; done < len && ret == OK; )
     {
-      ret = -EIO;
+      n = write(fd, line + done, len - done);
+      if (n > 0)
+        {
+          done += (int)n;
+        }
+      else if (n < 0 && errno != EINTR)
+        {
+          ret = -errno;
+        }
+      else if (n == 0)
+        {
+          ret = -EIO;
+        }
+    }
+
+  if (ret == OK && fsync(fd) < 0)
+    {
+      ret = -errno;
     }
 
   close(fd);
@@ -1324,10 +1345,19 @@ int store_load(FAR struct store_s *store)
 
       if (ret < 0 && ret != -ENOMEM && store->set_aside)
         {
-          char aside[STORE_PATH_MAX + sizeof(STORE_ASIDE)];
+          char aside[STORE_PATH_MAX + sizeof(STORE_ASIDE) + 1];
+          int n;
+
+          /* Never over one set aside before: a digit after it, up to 9 */
 
           snprintf(aside, sizeof(aside), "%s" STORE_ASIDE, path);
-          if (rename(path, aside) == 0)
+          for (n = 1; n < 10 && access(aside, F_OK) == 0; n++)
+            {
+              snprintf(aside, sizeof(aside), "%s" STORE_ASIDE "%c", path,
+                       '0' + n);
+            }
+
+          if (access(aside, F_OK) != 0 && rename(path, aside) == 0)
             {
               store->aside++;
               ret = OK;

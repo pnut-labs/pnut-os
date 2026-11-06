@@ -784,7 +784,8 @@ static void test_store_ids(void **state)
  *
  * Description:
  *   A segment that cannot be read fails the load; asked to, the load sets
- *   it aside, renamed and kept, and the rest of the store loads.
+ *   it aside, renamed and kept, and the rest of the store loads.  One of
+ *   the same name later is set aside beside it, never over it.
  *
  ****************************************************************************/
 
@@ -793,8 +794,9 @@ static void test_store_aside(void **state)
   FAR struct st_s *s = st_new(S_LIMIT, STORE_SEGMENT_MAX);
   struct store_s fresh;
   char path[STORE_PATH_MAX];
-  char aside[STORE_PATH_MAX + sizeof(STORE_ASIDE)];
+  char aside[STORE_PATH_MAX + sizeof(STORE_ASIDE) + 1];
   uint64_t bad;
+  int fd;
 
   assert_int_equal(st_message(s, "sms", "+1", "kept", false, NULL), 0);
   assert_int_equal(st_message(s, "sms", "+2", "unreadable", false, NULL),
@@ -824,7 +826,26 @@ static void test_store_aside(void **state)
 
   snprintf(aside, sizeof(aside), "%s" STORE_ASIDE, path);
   assert_int_equal(access(path, F_OK), -1);
-  assert_int_equal(chmod(aside, 0600), 0);
+  assert_int_equal(access(aside, F_OK), 0);
+
+  /* Another unreadable file of that name: beside the first */
+
+  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0);
+  assert_true(fd >= 0);
+  assert_int_equal(write(fd, "x", 1), 1);
+  close(fd);
+  store_init(&fresh, s->dir, s->store.limit, s->store.segmax);
+  fresh.set_aside = true;
+  assert_int_equal(store_load(&fresh), 0);
+  assert_int_equal(fresh.aside, 1);
+  assert_int_equal(fresh.nconvs, 1);
+  store_free(&fresh);
+  assert_int_equal(access(path, F_OK), -1);
+  assert_int_equal(chmod(aside, 0600), 0);    /* The first, kept */
+  snprintf(aside, sizeof(aside), "%s" STORE_ASIDE "1", path);
+  assert_int_equal(access(aside, F_OK), 0);
+  assert_int_equal(unlink(aside), 0);
+
   st_reload(s);
   assert_int_equal(s->store.nconvs, 1);
   st_free(s);
