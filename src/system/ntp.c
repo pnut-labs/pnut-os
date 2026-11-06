@@ -97,7 +97,8 @@ static void ntp_nonce(FAR uint8_t nonce[NTP_NONCE])
 
   clock_gettime(CLOCK_MONOTONIC, &ts);
   x = ((uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec) ^
-      ((uint64_t)++count << 40) ^ (uint64_t)(uintptr_t)&ts;
+      ((uint64_t)__atomic_add_fetch(&count, 1, __ATOMIC_RELAXED) << 40) ^
+      (uint64_t)(uintptr_t)&ts;
   for (i = 0; i < NTP_NONCE; i++)
     {
       x ^= x >> 33;

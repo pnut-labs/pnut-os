@@ -129,7 +129,7 @@ struct wall_test_s
   /* Wi-Fi's topic, and an NTP server on 127.0.0.1 */
 
   FAR struct pnut_publisher_s *wifi;
-  int ntp_sock;                   /* 0: none */
+  int ntp_sock;                   /* -1: none */
   uint16_t ntp_port;
   uint32_t ntp_every;
   uint32_t ntp_retry;
@@ -410,7 +410,7 @@ static void ntp_test_server(FAR struct wall_test_s *t)
   socklen_t len = sizeof(addr);
 
   t->ntp_sock = socket(AF_INET, SOCK_DGRAM, 0);
-  assert_true(t->ntp_sock > 0);
+  assert_true(t->ntp_sock >= 0);
   memset(&addr, 0, sizeof(addr));
   addr.sin_family      = AF_INET;
   addr.sin_addr.s_addr = htonl(0x7f000001);
@@ -458,7 +458,7 @@ static int wall_test_start(FAR struct pnut_module_s *module,
   assert_int_equal(pnut_gnss_time_advertise(loop, &t->gnss), 0);
 #ifdef CONFIG_PNUT_TIME_NTP
   assert_int_equal(pnut_wifi_info_advertise(loop, &t->wifi), 0);
-  if (t->ntp_sock > 0)
+  if (t->ntp_sock >= 0)
     {
       assert_int_equal(pnut_loop_watch(loop, t->ntp_sock, EPOLLIN,
                                        ntp_test_request, t), 0);
@@ -499,7 +499,7 @@ static void wall_test_stop_module(FAR struct pnut_module_s *module,
   pnut_topic_unadvertise(t->network);
 #ifdef CONFIG_PNUT_TIME_NTP
   pnut_topic_unadvertise(t->wifi);
-  if (t->ntp_sock > 0)
+  if (t->ntp_sock >= 0)
     {
       pnut_loop_unwatch(loop, t->ntp_sock);
     }
@@ -583,6 +583,9 @@ static FAR struct wall_test_s *wall_test_new(bool with_settings)
   assert_int_equal(mkdir(t->dir, 0700), 0);
   assert_int_equal(mkdir(t->sdir, 0700), 0);
   t->with_settings = with_settings;
+#ifdef CONFIG_PNUT_TIME_NTP
+  t->ntp_sock      = -1;
+#endif
   t->clock         = T0;
   t->mono          = mono;
   mono            += T_APART;
@@ -604,7 +607,7 @@ static void wall_test_free(FAR struct wall_test_s *t)
   size_t i;
 
 #ifdef CONFIG_PNUT_TIME_NTP
-  if (t->ntp_sock > 0)
+  if (t->ntp_sock >= 0)
     {
       close(t->ntp_sock);
     }
