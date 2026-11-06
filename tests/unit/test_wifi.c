@@ -29,6 +29,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include <arpa/inet.h>
+
 #include <cmocka.h>
 
 #include <pnut/loop.h>
@@ -45,7 +47,7 @@
  ****************************************************************************/
 
 #define HOME_PASS   "correct-horse"
-#define HOME_ADDR   0x0500000a    /* 10.0.0.5, network order */
+#define HOME_ADDR   htonl(0x0a000005)   /* 10.0.0.5 */
 
 /****************************************************************************
  * Private Types

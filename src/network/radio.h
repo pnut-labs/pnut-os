@@ -29,7 +29,7 @@ struct radio_s
 {
   FAR const char *enable;
   FAR const char *ifname;
-  bool driver;                    /* Brought up */
+  bool driver;                    /* Brought up through enable */
 };
 
 /****************************************************************************

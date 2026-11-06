@@ -98,7 +98,11 @@ static void radio_down(FAR void *arg)
   struct in_addr none;
   int sock;
 
-  if (!r->driver)
+  /* Nothing to take down while the board's driver was never brought up;
+   * without an enable device it is always there
+   */
+
+  if (!r->driver && r->enable != NULL)
     {
       return;
     }
