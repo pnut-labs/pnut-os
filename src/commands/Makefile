@@ -10,12 +10,12 @@ include $(APPDIR)/Make.defs
 
 # The shell's commands (RFC 0012)
 
-PROGNAME  = settings telephony messages wifi
+PROGNAME  = settings telephony messages logs wifi
 PRIORITY  = SCHED_PRIORITY_DEFAULT
 STACKSIZE = $(CONFIG_PNUT_COMMANDS_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_COMMANDS)
 
-MAINSRC   = settings.c telephony.c messages.c wifi.c
+MAINSRC   = settings.c telephony.c messages.c logs.c wifi.c
 
 # The interfaces' code, which libpnut compiles
 

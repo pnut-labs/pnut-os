@@ -31,6 +31,7 @@
 #include <pnut/worker.h>
 
 #include "logs.h"
+#include "programs.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -90,6 +91,16 @@
 /* How long a stop waits for a write still running, in ms */
 
 #define LOGS_STOP_WAIT_MS 2000
+
+/* A read of the interface's: what it reads, and its bounds.  A page scans
+ * that many bytes at most, so that a filter matching little does not hold
+ * the worker long; it says there is more, and the reader asks again.
+ */
+
+#define LOGS_READ_LINES   1
+#define LOGS_READ_CRASHES 2
+#define LOGS_READ_CRASH   3
+#define LOGS_READ_SCAN    16384
 #define LOGS_STOP_STEP_MS 10
 
 /****************************************************************************
@@ -125,6 +136,7 @@ struct logs_line_s
 static void logs_mark(FAR struct logs_s *logs, FAR const char *fmt, ...)
   printf_like(2, 3);
 static void logs_write_done(FAR struct pnut_loop_s *loop, FAR void *arg);
+static void logs_read_start(FAR struct logs_s *logs);
 static bool logs_scan(FAR const char **cursor, FAR const char *end,
                       FAR char *line, FAR size_t *lenp);
 
@@ -463,7 +475,8 @@ static int logs_rotate(FAR const char *dir, uint8_t files)
  ****************************************************************************/
 
 static int logs_append(FAR const char *dir, uint32_t file_size,
-                       uint8_t files, FAR const char *data, size_t len)
+                       uint8_t files, FAR const char *data, size_t len,
+                       FAR uint32_t *rotated)
 {
   char path[LOGS_PATH_MAX];
   struct stat st;
@@ -527,6 +540,7 @@ static int logs_append(FAR const char *dir, uint32_t file_size,
               return ret;
             }
 
+          (*rotated)++;
           continue;
         }
 
@@ -706,11 +720,12 @@ static void logs_write_run(FAR void *arg)
 {
   FAR struct logs_write_s *write = arg;
 
-  write->ret = OK;
+  write->ret     = OK;
+  write->rotated = 0;
   if (write->len > 0)
     {
       write->ret = logs_append(write->dir, write->file_size, write->files,
-                               write->data, write->len);
+                               write->data, write->len, &write->rotated);
     }
 
   write->crash_ret = OK;
@@ -769,7 +784,7 @@ static void logs_prepare(FAR struct logs_s *logs)
   write->crash_len = logs->crash_len;
   write->ret       = OK;
   write->crash_ret = OK;
-  write->finished  = false;
+  __atomic_store_n(&write->finished, false, __ATOMIC_RELAXED);
   strlcpy(write->crash_name, logs->crash_name, sizeof(write->crash_name));
 
   buffer        = logs->spare;
@@ -822,6 +837,9 @@ static void logs_written(FAR struct logs_s *logs)
 {
   FAR struct logs_write_s *write = &logs->write;
   int64_t us;
+
+  logs->rotations += write->rotated;
+  write->rotated   = 0;
 
   if (write->ret < 0)
     {
@@ -884,8 +902,8 @@ static void logs_flush(FAR struct logs_s *logs)
 {
   int ret;
 
-  if (logs->writing || (logs->len == 0 && logs->crash == NULL &&
-                        logs->dropped == 0))
+  if (logs->writing || logs->reading ||
+      (logs->len == 0 && logs->crash == NULL && logs->dropped == 0))
     {
       return;
     }
@@ -953,6 +971,16 @@ static void logs_write_done(FAR struct pnut_loop_s *loop, FAR void *arg)
 
   logs->writing = false;
   logs_written(logs);
+
+  /* A read that waited for it first */
+
+  if (logs->read_waiting)
+    {
+      logs->read_waiting = false;
+      logs_read_start(logs);
+      return;
+    }
+
   logs_schedule(logs);
 }
 
@@ -1110,7 +1138,7 @@ static void logs_last_saved(FAR struct logs_s *logs, FAR char *last)
       snprintf(path, sizeof(path), pass == 0 ? "%s/%s" : "%s/%s.1",
                logs->config.dir, LOGS_FILE);
 
-      fd = open(path, O_RDONLY | O_CLOEXEC);
+      fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
       if (fd < 0)
         {
           continue;
@@ -1318,7 +1346,7 @@ static bool logs_crash_known(FAR struct logs_s *logs,
           continue;
         }
 
-      fd = open(path, O_RDONLY | O_CLOEXEC);
+      fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
       if (fd < 0)
         {
           continue;
@@ -1646,7 +1674,631 @@ static void logs_catch_up(FAR struct logs_s *logs)
 }
 
 /****************************************************************************
+ * Name: logs_file_path
+ *
+ * Description:
+ *   The path of file number n (log.proto), system.log's being rotations;
+ *   false when it is not kept.
+ *
+ ****************************************************************************/
+
+static bool logs_file_path(FAR const struct logs_read_s *r, uint32_t n,
+                           FAR char *path, size_t size)
+{
+  uint32_t back;
+
+  if (n > r->rotations || r->rotations - n >= r->files)
+    {
+      return false;
+    }
+
+  back = r->rotations - n;
+  if (back == 0)
+    {
+      snprintf(path, size, "%s/%s", r->dir, LOGS_FILE);
+    }
+  else
+    {
+      snprintf(path, size, "%s/%s.%" PRIu32, r->dir, LOGS_FILE, back);
+    }
+
+  return true;
+}
+
+/****************************************************************************
+ * Name: logs_read_match
+ *
+ * Description:
+ *   Whether a line passes the reader's filter: its level at least the
+ *   one asked for, and the service or program named in it.  Log's own
+ *   marks always pass, as the starts and stops between lines.
+ *
+ ****************************************************************************/
+
+static bool logs_read_match(FAR const pnut_log_read_request_t *in,
+                            FAR const char *line)
+{
+  struct logs_line_s parsed;
+  FAR const char *p = line;
+  FAR const char *q;
+  size_t len = strlen(in->service);
+  int i;
+
+  if (strncmp(line, LOGS_MARK, sizeof(LOGS_MARK) - 1) == 0)
+    {
+      return true;
+    }
+
+  logs_parse(line, &parsed);
+
+  /* Asked: 1 debug ... 8 emergency; parsed: 0 emergency ... 7 debug */
+
+  if (in->level > 0 && in->level <= 8 &&
+      parsed.level > 8 - in->level)
+    {
+      return false;
+    }
+
+  if (len == 0)
+    {
+      return true;
+    }
+
+  /* Past the time, the CPU and the level in brackets: "program: module:
+   * text", either name the one asked for
+   */
+
+  while (*p == '[' && (q = strchr(p, ']')) != NULL)
+    {
+      p = q + 1;
+      while (*p == ' ')
+        {
+          p++;
+        }
+    }
+
+  for (i = 0; i < 2; i++)
+    {
+      q = strchr(p, ':');
+      if (q == NULL)
+        {
+          return false;
+        }
+
+      if ((size_t)(q - p) == len && strncmp(p, in->service, len) == 0)
+        {
+          return true;
+        }
+
+      p = q + 1;
+      while (*p == ' ')
+        {
+          p++;
+        }
+    }
+
+  return false;
+}
+
+/****************************************************************************
+ * Name: logs_read_lines
+ *
+ * Description:
+ *   A page of lines from a position on, on a worker: the files read as one
+ *   sequence, oldest first.
+ *
+ ****************************************************************************/
+
+static void logs_read_lines(FAR struct logs_read_s *r)
+{
+  FAR const pnut_log_read_request_t *in = &r->in.read;
+  FAR pnut_log_page_t *page = &r->out.page;
+  FAR char *buf = r->buf;
+  char path[LOGS_PATH_MAX];
+  FAR const char *nl;
+  struct stat st;
+  bool skipping = false;          /* A line longer than a piece: its rest */
+  uint32_t oldest;
+  uint32_t start;
+  uint32_t file;
+  uint32_t off;
+  size_t scanned = 0;
+  size_t pos;
+  size_t len;
+  ssize_t n;
+  int fd;
+
+  oldest = r->rotations >= r->files - 1u ? r->rotations - (r->files - 1u) :
+           0;
+  file = oldest;
+  off  = 0;
+  if (in->has_from)
+    {
+      if (in->from.file < oldest || in->from.file > r->rotations)
+        {
+          page->lost = true;      /* Rotated away, or another start's */
+        }
+      else
+        {
+          file = in->from.file;
+          off  = in->from.offset;
+        }
+    }
+
+  for (; ; )
+    {
+      if (!logs_file_path(r, file, path, sizeof(path)))
+        {
+          break;
+        }
+
+      fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+      if (fd < 0)
+        {
+          if (errno == ENOENT && file < r->rotations)
+            {
+              file++;             /* Not made yet: the next */
+              off = 0;
+              continue;
+            }
+
+          if (errno != ENOENT)
+            {
+              r->ret = -errno;
+              return;
+            }
+
+          break;
+        }
+
+      /* An offset past the end: another file's, from another start: from
+       * the oldest, said lost
+       */
+
+      if (fstat(fd, &st) == 0 && (off_t)off > st.st_size && !page->lost)
+        {
+          close(fd);
+          page->lost = true;
+          file = oldest;
+          off  = 0;
+          continue;
+        }
+
+      n     = -1;
+      start = off;
+      if (lseek(fd, off, SEEK_SET) >= 0)
+        {
+          n = read(fd, buf, LOGS_READ_CHUNK);
+        }
+
+      close(fd);
+      if (n < 0)
+        {
+          r->ret = -EIO;
+          return;
+        }
+
+      if (n == 0)
+        {
+          if (file < r->rotations)
+            {
+              file++;
+              off      = 0;
+              skipping = false;   /* A long line ends with its file */
+              continue;
+            }
+
+          break;                  /* The newest line read */
+        }
+
+      /* The whole lines in what was read; one longer than a chunk is
+       * passed over
+       */
+
+      for (pos = 0; pos < (size_t)n; )
+        {
+          nl = memchr(buf + pos, '\n', (size_t)n - pos);
+          if (nl == NULL)
+            {
+              if (pos == 0 && n == LOGS_READ_CHUNK)
+                {
+                  off     += (uint32_t)n;
+                  skipping = true;
+                }
+
+              break;
+            }
+
+          len = (size_t)(nl - (buf + pos));
+          if (skipping)
+            {
+              /* The rest of a line longer than a piece: passed over */
+
+              off     += (uint32_t)len + 1;
+              pos     += len + 1;
+              skipping = false;
+              continue;
+            }
+
+          buf[pos + len] = '\0';
+          if (len > 0 && buf[pos + len - 1] == '\r')
+            {
+              buf[pos + len - 1] = '\0';
+            }
+
+          off += (uint32_t)len + 1;
+          if (logs_read_match(in, buf + pos))
+            {
+              strlcpy(page->lines[page->lines_count], buf + pos,
+                      sizeof(page->lines[0]));
+              page->lines_count++;
+            }
+
+          pos += len + 1;
+          if (page->lines_count ==
+              sizeof(page->lines) / sizeof(page->lines[0]))
+            {
+              page->more = true;
+              goto done;
+            }
+        }
+
+      scanned += (size_t)n;
+
+      /* Nothing whole: a line still being written, the end; or a rotated
+       * file's cut tail, then the next file
+       */
+
+      if (off == start)
+        {
+          if (file < r->rotations)
+            {
+              file++;
+              off      = 0;
+              skipping = false;
+              continue;
+            }
+
+          break;
+        }
+
+      if (scanned >= LOGS_READ_SCAN)
+        {
+          page->more = true;
+          break;
+        }
+    }
+
+done:
+  page->has_next    = true;
+  page->next.file   = file;
+  page->next.offset = off;
+}
+
+/****************************************************************************
+ * Name: logs_read_crashes, logs_read_crash
+ *
+ * Description:
+ *   The crash reports kept, newest first; and a part of one.
+ *
+ ****************************************************************************/
+
+static void logs_read_crashes(FAR struct logs_read_s *r)
+{
+  FAR pnut_log_crashes_t *out = &r->out.crashes;
+  size_t max = sizeof(out->names) / sizeof(out->names[0]);
+  FAR struct dirent *de;
+  FAR DIR *d;
+  size_t i;
+  size_t j;
+
+  d = opendir(r->dir);
+  if (d == NULL)
+    {
+      r->ret = errno == ENOENT ? OK : -errno;
+      return;
+    }
+
+  while ((de = readdir(d)) != NULL)
+    {
+      if (strncmp(de->d_name, LOGS_CRASH, sizeof(LOGS_CRASH) - 1) != 0 ||
+          strlen(de->d_name) >= sizeof(out->names[0]))
+        {
+          continue;
+        }
+
+      /* Kept sorted, newest (greatest name) first, the oldest dropped */
+
+      for (i = 0; i < out->names_count; i++)
+        {
+          if (strcmp(de->d_name, out->names[i]) > 0)
+            {
+              break;
+            }
+        }
+
+      if (i >= max)
+        {
+          continue;
+        }
+
+      j = out->names_count < max ? out->names_count : max - 1;
+      for (; j > i; j--)
+        {
+          strlcpy(out->names[j], out->names[j - 1], sizeof(out->names[0]));
+        }
+
+      strlcpy(out->names[i], de->d_name, sizeof(out->names[0]));
+      if (out->names_count < max)
+        {
+          out->names_count++;
+        }
+    }
+
+  closedir(d);
+}
+
+static void logs_read_crash(FAR struct logs_read_s *r)
+{
+  FAR const pnut_log_crash_request_t *in = &r->in.crash;
+  FAR pnut_log_crash_t *out = &r->out.crash;
+  char path[LOGS_PATH_MAX];
+  struct stat st;
+  ssize_t n;
+  int fd;
+
+  /* A report's own name, nothing else in the directory */
+
+  if (strncmp(in->name, LOGS_CRASH, sizeof(LOGS_CRASH) - 1) != 0 ||
+      strchr(in->name, '/') != NULL)
+    {
+      r->ret = -ENOENT;
+      return;
+    }
+
+  snprintf(path, sizeof(path), "%s/%s", r->dir, in->name);
+  fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0)
+    {
+      r->ret = -errno;
+      return;
+    }
+
+  n = -1;
+  if (fstat(fd, &st) == 0 && lseek(fd, in->offset, SEEK_SET) >= 0)
+    {
+      n = read(fd, out->text.bytes, sizeof(out->text.bytes));
+    }
+
+  close(fd);
+  if (n < 0)
+    {
+      r->ret = -EIO;
+      return;
+    }
+
+  out->text.size = (pb_size_t)n;
+  out->more      = (off_t)in->offset + n < st.st_size;
+}
+
+/****************************************************************************
+ * Name: logs_read_run, logs_read_done
+ *
+ * Description:
+ *   A request read on a worker; answered on the loop.
+ *
+ ****************************************************************************/
+
+static void logs_read_run(FAR void *arg)
+{
+  FAR struct logs_read_s *r = arg;
+
+  r->ret = OK;
+  memset(&r->out, 0, sizeof(r->out));
+  switch (r->kind)
+    {
+      case LOGS_READ_LINES:
+        logs_read_lines(r);
+        break;
+
+      case LOGS_READ_CRASHES:
+        logs_read_crashes(r);
+        break;
+
+      default:
+        logs_read_crash(r);
+        break;
+    }
+
+  __atomic_store_n(&r->finished, true, __ATOMIC_RELEASE);
+}
+
+static void logs_read_answer(FAR struct logs_s *logs)
+{
+  FAR struct logs_read_s *r = &logs->read;
+
+  if (!logs->serving)
+    {
+      return;
+    }
+
+  if (r->ret < 0)
+    {
+      pnut_log_fail(&logs->server, &r->req,
+                    r->ret == -ENOENT ? PNUT_STATUS_NOTFOUND :
+                    PNUT_STATUS_INTERNAL,
+                    r->ret == -ENOENT ? PNUT_LOG_ERROR_CODE_NOT_FOUND :
+                    PNUT_LOG_ERROR_CODE_UNREADABLE, NULL);
+      return;
+    }
+
+  switch (r->kind)
+    {
+      case LOGS_READ_LINES:
+        pnut_log_read_reply(&logs->server, &r->req, PNUT_STATUS_OK,
+                            &r->out.page);
+        break;
+
+      case LOGS_READ_CRASHES:
+        pnut_log_crashes_reply(&logs->server, &r->req, PNUT_STATUS_OK,
+                               &r->out.crashes);
+        break;
+
+      default:
+        pnut_log_read_crash_reply(&logs->server, &r->req, PNUT_STATUS_OK,
+                                  &r->out.crash);
+        break;
+    }
+}
+
+static void logs_read_done(FAR struct pnut_loop_s *loop, FAR void *arg)
+{
+  FAR struct logs_s *logs =
+    (FAR struct logs_s *)((FAR char *)arg - offsetof(struct logs_s, read));
+
+  logs->reading = false;
+  logs_read_answer(logs);
+  logs_schedule(logs);            /* Lines that waited for it */
+}
+
+static void logs_read_start(FAR struct logs_s *logs)
+{
+  FAR struct logs_read_s *r = &logs->read;
+
+  r->dir       = logs->config.dir;
+  r->files     = logs->config.files;
+  r->rotations = logs->rotations;
+  __atomic_store_n(&r->finished, false, __ATOMIC_RELAXED);
+  logs->reading = true;
+  if (pnut_job_submit(logs->module.loop, logs_read_run, logs_read_done,
+                      r) < 0)
+    {
+      /* Read on the loop instead: rare */
+
+      logs_read_run(r);
+      logs->reading = false;
+      logs_read_answer(logs);
+      logs_schedule(logs);
+    }
+}
+
+/****************************************************************************
+ * Name: logs_allowed, logs_request
+ *
+ * Description:
+ *   Who may call (RFC 0026): the system UI, and a command typed in one of
+ *   the shells (RFC 0012); then the request is read, once no write runs.
+ *   One at a time: another meanwhile is answered busy.
+ *
+ ****************************************************************************/
+
+static int logs_allowed(FAR struct logs_s *logs,
+                        FAR const struct pnut_request_s *req)
+{
+  FAR const struct logs_config_s *config = &logs->config;
+  FAR const char *program;
+  int ret;
+
+  if (config->who == NULL)
+    {
+      return OK;
+    }
+
+  ret = config->who(config->identity, req->pid, &program);
+  if (ret == -ESRCH && config->origin != NULL && config->shells != NULL &&
+      config->shells[0] != '\0')
+    {
+      ret = config->origin(config->identity, req->pid, &program);
+      if (ret == OK)
+        {
+          return programs_listed(config->shells, program) ? OK : -EPERM;
+        }
+    }
+
+  /* No program's, nor a shell's: refused; not told now: try again */
+
+  if (ret == -ESRCH)
+    {
+      return -EPERM;
+    }
+
+  if (ret < 0)
+    {
+      return -EAGAIN;
+    }
+
+  return strcmp(program, "ui") == 0 ? OK : -EPERM;
+}
+
+static void logs_request(FAR struct logs_s *logs, uint8_t kind,
+                         FAR const struct pnut_request_s *req,
+                         FAR const void *in, size_t size)
+{
+  int ret;
+
+  ret = logs_allowed(logs, req);
+  if (ret < 0)
+    {
+      pnut_log_fail(&logs->server, req,
+                    ret == -EAGAIN ? PNUT_STATUS_UNAVAILABLE :
+                    PNUT_STATUS_DENIED,
+                    ret == -EAGAIN ? 0 : PNUT_LOG_ERROR_CODE_DENIED, NULL);
+      return;
+    }
+
+  if (logs->reading || logs->read_waiting)
+    {
+      pnut_log_fail(&logs->server, req, PNUT_STATUS_BUSY, 0, NULL);
+      return;
+    }
+
+  memset(&logs->read.in, 0, sizeof(logs->read.in));
+  memcpy(&logs->read.in, in, size);
+  logs->read.kind = kind;
+  logs->read.req  = *req;
+  if (logs->writing)
+    {
+      logs->read_waiting = true;  /* After the write: it may rotate */
+      return;
+    }
+
+  logs_read_start(logs);
+}
+
+static void logs_on_read(FAR struct pnut_log_server_s *server,
+                         FAR const struct pnut_request_s *req,
+                         FAR const pnut_log_read_request_t *in,
+                         FAR void *arg)
+{
+  logs_request(arg, LOGS_READ_LINES, req, in, sizeof(*in));
+}
+
+static void logs_on_crashes(FAR struct pnut_log_server_s *server,
+                            FAR const struct pnut_request_s *req,
+                            FAR const pnut_log_crashes_request_t *in,
+                            FAR void *arg)
+{
+  logs_request(arg, LOGS_READ_CRASHES, req, in, sizeof(*in));
+}
+
+static void logs_on_read_crash(FAR struct pnut_log_server_s *server,
+                               FAR const struct pnut_request_s *req,
+                               FAR const pnut_log_crash_request_t *in,
+                               FAR void *arg)
+{
+  logs_request(arg, LOGS_READ_CRASH, req, in, sizeof(*in));
+}
+
+static const struct pnut_log_handlers_s g_logs_handlers =
+{
+  .read       = logs_on_read,
+  .crashes    = logs_on_crashes,
+  .read_crash = logs_on_read_crash,
+};
+
+/****************************************************************************
  * Name: logs_start
+
  ****************************************************************************/
 
 static int logs_start(FAR struct pnut_module_s *module,
@@ -1659,6 +2311,23 @@ static int logs_start(FAR struct pnut_module_s *module,
   /* Nothing here fails the program: it serves the others all the same */
 
   pnut_module_ready(module);
+
+  /* The interface: the files are read whatever else follows */
+
+  if (logs->config.service != NULL)
+    {
+      ret = pnut_log_serve(loop, logs->config.service, 0, &g_logs_handlers,
+                           logs, &logs->server);
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_WARNING, "Cannot serve %s: %d",
+                   logs->config.service, ret);
+        }
+      else
+        {
+          logs->serving = true;
+        }
+    }
 
   if (logs->config.source == NULL)
     {
@@ -1737,6 +2406,22 @@ static void logs_stop(FAR struct pnut_module_s *module,
   char when[24];
   int waited;
 
+  if (logs->serving)
+    {
+      pnut_log_close(&logs->server);
+      logs->serving = false;
+    }
+
+  /* A read in flight answers nobody now; its worker is let finish */
+
+  for (waited = 0;
+       logs->reading && waited < LOGS_STOP_WAIT_MS &&
+       !__atomic_load_n(&logs->read.finished, __ATOMIC_ACQUIRE);
+       waited += LOGS_STOP_STEP_MS)
+    {
+      usleep(LOGS_STOP_STEP_MS * 1000);
+    }
+
   if (logs->fd < 0)
     {
       return;
@@ -1758,6 +2443,20 @@ static void logs_stop(FAR struct pnut_module_s *module,
     {
       pnut_loop_unwatch(loop, logs->fd);
       logs->watching = false;
+    }
+
+  /* Still reading: never written beside, so the last lines are not kept,
+   * as when a write runs on (below)
+   */
+
+  if (logs->reading &&
+      !__atomic_load_n(&logs->read.finished, __ATOMIC_ACQUIRE))
+    {
+      pnut_log(module, PNUT_LOG_ERROR,
+               "A read runs on: the last lines not kept");
+      close(logs->fd);
+      logs->fd = -1;
+      return;
     }
 
   for (waited = 0;
@@ -1825,6 +2524,10 @@ void logs_init(FAR struct logs_s *logs,
     {
       logs->config.files = 1;
     }
+
+  /* The oldest file kept is number 0 at start (log.proto) */
+
+  logs->rotations = logs->config.files - 1u;
 
   if (logs->config.batch < LOGS_LINE_MAX)
     {
