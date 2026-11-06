@@ -1248,6 +1248,7 @@ int store_load(FAR struct store_s *store)
 {
   FAR struct store_found_s *found = NULL;
   FAR struct dirent *de;
+  uint32_t asides = 0;
   uint32_t nfound = 0;
   uint32_t cap = 0;
   char path[STORE_PATH_MAX];
@@ -1359,7 +1360,17 @@ int store_load(FAR struct store_s *store)
 
           if (access(aside, F_OK) != 0 && rename(path, aside) == 0)
             {
+              /* Its conversation's id is never given again, though
+               * nothing of it loaded
+               */
+
+              if (found[i].conversation >= store->next_conv)
+                {
+                  store->next_conv = found[i].conversation + 1;
+                }
+
               store->aside++;
+              asides++;
               ret = OK;
             }
         }
@@ -1372,6 +1383,21 @@ int store_load(FAR struct store_s *store)
     }
 
   store_ids_read(store);
+
+  /* Segments set aside may have held the newest ids: the next skips past
+   * them by segmax per segment (a file of segmax bytes holds fewer than
+   * segmax records; one rewritten many times without a removal could in
+   * principle have covered more ids than it holds, past any device's
+   * use), kept in the ids file, since the next start reads no set-aside
+   * file
+   */
+
+  if (asides > 0)
+    {
+      store->next_msg += (uint64_t)asides * store->segmax;
+      snprintf(path, sizeof(path), "%s/" STORE_IDS, store->dir);
+      store_ids_write(path, store->next_msg, store->next_conv);
+    }
 
   /* A conversation whose newest was deleted: the text of the one before
    * it read now, on the worker, as store_latest() does on the loop

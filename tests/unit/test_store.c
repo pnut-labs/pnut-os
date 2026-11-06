@@ -822,6 +822,18 @@ static void test_store_aside(void **state)
   assert_int_equal(store_load(&fresh), 0);
   assert_int_equal(fresh.aside, 1);
   assert_int_equal(fresh.nconvs, 1);
+
+  /* The newest conversation and message ids, unread, never given again:
+   * also at the next start, which reads no set-aside file
+   */
+
+  assert_true(fresh.next_conv > bad);
+  assert_true(fresh.next_msg >= s->store.next_msg);
+  store_free(&fresh);
+  store_init(&fresh, s->dir, s->store.limit, s->store.segmax);
+  assert_int_equal(store_load(&fresh), 0);
+  assert_true(fresh.next_conv > bad);
+  assert_true(fresh.next_msg >= s->store.next_msg);
   store_free(&fresh);
 
   snprintf(aside, sizeof(aside), "%s" STORE_ASIDE, path);
