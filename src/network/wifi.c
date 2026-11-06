@@ -748,7 +748,7 @@ static void wifi_do_join(FAR struct wifi_s *wifi,
                          FAR const struct pnut_request_s *req,
                          FAR const pnut_wifi_join_request_t *in)
 {
-  size_t len = strlen(in->passphrase);
+  size_t len = strnlen(in->passphrase, sizeof(in->passphrase));
 
   if (!wifi->enabled)
     {
@@ -856,12 +856,19 @@ static void wifi_who(FAR struct pnut_services_client_s *client, int status,
   FAR struct wifi_s *wifi = ask->wifi;
 
   ask->used = false;
+  if (status == PNUT_STATUS_UNAVAILABLE || status == PNUT_STATUS_TIMEOUT)
+    {
+      wifi_fail(wifi, &ask->req, PNUT_STATUS_UNAVAILABLE,
+                PNUT_WIFI_ERROR_CODE_DENIED, "who calls cannot be told now");
+      explicit_bzero(&ask->join, sizeof(ask->join));
+      return;
+    }
+
   if (status != PNUT_STATUS_OK || out == NULL ||
       (strcmp(out->name, WIFI_UI) != 0 && !out->shell))
     {
-      wifi_fail(wifi, &ask->req, status == PNUT_STATUS_UNAVAILABLE ||
-                status == PNUT_STATUS_TIMEOUT ? PNUT_STATUS_UNAVAILABLE :
-                PNUT_STATUS_DENIED, PNUT_WIFI_ERROR_CODE_DENIED,
+      wifi_fail(wifi, &ask->req, PNUT_STATUS_DENIED,
+                PNUT_WIFI_ERROR_CODE_DENIED,
                 "for the system UI and the developer's shell");
       explicit_bzero(&ask->join, sizeof(ask->join));
       return;
