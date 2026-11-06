@@ -18,8 +18,12 @@
 #include <stdint.h>
 #include <time.h>
 
+#include <sys/types.h>
+
 #include <pnut/module.h>
 #include <pnut/timer.h>
+
+#include "pnut/log.pnut.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -36,6 +40,13 @@
  */
 
 #define LOGS_CRASH_NAME   32
+
+/* Log's interface (log.proto), for the system UI and the shell; a read's
+ * piece of a file at a time
+ */
+
+#define LOGS_SERVICE      "log"
+#define LOGS_READ_CHUNK   2048
 
 /****************************************************************************
  * Public Types
@@ -81,6 +92,19 @@ struct logs_config_s
 
   CODE int (*gettime)(FAR void *arg, FAR struct timespec *ts);
   FAR void *clock;
+
+  /* The interface's name, or NULL not to serve it; and who may call it
+   * (RFC 0026): the system UI, and a command typed in one of the shells
+   * (RFC 0012).  who tells a pid's program (-ESRCH none, -EAGAIN not
+   * now), origin the program a task with none was started from; anyone
+   * may when who is NULL (the tests)
+   */
+
+  FAR const char *service;
+  CODE int (*who)(FAR void *arg, pid_t pid, FAR const char **program);
+  CODE int (*origin)(FAR void *arg, pid_t pid, FAR const char **program);
+  FAR const char *shells;
+  FAR void *identity;
 };
 
 /* A write, on a worker: the module fills it in, and does not touch it
@@ -104,7 +128,36 @@ struct logs_write_s
 
   int ret;                        /* system.log's: a negated errno value */
   int crash_ret;                  /* The report's */
+  uint32_t rotated;               /* Rotations it made */
   bool finished;
+};
+
+/* A request read on a worker: lines, the crash reports, or one's part */
+
+struct logs_read_s
+{
+  FAR const char *dir;
+  uint8_t files;
+  uint32_t rotations;             /* system.log's number then */
+  uint8_t kind;                   /* LOGS_READ_* in logs.c */
+  struct pnut_request_s req;
+  union
+    {
+      pnut_log_read_request_t read;
+      pnut_log_crash_request_t crash;
+    } in;
+  union
+    {
+      pnut_log_page_t page;
+      pnut_log_crashes_t crashes;
+      pnut_log_crash_t crash;
+    } out;
+  int ret;
+  bool finished;
+
+  /* The piece of a file read: here, not on the worker's small stack */
+
+  char buf[LOGS_READ_CHUNK + 1];
 };
 
 struct logs_s
@@ -141,6 +194,17 @@ struct logs_s
 
   uint32_t dropped;               /* Lines that found no room */
   bool failing;                   /* A write failed, logged */
+
+  /* The interface: system.log's number (log.proto), and the one request
+   * read at a time, never while a write runs
+   */
+
+  uint32_t rotations;
+  struct pnut_log_server_s server;
+  bool serving;
+  struct logs_read_s read;
+  bool reading;
+  bool read_waiting;              /* For the write to end */
 };
 
 /****************************************************************************

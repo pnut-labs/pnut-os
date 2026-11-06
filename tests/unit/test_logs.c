@@ -758,6 +758,299 @@ static void test_logs_crash_trim(void **state)
   test_teardown(&t);
 }
 
+/* Log's interface: the files read as one sequence, oldest first, a page
+ * at a time, going on from the position a page ends at; by level, and by
+ * service, Log's marks always; a position rotated away read from the
+ * oldest, said lost; the crash reports, newest first, and one read; a
+ * name outside the directory not found; a read going on across a
+ * rotation, and a file rotated away since said lost
+ */
+
+struct read_test_s
+{
+  struct logs_test_s t;
+  struct pnut_module_s module;
+  struct pnut_log_client_s client;
+  int step;
+  pnut_log_position_t next;
+  pnut_log_position_t end;        /* The newest line's end, before the
+                                   * rotation */
+};
+
+static void read_step(FAR struct read_test_s *r);
+
+static void read_page(FAR struct pnut_log_client_s *client, int status,
+                      FAR const pnut_log_page_t *out,
+                      FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct read_test_s *r = arg;
+
+  assert_int_equal(status, PNUT_STATUS_OK);
+  switch (r->step)
+    {
+      case 0:                     /* From the oldest: a whole page */
+        assert_int_equal(out->lines_count, 8);
+        assert_true(test_starts(out->lines[0], "[    1.000000] [  INFO] "
+                                               "sh: a1"));
+        assert_true(test_starts(out->lines[2], "[    3.000000] [ ERROR] "
+                                               "sh: b1"));
+        assert_true(test_starts(out->lines[3], "---- start"));
+        assert_true(test_starts(out->lines[7], "[   14.000000] [  WARN] "
+                                               "sh: c4"));
+        assert_true(out->more);
+        assert_false(out->lost);
+        r->next = out->next;
+        break;
+
+      case 1:                     /* On from there, to the newest */
+        assert_int_equal(out->lines_count, 6);
+        assert_true(test_starts(out->lines[0], "[   15.000000] [  WARN] "
+                                               "sh: c5"));
+        assert_true(test_starts(out->lines[5], "[   20.000000] [  WARN] "
+                                               "sh: c10"));
+        assert_false(out->more);
+        assert_int_equal(out->next.file, 2);
+        r->end = out->next;
+        break;
+
+      case 2:                     /* Errors and worse, and the mark */
+        assert_int_equal(out->lines_count, 2);
+        assert_true(test_starts(out->lines[0], "[    3.000000] [ ERROR] "));
+        assert_true(test_starts(out->lines[1], "---- start"));
+        break;
+
+      case 3:                     /* tel's alone, and the mark */
+        assert_int_equal(out->lines_count, 2);
+        assert_true(test_starts(out->lines[0], "[    2.000000] [  WARN] "
+                                               "tel: a2"));
+        break;
+
+      case 4:                     /* A position rotated away */
+        assert_true(out->lost);
+        assert_true(test_starts(out->lines[0], "[    1.000000] "));
+        break;
+
+      case 8:                     /* On across a rotation, nothing lost */
+        assert_false(out->lost);
+        assert_int_equal(out->lines_count, 1);
+        assert_true(test_starts(out->lines[0], "[  200.000000] [  WARN] "
+                                               "sh: d1"));
+        assert_int_equal(out->next.file, 3);
+        assert_false(out->more);
+        break;
+
+      default:                    /* The file rotated away since */
+        assert_true(out->lost);
+        assert_true(test_starts(out->lines[0], "[    3.000000] "));
+        break;
+    }
+
+  r->step++;
+  read_step(r);
+}
+
+static void read_crashes(FAR struct pnut_log_client_s *client, int status,
+                         FAR const pnut_log_crashes_t *out,
+                         FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct read_test_s *r = arg;
+
+  assert_int_equal(status, PNUT_STATUS_OK);
+  assert_int_equal(out->names_count, 2);
+  assert_string_equal(out->names[0], "crash-20261025-080000");
+  assert_string_equal(out->names[1], T0_NAME);
+  r->step++;
+  read_step(r);
+}
+
+static void read_crash(FAR struct pnut_log_client_s *client, int status,
+                       FAR const pnut_log_crash_t *out,
+                       FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct read_test_s *r = arg;
+
+  if (r->step == 6)
+    {
+      assert_int_equal(status, PNUT_STATUS_OK);
+      assert_int_equal(out->text.size, 4);
+      assert_memory_equal(out->text.bytes, "dump", 4);
+      assert_false(out->more);
+    }
+  else
+    {
+      assert_int_equal(status, PNUT_STATUS_NOTFOUND);
+    }
+
+  r->step++;
+  read_step(r);
+}
+
+static void read_step(FAR struct read_test_s *r)
+{
+  pnut_log_read_request_t in;
+  pnut_log_crashes_request_t cin;
+  pnut_log_crash_request_t crash;
+
+  memset(&in, 0, sizeof(in));
+  memset(&crash, 0, sizeof(crash));
+  switch (r->step)
+    {
+      case 0:
+        break;
+
+      case 1:
+        in.has_from = true;
+        in.from     = r->next;
+        break;
+
+      case 2:
+        in.level = 5;
+        break;
+
+      case 3:
+        strlcpy(in.service, "tel", sizeof(in.service));
+        break;
+
+      case 4:
+        in.has_from    = true;
+        in.from.file   = 9;
+        in.from.offset = 0;
+        break;
+
+      case 5:
+        memset(&cin, 0, sizeof(cin));
+        assert_int_equal(pnut_log_crashes(&r->client, &cin, 0,
+                                          read_crashes, r), 0);
+        return;
+
+      case 6:
+        strlcpy(crash.name, T0_NAME, sizeof(crash.name));
+        assert_int_equal(pnut_log_read_crash(&r->client, &crash, 0,
+                                             read_crash, r), 0);
+        return;
+
+      case 7:
+        strlcpy(crash.name, "crash-../../x", sizeof(crash.name));
+        assert_int_equal(pnut_log_read_crash(&r->client, &crash, 0,
+                                             read_crash, r), 0);
+        return;
+
+      case 8:
+        {
+          char from[160];
+          char to[160];
+
+          /* A rotation, as Log makes one and counts it: the read goes on
+           * from where it ended
+           */
+
+          test_path(&r->t, "system.log.1", from, sizeof(from));
+          test_path(&r->t, "system.log.2", to, sizeof(to));
+          assert_int_equal(rename(from, to), 0);
+          test_path(&r->t, "system.log", from, sizeof(from));
+          test_path(&r->t, "system.log.1", to, sizeof(to));
+          assert_int_equal(rename(from, to), 0);
+          test_write_file(from, "[  200.000000] [  WARN] sh: d1\n");
+          r->t.logs.rotations++;
+          in.has_from = true;
+          in.from     = r->end;
+        }
+        break;
+
+      case 9:
+        in.has_from    = true;
+        in.from.file   = 0;
+        in.from.offset = 0;
+        break;
+
+      default:
+        pnut_loop_stop(r->t.loop, 0);
+        return;
+    }
+
+  assert_int_equal(pnut_log_read(&r->client, &in, 0, read_page, r), 0);
+}
+
+static void read_connected(FAR struct pnut_log_client_s *client,
+                           bool connected, FAR void *arg)
+{
+  if (connected)
+    {
+      read_step(arg);
+    }
+}
+
+static int read_start(FAR struct pnut_module_s *module,
+                      FAR struct pnut_loop_s *loop)
+{
+  FAR struct read_test_s *r = (FAR struct read_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct read_test_s, module));
+
+  assert_int_equal(pnut_log_connect(loop, LOGS_SERVICE, read_connected, r,
+                                    &r->client), 0);
+  pnut_module_ready(module);
+  return 0;
+}
+
+static void read_stop(FAR struct pnut_module_s *module,
+                      FAR struct pnut_loop_s *loop)
+{
+  FAR struct read_test_s *r = (FAR struct read_test_s *)
+    ((FAR uint8_t *)module - offsetof(struct read_test_s, module));
+
+  pnut_log_disconnect(&r->client);
+}
+
+static void test_logs_read(void **state)
+{
+  FAR struct read_test_s *r = calloc(1, sizeof(*r));
+  struct pnut_loop_config_s config;
+  char path[160];
+  char text[512];
+  int len = 0;
+  int i;
+
+  assert_non_null(r);
+  test_setup(&r->t);
+  r->t.config.source  = NULL;     /* The files only */
+  r->t.config.service = LOGS_SERVICE;
+
+  test_path(&r->t, "system.log.2", path, sizeof(path));
+  test_write_file(path, "[    1.000000] [  INFO] sh: a1\n"
+                        "[    2.000000] [  WARN] tel: a2\n");
+  test_path(&r->t, "system.log.1", path, sizeof(path));
+  test_write_file(path, "[    3.000000] [ ERROR] sh: b1\n"
+                        "---- start 2026-10-24T12:00:00Z, x ----\n");
+  for (i = 1; i <= 10; i++)
+    {
+      len += snprintf(text + len, sizeof(text) - len,
+                      "[%5d.000000] [  WARN] sh: c%d\n", 10 + i, i);
+    }
+
+  test_path(&r->t, "system.log", path, sizeof(path));
+  test_write_file(path, text);
+  test_path(&r->t, T0_NAME, path, sizeof(path));
+  test_write_file(path, "dump");
+  test_path(&r->t, "crash-20261025-080000", path, sizeof(path));
+  test_write_file(path, "later");
+
+  logs_init(&r->t.logs, &r->t.config);
+  pnut_loop_defaults(&config);
+  config.rundir = r->t.dir;
+  assert_int_equal(pnut_loop_create(&config, &r->t.loop), 0);
+  assert_int_equal(pnut_module_add(r->t.loop, &r->t.logs.module), 0);
+  r->module.name  = "reader";
+  r->module.start = read_start;
+  r->module.stop  = read_stop;
+  assert_int_equal(pnut_module_add(r->t.loop, &r->module), 0);
+  assert_int_equal(pnut_loop_run(r->t.loop), 0);
+  pnut_loop_destroy(r->t.loop);
+  logs_deinit(&r->t.logs);
+  assert_int_equal(r->step, 10);
+  test_teardown(&r->t);
+  free(r);
+}
+
 /* No RAM log: Log keeps nothing, and the program runs on */
 
 static bool test_after_100ms(FAR struct logs_test_s *t)
@@ -800,6 +1093,7 @@ int main(void)
     cmocka_unit_test(test_logs_crash_known),
     cmocka_unit_test(test_logs_crash_trim),
     cmocka_unit_test(test_logs_no_source),
+    cmocka_unit_test(test_logs_read),
   };
 
   return cmocka_run_group_tests_name("logs", tests, NULL, NULL);
