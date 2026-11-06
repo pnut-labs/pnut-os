@@ -16,7 +16,7 @@ STACKSIZE = $(CONFIG_PNUT_DATA_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_DATA)
 
 MAINSRC   = main.c
-CSRCS     = messages.c store.c
+CSRCS     = messages.c store.c storage.c
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)

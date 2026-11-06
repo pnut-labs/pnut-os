@@ -70,6 +70,20 @@ config PNUT_LOG_FILES
 	default 4
 	range 1 9
 
+config PNUT_LOG_COPY_SIZE
+	int "A file's bytes, at most, in the copy on external storage"
+	default 1048576
+	range 512 16777216
+	---help---
+		The log.copy setting, a Developer option, names an external
+		storage (sd0) whose logs folder holds a copy of the lines kept
+		(RFC 0026), rotated as the files are.
+
+config PNUT_LOG_COPY_FILES
+	int "Files in the copy on external storage; 0 for no copy"
+	default 8
+	range 0 9
+
 config PNUT_LOG_CRASHES
 	int "Crash reports kept"
 	default 5
