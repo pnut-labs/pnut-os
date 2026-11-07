@@ -16,13 +16,15 @@
  * starts from a radio taken down and brought up again, since after a
  * failed join every scan and join failed until it was.
  *
- * Known networks, kept with their passphrases in Settings, come with
- * Settings' secrets: until then a passphrase comes with each join, and is
- * kept in memory only, to join a lost network again.  A join asked for
- * that fails is not tried again: the driver cannot tell a wrong
- * passphrase from a network out of reach, so the owner is told.  A lost
- * network, whose passphrase did join it, is tried again, the wait
- * doubling after each failure.
+ * A network joined becomes known: up to 16, last used first, kept as
+ * Wi-Fi's settings, their passphrases as secrets in Settings, never in
+ * Wi-Fi's memory beyond a join.  Whenever Wi-Fi is on and no network is
+ * joined, it scans and joins a known one in reach: the one joined last,
+ * else the strongest.  A join the owner asked for that fails is reported
+ * and not tried on its own again until the owner joins it again: the
+ * driver cannot tell a wrong passphrase from a network out of reach.  One
+ * joined on its own that fails is tried less and less often, up to every
+ * 8 minutes, others in reach meanwhile (RFC 0031).
  */
 
 /****************************************************************************
@@ -34,6 +36,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <pnut/log.h>
 #include <pnut/loop.h>
@@ -50,14 +53,37 @@
 #define WIFI_UI           "ui"    /* The system UI's program */
 #define WIFI_LINK_MS      10000
 #define WIFI_AGAIN_MS     30000
-#define WIFI_AGAIN_SHIFT  4       /* The wait doubled at most this often */
+#define WIFI_AGAIN_MAX_MS 480000  /* 8 minutes (RFC 0031) */
+#define WIFI_IDLE_MS      60000
 #define WIFI_KICK_MS      1000    /* A job the worker would not take */
+#define WIFI_SAVE_MS      1000    /* A write's failed call, again: the */
+#define WIFI_SAVE_MAX_MS  60000   /* wait doubled up to a minute */
+
+/* A slot's settings: its network's name, security and passphrase */
+
+#define WIFI_NET(i)       (PNUT_WIFI_SETTINGS_NET_0 + 3 * (i))
+#define WIFI_SEC(i)       (PNUT_WIFI_SETTINGS_SEC_0 + 3 * (i))
+#define WIFI_PSK(i)       (PNUT_WIFI_SETTINGS_PSK_0 + 3 * (i))
+
+/* A slot's plan in a write: left; the passphrase of the network just
+ * joined; none; or else the slot whose passphrase it takes
+ */
+
+#define WIFI_FROM_KEEP    (-1)
+#define WIFI_FROM_PASS    (-2)
+#define WIFI_FROM_NONE    (-3)
+
+/* A name escaped: each byte as \xNN at most, and a NUL */
+
+#define WIFI_ESCAPED_MAX  (4 * (WIFI_NAME_MAX - 1) + 1)
 
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
 
 static void wifi_next(FAR struct wifi_s *wifi);
+static void wifi_save(FAR struct wifi_s *wifi);
+static void wifi_stop_seeking(FAR struct wifi_s *wifi);
 
 /****************************************************************************
  * Private Functions
@@ -66,6 +92,216 @@ static void wifi_next(FAR struct wifi_s *wifi);
 static uint32_t wifi_ms(uint32_t value, uint32_t fallback)
 {
   return value != 0 ? value : fallback;
+}
+
+/* The slots' settings lie three by three, as wifi.proto declares them */
+
+#define WIFI_LAID_OUT \
+  (PNUT_WIFI_SETTINGS_SEC_0 == PNUT_WIFI_SETTINGS_NET_0 + 1 && \
+   PNUT_WIFI_SETTINGS_PSK_0 == PNUT_WIFI_SETTINGS_NET_0 + 2 && \
+   PNUT_WIFI_SETTINGS_NET_1 == PNUT_WIFI_SETTINGS_NET_0 + 3 && \
+   PNUT_WIFI_SETTINGS_PSK_15 == PNUT_WIFI_SETTINGS_NET_0 + 47)
+
+typedef char wifi_slots_laid_out[WIFI_LAID_OUT ? 1 : -1];
+
+/* The monotonic clock, in milliseconds */
+
+static uint64_t wifi_now(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/****************************************************************************
+ * Name: wifi_escape, wifi_unescape
+ *
+ * Description:
+ *   A network's name as a slot keeps it (RFC 0031): a name need not be
+ *   UTF-8, so each byte that is not part of a UTF-8 character, each
+ *   control character and each backslash is written as \xNN.  Unescaped,
+ *   false for a text that is no name: too long, or with a NUL.
+ *
+ ****************************************************************************/
+
+static int wifi_utf8_len(FAR const uint8_t *p)
+{
+  int n;
+  int i;
+
+  if (p[0] < 0x80)
+    {
+      return 1;
+    }
+
+  n = p[0] >= 0xc2 && p[0] <= 0xdf ? 2 :
+      p[0] >= 0xe0 && p[0] <= 0xef ? 3 :
+      p[0] >= 0xf0 && p[0] <= 0xf4 ? 4 : 0;
+  for (i = 1; i < n; i++)
+    {
+      if ((p[i] & 0xc0) != 0x80)
+        {
+          return 0;
+        }
+    }
+
+  /* No overlong form, surrogate or code point past U+10FFFF */
+
+  if ((n == 3 && p[0] == 0xe0 && p[1] < 0xa0) ||
+      (n == 3 && p[0] == 0xed && p[1] >= 0xa0) ||
+      (n == 4 && p[0] == 0xf0 && p[1] < 0x90) ||
+      (n == 4 && p[0] == 0xf4 && p[1] >= 0x90))
+    {
+      return 0;
+    }
+
+  return n;
+}
+
+static void wifi_escape(FAR const char *name, FAR char *out)
+{
+  FAR const uint8_t *p = (FAR const uint8_t *)name;
+  int n;
+
+  while (*p != '\0')
+    {
+      n = wifi_utf8_len(p);
+      if (n == 1 && *p >= 0x20 && *p != 0x7f && *p != '\\')
+        {
+          *out++ = (char)*p++;
+        }
+      else if (n > 1)
+        {
+          memcpy(out, p, n);
+          out += n;
+          p   += n;
+        }
+      else
+        {
+          out += sprintf(out, "\\x%02x", *p++);
+        }
+    }
+
+  *out = '\0';
+}
+
+static int wifi_hex(char c)
+{
+  return c >= '0' && c <= '9' ? c - '0' :
+         c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+         c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+static bool wifi_unescape(FAR const char *text, FAR char *name)
+{
+  size_t len = 0;
+  int hi;
+  int lo;
+
+  while (*text != '\0')
+    {
+      if (len >= WIFI_NAME_MAX - 1)
+        {
+          return false;
+        }
+
+      hi = text[0] == '\\' && text[1] == 'x' ? wifi_hex(text[2]) : -1;
+      lo = hi >= 0 ? wifi_hex(text[3]) : -1;
+      if (lo >= 0)
+        {
+          if (hi == 0 && lo == 0)
+            {
+              return false;
+            }
+
+          name[len++] = (char)(hi << 4 | lo);
+          text += 4;
+        }
+      else
+        {
+          name[len++] = *text++;
+        }
+    }
+
+  name[len] = '\0';
+  return true;
+}
+
+/* A setting's value in the settings' struct, a string's */
+
+static FAR const char *wifi_text(FAR struct wifi_s *wifi, int index)
+{
+  return (FAR const char *)&wifi->settings.values +
+         g_pnut_wifi_settings_desc.decls[index].offset;
+}
+
+/****************************************************************************
+ * Name: wifi_known_find, wifi_known_front, wifi_known_remove
+ *
+ * Description:
+ *   A known network by its name and security, or -1; one put first, the
+ *   network used longest ago forgotten if there is no room; one taken
+ *   away.
+ *
+ ****************************************************************************/
+
+static int wifi_known_find(FAR struct wifi_s *wifi, FAR const char *name,
+                           bool secured)
+{
+  int i;
+
+  for (i = 0; i < WIFI_KNOWN_MAX && wifi->known[i].name[0] != '\0'; i++)
+    {
+      if (wifi->known[i].secured == secured &&
+          strcmp(wifi->known[i].name, name) == 0)
+        {
+          return i;
+        }
+    }
+
+  return -1;
+}
+
+static FAR struct wifi_known_s *wifi_known_front(FAR struct wifi_s *wifi,
+                                                 FAR const char *name,
+                                                 bool secured)
+{
+  struct wifi_known_s k;
+  int at = wifi_known_find(wifi, name, secured);
+
+  if (at < 0)
+    {
+      memset(&k, 0, sizeof(k));
+      strlcpy(k.name, name, sizeof(k.name));
+      k.secured = secured;
+      at = WIFI_KNOWN_MAX - 1;
+      if (wifi->known[at].name[0] != '\0')
+        {
+          pnut_log(&wifi->module, PNUT_LOG_INFO,
+                   "\"%s\" forgotten: used longest ago",
+                   wifi->known[at].name);
+        }
+
+      explicit_bzero(&wifi->known[at], sizeof(wifi->known[at]));
+    }
+  else
+    {
+      k = wifi->known[at];
+    }
+
+  memmove(&wifi->known[1], &wifi->known[0], at * sizeof(wifi->known[0]));
+  wifi->known[0] = k;
+  explicit_bzero(&k, sizeof(k));
+  return &wifi->known[0];
+}
+
+static void wifi_known_remove(FAR struct wifi_s *wifi, int at)
+{
+  explicit_bzero(&wifi->known[at], sizeof(wifi->known[at]));
+  memmove(&wifi->known[at], &wifi->known[at + 1],
+          (WIFI_KNOWN_MAX - 1 - at) * sizeof(wifi->known[0]));
+  memset(&wifi->known[WIFI_KNOWN_MAX - 1], 0, sizeof(wifi->known[0]));
 }
 
 /****************************************************************************
@@ -102,7 +338,7 @@ static void wifi_set_state(FAR struct wifi_s *wifi, uint8_t state)
  * Name: wifi_forget_pass
  *
  * Description:
- *   The passphrase held for joining again, wiped.
+ *   A join's passphrase, and its network's name, wiped.
  *
  ****************************************************************************/
 
@@ -319,7 +555,7 @@ static void wifi_run(FAR void *arg)
 }
 
 /****************************************************************************
- * Name: wifi_link_timer, wifi_again_timer
+ * Name: wifi_link_timer, wifi_kick_timer
  ****************************************************************************/
 
 static void wifi_link_timer(FAR struct pnut_loop_s *loop,
@@ -339,20 +575,6 @@ static void wifi_kick_timer(FAR struct pnut_loop_s *loop,
 
   wifi->kick = NULL;
   wifi_next(wifi);
-}
-
-static void wifi_again_timer(FAR struct pnut_loop_s *loop,
-                             FAR struct pnut_timer_s *timer, FAR void *arg)
-{
-  FAR struct wifi_s *wifi = arg;
-
-  wifi->again = NULL;
-  if (wifi->enabled && wifi->name[0] != '\0' &&
-      wifi->state.state == PNUT_WIFI_INFO_STATE_ON)
-    {
-      wifi->join_wanted = true;
-      wifi_next(wifi);
-    }
 }
 
 static void wifi_timer(FAR struct wifi_s *wifi,
@@ -384,14 +606,619 @@ static void wifi_cancel(FAR struct wifi_s *wifi,
     }
 }
 
-/* The wait before a lost network is tried again, doubled per failure */
+/****************************************************************************
+ * Name: wifi_save, wifi_save_step
+ *
+ * Description:
+ *   Write the known networks to the slots.  The plan first: each slot
+ *   left as it is, or given its network and the passphrase it takes, the
+ *   network just joined's, or the one in the slot that holds its network
+ *   now, read before any slot is written.  Then one setting at a time,
+ *   each slot's passphrase, name and security.  One write at a time: a
+ *   change meanwhile writes again after it.
+ *
+ ****************************************************************************/
 
-static uint32_t wifi_again_ms(FAR struct wifi_s *wifi)
+static void wifi_save_step(FAR struct wifi_s *wifi);
+
+static void wifi_save_end(FAR struct wifi_s *wifi)
 {
-  uint8_t shift = wifi->tries < WIFI_AGAIN_SHIFT ? wifi->tries :
-                  WIFI_AGAIN_SHIFT;
+  wifi->saving = false;
+  explicit_bzero(wifi->save_psk, sizeof(wifi->save_psk));
+  if (wifi->save_again)
+    {
+      wifi->save_again = false;
+      wifi_save(wifi);
+    }
 
-  return wifi_ms(wifi->config.again_ms, WIFI_AGAIN_MS) << shift;
+  wifi_next(wifi);
+}
+
+static void wifi_save(FAR struct wifi_s *wifi)
+{
+  FAR struct wifi_known_s *k;
+  FAR struct wifi_slot_s *slot;
+  bool writes = false;
+  bool pass;
+  int i;
+  int j;
+
+  if (!wifi->known_loaded || !wifi->settings_open)
+    {
+      return;
+    }
+
+  if (wifi->saving)
+    {
+      wifi->save_again = true;
+      return;
+    }
+
+  for (i = 0; i < WIFI_KNOWN_MAX; i++)
+    {
+      k    = &wifi->known[i];
+      slot = &wifi->slots[i];
+      memset(&wifi->save_to[i], 0, sizeof(wifi->save_to[i]));
+      strlcpy(wifi->save_to[i].name, k->name, sizeof(wifi->save_to[i].name));
+      wifi->save_to[i].secured = k->secured;
+
+      pass = k->name[0] != '\0' && k->pending;
+      if (!pass && !slot->unsure && slot->secured == k->secured &&
+          strcmp(slot->name, k->name) == 0)
+        {
+          wifi->save_from[i] = WIFI_FROM_KEEP;
+          continue;
+        }
+
+      writes = true;
+      wifi->save_from[i] = WIFI_FROM_NONE;
+      if (k->name[0] == '\0' || !k->secured)
+        {
+          k->pending = false;
+          explicit_bzero(k->pass, sizeof(k->pass));
+          continue;
+        }
+
+      if (pass)
+        {
+          wifi->save_from[i] = WIFI_FROM_PASS;
+          strlcpy(wifi->save_psk[i], k->pass, sizeof(wifi->save_psk[i]));
+          k->pending = false;
+          explicit_bzero(k->pass, sizeof(k->pass));
+          continue;
+        }
+
+      for (j = 0; j < WIFI_KNOWN_MAX; j++)
+        {
+          if (!wifi->slots[j].unsure && wifi->slots[j].secured &&
+              strcmp(wifi->slots[j].name, k->name) == 0)
+            {
+              wifi->save_from[i] = j;
+              break;
+            }
+        }
+
+      if (wifi->save_from[i] == WIFI_FROM_NONE)
+        {
+          pnut_log(&wifi->module, PNUT_LOG_WARNING,
+                   "\"%s\": its passphrase is lost: join it again",
+                   k->name);
+          k->refused = true;
+        }
+    }
+
+  if (!writes)
+    {
+      explicit_bzero(wifi->save_psk, sizeof(wifi->save_psk));
+      return;
+    }
+
+  wifi->saving       = true;
+  wifi->save_reading = true;
+  wifi->save_at      = 0;
+  wifi->save_step    = 0;
+  wifi->save_fails   = 0;
+  wifi_save_step(wifi);
+}
+
+static void wifi_save_timer(FAR struct pnut_loop_s *loop,
+                            FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct wifi_s *wifi = arg;
+
+  wifi->save_timer = NULL;
+  wifi_save_step(wifi);
+}
+
+/* A call failed: the same again, a second later, then less and less
+ * often; never given up while Wi-Fi runs, since a slot left half written
+ * would lose its passphrase.  Unless Settings refused the call itself,
+ * which no retry mends: the write ends, the slot left unsure.  ret is
+ * Settings' status, or a call's negated errno value.
+ */
+
+static void wifi_save_failed(FAR struct wifi_s *wifi, int ret,
+                             bool refused)
+{
+  uint32_t ms = WIFI_SAVE_MS;
+  uint8_t i;
+
+  if (refused)
+    {
+      pnut_log(&wifi->module, PNUT_LOG_ERROR,
+               "Settings refused a known network's slot %d: status %d",
+               wifi->save_at, ret);
+      wifi_save_end(wifi);
+      return;
+    }
+
+  if (wifi->save_fails < UINT8_MAX)
+    {
+      wifi->save_fails++;
+    }
+
+  for (i = 1; i < wifi->save_fails && ms < WIFI_SAVE_MAX_MS; i++)
+    {
+      ms <<= 1;
+    }
+
+  if (wifi->save_fails == 1)
+    {
+      pnut_log(&wifi->module, PNUT_LOG_WARNING,
+               "Writing the known networks: %d; again", ret);
+    }
+
+  wifi_timer(wifi, &wifi->save_timer,
+             ms < WIFI_SAVE_MAX_MS ? ms : WIFI_SAVE_MAX_MS,
+             wifi_save_timer);
+}
+
+/* Settings' answers that no retry mends: the call itself refused */
+
+static bool wifi_save_final(int status)
+{
+  return status == PNUT_STATUS_DENIED || status == PNUT_STATUS_NOTFOUND ||
+         status == PNUT_STATUS_INVALID;
+}
+
+static void wifi_save_got(FAR struct pnut_settings_cache_s *cache,
+                          int status, uint32_t code, FAR const char *value,
+                          FAR void *arg)
+{
+  FAR struct wifi_s *wifi = arg;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      wifi_save_failed(wifi, status, wifi_save_final(status));
+      return;
+    }
+
+  strlcpy(wifi->save_psk[wifi->save_at], value,
+          sizeof(wifi->save_psk[0]));
+  wifi->save_at++;
+  wifi->save_fails = 0;
+  wifi_save_step(wifi);
+}
+
+static void wifi_save_done(FAR struct pnut_settings_cache_s *cache,
+                           int status, uint32_t code, FAR void *arg)
+{
+  FAR struct wifi_s *wifi = arg;
+  int i = wifi->save_at;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      wifi_save_failed(wifi, status, wifi_save_final(status));
+      return;
+    }
+
+  wifi->save_fails = 0;
+  if (++wifi->save_step == 3)
+    {
+      wifi->slots[i] = wifi->save_to[i];
+      explicit_bzero(wifi->save_psk[i], sizeof(wifi->save_psk[i]));
+      wifi->save_at++;
+      wifi->save_step = 0;
+    }
+
+  wifi_save_step(wifi);
+}
+
+static void wifi_save_step(FAR struct wifi_s *wifi)
+{
+  char text[WIFI_ESCAPED_MAX];
+  pnut_setting_value_t v;
+  int ret;
+  int i;
+
+  if (!wifi->saving)
+    {
+      return;
+    }
+
+  if (wifi->save_reading)
+    {
+      for (i = wifi->save_at; i < WIFI_KNOWN_MAX; i++)
+        {
+          if (wifi->save_from[i] >= 0)
+            {
+              wifi->save_at = i;
+              ret = pnut_settings_cache_get_secret(
+                      &wifi->settings.cache, WIFI_PSK(wifi->save_from[i]),
+                      wifi_save_got, wifi);
+              if (ret < 0)
+                {
+                  wifi_save_failed(wifi, ret, false);
+                }
+
+              return;
+            }
+        }
+
+      wifi->save_reading = false;
+      wifi->save_at      = 0;
+      wifi->save_step    = 0;
+    }
+
+  for (i = wifi->save_at; i < WIFI_KNOWN_MAX; i++)
+    {
+      if (wifi->save_from[i] != WIFI_FROM_KEEP)
+        {
+          break;
+        }
+    }
+
+  if (i == WIFI_KNOWN_MAX)
+    {
+      wifi_save_end(wifi);
+      return;
+    }
+
+  if (i != wifi->save_at)
+    {
+      wifi->save_at   = i;
+      wifi->save_step = 0;
+    }
+
+  memset(&v, 0, sizeof(v));
+  v.which_value = PNUT_SETTING_VALUE_TEXT_TAG;
+  if (wifi->save_step == 0)
+    {
+      wifi->slots[i].unsure = true;
+      ret = pnut_settings_cache_set_secret(&wifi->settings.cache,
+                                           WIFI_PSK(i), wifi->save_psk[i],
+                                           wifi_save_done, wifi);
+    }
+  else if (wifi->save_step == 1)
+    {
+      wifi_escape(wifi->save_to[i].name, text);
+      strlcpy(v.value.text, text, sizeof(v.value.text));
+      ret = pnut_settings_cache_set(&wifi->settings.cache, WIFI_NET(i), &v,
+                                    wifi_save_done, wifi);
+    }
+  else
+    {
+      strlcpy(v.value.text, wifi->save_to[i].secured ? "secured" : "open",
+              sizeof(v.value.text));
+      ret = pnut_settings_cache_set(&wifi->settings.cache, WIFI_SEC(i), &v,
+                                    wifi_save_done, wifi);
+    }
+
+  if (ret < 0)
+    {
+      wifi_save_failed(wifi, ret, false);
+    }
+}
+
+/****************************************************************************
+ * Name: wifi_load
+ *
+ * Description:
+ *   The known networks, from the slots, once the settings are read: a
+ *   free slot, or one holding a network an earlier slot holds, skipped,
+ *   and the slots written again without them.
+ *
+ ****************************************************************************/
+
+static void wifi_load(FAR struct wifi_s *wifi)
+{
+  FAR struct wifi_slot_s *slot;
+  int n = 0;
+  int i;
+
+  memset(wifi->known, 0, sizeof(wifi->known));
+  for (i = 0; i < WIFI_KNOWN_MAX; i++)
+    {
+      slot = &wifi->slots[i];
+      memset(slot, 0, sizeof(*slot));
+      slot->secured = strcmp(wifi_text(wifi, WIFI_SEC(i)), "secured") == 0;
+      if (!wifi_unescape(wifi_text(wifi, WIFI_NET(i)), slot->name))
+        {
+          pnut_log(&wifi->module, PNUT_LOG_WARNING,
+                   "Known network %d: no network's name: forgotten", i);
+          slot->name[0] = '\0';
+          slot->unsure  = true;
+        }
+
+      if (slot->name[0] == '\0' ||
+          wifi_known_find(wifi, slot->name, slot->secured) >= 0)
+        {
+          continue;
+        }
+
+      strlcpy(wifi->known[n].name, slot->name, sizeof(wifi->known[n].name));
+      wifi->known[n].secured = slot->secured;
+      n++;
+    }
+
+  wifi->known_loaded = true;
+  pnut_log(&wifi->module, PNUT_LOG_INFO, "%d known networks", n);
+  wifi_save(wifi);
+}
+
+/****************************************************************************
+ * Name: wifi_seek_ok, wifi_pick, wifi_idle_timer
+ *
+ * Description:
+ *   Whether to look for a known network now: Wi-Fi on, the radio up, no
+ *   network joined or being joined, none the owner asked for, and not
+ *   left by the owner.  After a scan, the one to join: the network joined
+ *   last if it is in reach, else the strongest; none refused, nor waiting
+ *   after failures.  None: a look again later, when the first waiting may
+ *   be tried, or after a while.
+ *
+ ****************************************************************************/
+
+static bool wifi_seek_ok(FAR struct wifi_s *wifi)
+{
+  return wifi->enabled && wifi->radio && !wifi->radio_failed &&
+         wifi->known_loaded && !wifi->held &&
+         wifi->known[0].name[0] != '\0' &&
+         wifi->state.state == PNUT_WIFI_INFO_STATE_ON &&
+         !wifi->joining_req && !wifi->join_wanted &&
+         !wifi->fetch_wanted && !wifi->fetching && !wifi->leave_wanted &&
+         !wifi->scan.open && !wifi->scan_wanted;
+}
+
+static void wifi_idle_timer(FAR struct pnut_loop_s *loop,
+                            FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct wifi_s *wifi = arg;
+
+  wifi->idle        = NULL;
+  wifi->seek_wanted = true;
+  wifi_next(wifi);
+}
+
+static void wifi_join_known(FAR struct wifi_s *wifi, int k)
+{
+  strlcpy(wifi->name, wifi->known[k].name, sizeof(wifi->name));
+  wifi->secured  = wifi->known[k].secured;
+  wifi->new_pass = false;
+  explicit_bzero(wifi->passphrase, sizeof(wifi->passphrase));
+  if (wifi->secured)
+    {
+      wifi->fetch_wanted = true;
+    }
+  else
+    {
+      wifi->join_wanted = true;
+    }
+}
+
+static void wifi_pick(FAR struct wifi_s *wifi)
+{
+  uint64_t now = wifi_now();
+  uint64_t wake = UINT64_MAX;
+  int16_t signal = INT16_MIN;
+  uint64_t delay;
+  int best = -1;
+  int i;
+  int k;
+
+  if (!wifi_seek_ok(wifi))
+    {
+      return;
+    }
+
+  for (i = 0; i < wifi->nfound; i++)
+    {
+      k = wifi_known_find(wifi, wifi->found[i].name, wifi->found[i].secured);
+      if (k < 0 || wifi->known[k].refused)
+        {
+          continue;
+        }
+
+      if (wifi->known[k].not_before > now)
+        {
+          wake = wifi->known[k].not_before < wake ?
+                 wifi->known[k].not_before : wake;
+          continue;
+        }
+
+      if (best < 0 || k == 0 ||
+          (best != 0 && wifi->found[i].signal > signal))
+        {
+          best   = k;
+          signal = wifi->found[i].signal;
+        }
+    }
+
+  if (best >= 0)
+    {
+      pnut_log(&wifi->module, PNUT_LOG_INFO, "Joining \"%s\", known",
+               wifi->known[best].name);
+      wifi_join_known(wifi, best);
+      return;
+    }
+
+  delay = wifi_ms(wifi->config.idle_ms, WIFI_IDLE_MS);
+  if (wake != UINT64_MAX && wake - now < delay)
+    {
+      delay = wake - now;
+    }
+
+  wifi_timer(wifi, &wifi->idle, (uint32_t)delay, wifi_idle_timer);
+}
+
+/* After a failure, the wait before a known network is tried on its own
+ * again: doubled each time, up to 8 minutes
+ */
+
+static void wifi_backoff(FAR struct wifi_s *wifi, int k)
+{
+  uint64_t ms = wifi_ms(wifi->config.again_ms, WIFI_AGAIN_MS);
+  uint8_t i;
+
+  if (wifi->known[k].fails < UINT8_MAX)
+    {
+      wifi->known[k].fails++;
+    }
+
+  for (i = 1; i < wifi->known[k].fails && ms < WIFI_AGAIN_MAX_MS; i++)
+    {
+      ms <<= 1;
+    }
+
+  wifi->known[k].not_before = wifi_now() +
+                              (ms < WIFI_AGAIN_MAX_MS ? ms :
+                               WIFI_AGAIN_MAX_MS);
+}
+
+/****************************************************************************
+ * Name: wifi_fetch, wifi_fetched
+ *
+ * Description:
+ *   A known secured network's passphrase, read from Settings for its
+ *   join: from the slot that holds it.
+ *
+ ****************************************************************************/
+
+/* Its passphrase not had: none in Settings (lost), the network refused
+ * until the owner gives it again; or Settings did not answer now, the
+ * network tried later, as after a failed join
+ */
+
+static void wifi_no_pass(FAR struct wifi_s *wifi, int ret, bool lost)
+{
+  int k = wifi_known_find(wifi, wifi->name, wifi->secured);
+
+  pnut_log(&wifi->module, PNUT_LOG_WARNING,
+           "\"%s\": its passphrase %s: %d", wifi->name,
+           lost ? "is lost: join it again" : "cannot be read now", ret);
+  if (k >= 0 && lost)
+    {
+      wifi->known[k].refused = true;
+    }
+  else if (k >= 0 && !wifi->joining_req)
+    {
+      wifi_backoff(wifi, k);
+    }
+
+  if (wifi->joining_req && lost)
+    {
+      wifi_join_answer(wifi, PNUT_WIFI_ERROR_CODE_REFUSED);
+    }
+  else if (wifi->joining_req)
+    {
+      wifi->joining_req = false;
+      wifi_fail(wifi, &wifi->join_req, PNUT_STATUS_UNAVAILABLE,
+                PNUT_WIFI_ERROR_CODE_NONE,
+                "its passphrase cannot be read now; try again");
+    }
+
+  wifi->seek_wanted = true;
+  wifi_forget_pass(wifi);
+}
+
+static void wifi_fetched(FAR struct pnut_settings_cache_s *cache,
+                         int status, uint32_t code, FAR const char *value,
+                         FAR void *arg)
+{
+  FAR struct wifi_s *wifi = arg;
+
+  wifi->fetching = false;
+  if (wifi->fetch_stale)
+    {
+      wifi->fetch_stale = false;
+    }
+  else if (status != PNUT_STATUS_OK || value[0] == '\0')
+    {
+      wifi_no_pass(wifi, status != PNUT_STATUS_OK ? -status : -ENOENT,
+                   status == PNUT_STATUS_OK);
+    }
+  else
+    {
+      strlcpy(wifi->passphrase, value, sizeof(wifi->passphrase));
+      wifi->join_wanted = true;
+    }
+
+  wifi_next(wifi);
+}
+
+static void wifi_fetch(FAR struct wifi_s *wifi)
+{
+  int ret = -ENOENT;
+  int i;
+
+  for (i = 0; i < WIFI_KNOWN_MAX; i++)
+    {
+      if (!wifi->slots[i].unsure && wifi->slots[i].secured &&
+          strcmp(wifi->slots[i].name, wifi->name) == 0)
+        {
+          ret = pnut_settings_cache_get_secret(&wifi->settings.cache,
+                                               WIFI_PSK(i), wifi_fetched,
+                                               wifi);
+          break;
+        }
+    }
+
+  if (ret == -EBUSY || ret == -ENOTCONN)
+    {
+      wifi_timer(wifi, &wifi->kick, WIFI_KICK_MS, wifi_kick_timer);
+      return;
+    }
+
+  wifi->fetch_wanted = false;
+  if (ret < 0)
+    {
+      wifi_no_pass(wifi, ret, ret == -ENOENT);
+      return;
+    }
+
+  wifi->fetching    = true;
+  wifi->fetch_stale = false;
+}
+
+/****************************************************************************
+ * Name: wifi_joined
+ *
+ * Description:
+ *   A network joined becomes known, first: its passphrase written to
+ *   Settings if it is new, or the owner gave another, and wiped here.
+ *
+ ****************************************************************************/
+
+static void wifi_joined(FAR struct wifi_s *wifi)
+{
+  FAR struct wifi_known_s *k;
+  bool keep;
+
+  keep = wifi->new_pass ||
+         wifi_known_find(wifi, wifi->name, wifi->secured) < 0;
+  k = wifi_known_front(wifi, wifi->name, wifi->secured);
+  k->refused    = false;
+  k->fails      = 0;
+  k->not_before = 0;
+  if (keep && wifi->secured)
+    {
+      k->pending = true;
+      strlcpy(k->pass, wifi->passphrase, sizeof(k->pass));
+    }
+
+  explicit_bzero(wifi->passphrase, sizeof(wifi->passphrase));
+  wifi->new_pass = false;
+  wifi_save(wifi);
 }
 
 /****************************************************************************
@@ -439,6 +1266,10 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
             wifi->state.failure = PNUT_WIFI_ERROR_CODE_NO_RADIO;
             wifi_set_state(wifi, PNUT_WIFI_INFO_STATE_OFF);
           }
+        else
+          {
+            wifi->seek_wanted = true;
+          }
 
         break;
 
@@ -476,6 +1307,12 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
           }
 
         wifi_scan_push(wifi);
+        if (wifi->seeking)
+          {
+            wifi->seeking = false;
+            wifi_pick(wifi);
+          }
+
         break;
 
       case WIFI_JOB_JOIN:
@@ -498,6 +1335,7 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
             wifi_join_answer(wifi, wifi->enabled ?
                              PNUT_WIFI_ERROR_CODE_CANCELLED :
                              PNUT_WIFI_ERROR_CODE_OFF);
+            wifi_forget_pass(wifi);
           }
         else if (w->ret == OK)
           {
@@ -507,7 +1345,7 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
             strlcpy(wifi->state.name, w->name, sizeof(wifi->state.name));
             pnut_log(&wifi->module, PNUT_LOG_INFO, "Joined \"%s\", %d dBm",
                      w->name, w->signal);
-            wifi->tries    = 0;
+            wifi_joined(wifi);
             wifi->link_due = false;
             wifi_set_state(wifi, PNUT_WIFI_INFO_STATE_JOINED);
             wifi_timer(wifi, &wifi->link,
@@ -532,23 +1370,27 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
                            PNUT_WIFI_INFO_STATE_ON);
 
             /* A network asked for: the owner is told, and it is not
-             * tried again until asked.  A lost one: again, later.
+             * tried on its own until the owner joins it again.  One
+             * joined on its own: later, others in reach meanwhile.
              */
 
+            i = wifi_known_find(wifi, wifi->name, wifi->secured);
             if (wifi->joining_req)
               {
-                wifi_forget_pass(wifi);
+                if (i >= 0)
+                  {
+                    wifi->known[i].refused = true;
+                  }
+
                 wifi_join_answer(wifi, code);
               }
-            else
+            else if (i >= 0)
               {
-                wifi_timer(wifi, &wifi->again, wifi_again_ms(wifi),
-                           wifi_again_timer);
-                if (wifi->tries < UINT8_MAX)
-                  {
-                    wifi->tries++;
-                  }
+                wifi_backoff(wifi, i);
               }
+
+            wifi_forget_pass(wifi);
+            wifi->seek_wanted = true;
           }
 
         break;
@@ -576,7 +1418,7 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
             pnut_log(&wifi->module, PNUT_LOG_INFO, "\"%s\" lost",
                      wifi->state.name);
             wifi_set_state(wifi, PNUT_WIFI_INFO_STATE_ON);
-            wifi->join_wanted = wifi->name[0] != '\0';
+            wifi->seek_wanted = true;
           }
 
         break;
@@ -651,7 +1493,22 @@ static void wifi_next(FAR struct wifi_s *wifi)
   uint8_t job;
   int ret;
 
-  if (wifi->working || wifi->in_done || wifi->config.ops == NULL)
+  if (wifi->in_done || wifi->config.ops == NULL)
+    {
+      return;
+    }
+
+  /* A known network's passphrase, read from Settings, not on the worker;
+   * not while the slots are written, which may move it
+   */
+
+  if (wifi->fetch_wanted && !wifi->fetching && !wifi->saving &&
+      wifi->enabled)
+    {
+      wifi_fetch(wifi);
+    }
+
+  if (wifi->working)
     {
       return;
     }
@@ -686,8 +1543,22 @@ static void wifi_next(FAR struct wifi_s *wifi)
       job    = WIFI_JOB_LINK;
       wanted = &wifi->link_due;
     }
+  else if (wifi->seek_wanted && wifi_seek_ok(wifi) && wifi->idle == NULL)
+    {
+      job    = WIFI_JOB_SCAN;
+      wanted = &wifi->seek_wanted;
+    }
   else
     {
+      /* A look kept for after the owner's scan, which wifi_next() follows
+       * as it ends
+       */
+
+      if (!wifi->scan.open && !wifi->scan_wanted)
+        {
+          wifi->seek_wanted = false;
+        }
+
       return;
     }
 
@@ -698,6 +1569,11 @@ static void wifi_next(FAR struct wifi_s *wifi)
                "The worker took no job: %d; again in a second", ret);
       wifi_timer(wifi, &wifi->kick, WIFI_KICK_MS, wifi_kick_timer);
       return;
+    }
+
+  if (wanted == &wifi->seek_wanted)
+    {
+      wifi->seeking = true;
     }
 
   if (wanted != NULL)
@@ -750,6 +1626,7 @@ static void wifi_do_join(FAR struct wifi_s *wifi,
                          FAR const pnut_wifi_join_request_t *in)
 {
   size_t len = strnlen(in->passphrase, sizeof(in->passphrase));
+  int k;
 
   if (!wifi->enabled)
     {
@@ -765,8 +1642,8 @@ static void wifi_do_join(FAR struct wifi_s *wifi,
       return;
     }
 
-  /* One join at a time, a lost network's too: its end would answer this
-   * request
+  /* One join at a time, one Wi-Fi started on its own too: its end would
+   * answer this request.  One it was about to start gives way.
    */
 
   if (wifi->joining_req || wifi_joining(wifi))
@@ -776,15 +1653,55 @@ static void wifi_do_join(FAR struct wifi_s *wifi,
       return;
     }
 
+  wifi_stop_seeking(wifi);
+
+  /* No passphrase: a known secured network's own, read from Settings,
+   * or else an open network
+   */
+
   strlcpy(wifi->name, in->name, sizeof(wifi->name));
   strlcpy(wifi->passphrase, in->passphrase, sizeof(wifi->passphrase));
+  wifi->new_pass = len > 0;
+  wifi->secured  = len > 0 ||
+                   wifi_known_find(wifi, in->name, true) >= 0;
+
+  k = wifi_known_find(wifi, wifi->name, wifi->secured);
+  if (k >= 0)
+    {
+      wifi->known[k].refused = false;
+    }
+
   wifi->join_req     = *req;
   wifi->joining_req  = true;
-  wifi->join_wanted  = true;
+  wifi->held         = false;
   wifi->leave_wanted = false;
-  wifi->tries        = 0;
-  wifi_cancel(wifi, &wifi->again);
+  if (wifi->secured && len == 0)
+    {
+      wifi->fetch_wanted = true;
+    }
+  else
+    {
+      wifi->join_wanted = true;
+    }
+
   wifi_next(wifi);
+}
+
+/* No look for a known network, nor a join of one about to start: a
+ * passphrase being read is not used
+ */
+
+static void wifi_stop_seeking(FAR struct wifi_s *wifi)
+{
+  wifi->seek_wanted  = false;
+  wifi->fetch_wanted = false;
+  wifi->fetch_stale  = wifi->fetching;
+  if (!wifi_joining(wifi))
+    {
+      wifi->join_wanted = false;
+    }
+
+  wifi_cancel(wifi, &wifi->idle);
 }
 
 /* A join waiting, not running, dropped: its request told; a running
@@ -793,13 +1710,26 @@ static void wifi_do_join(FAR struct wifi_s *wifi,
 
 static void wifi_drop_join(FAR struct wifi_s *wifi, uint32_t code)
 {
-  wifi_forget_pass(wifi);
+  wifi_stop_seeking(wifi);
   wifi->join_wanted = false;
-  wifi->tries       = 0;
-  wifi_cancel(wifi, &wifi->again);
+  explicit_bzero(wifi->passphrase, sizeof(wifi->passphrase));
   if (!wifi_joining(wifi))
     {
+      wifi_forget_pass(wifi);
       wifi_join_answer(wifi, code);
+    }
+}
+
+/* The network joined, or being joined, left: the radio down */
+
+static void wifi_leave_now(FAR struct wifi_s *wifi)
+{
+  wifi_drop_join(wifi, PNUT_WIFI_ERROR_CODE_CANCELLED);
+  wifi->leave_wanted = wifi->radio || wifi_joining(wifi);
+  if (wifi->state.state == PNUT_WIFI_INFO_STATE_JOINED)
+    {
+      wifi_cancel(wifi, &wifi->link);
+      wifi->link_due = false;
     }
 }
 
@@ -808,16 +1738,90 @@ static void wifi_do_leave(FAR struct wifi_s *wifi,
 {
   pnut_wifi_reply_t reply;
 
-  wifi_drop_join(wifi, PNUT_WIFI_ERROR_CODE_CANCELLED);
-  wifi->leave_wanted = wifi->radio || wifi_joining(wifi);
-  if (wifi->state.state == PNUT_WIFI_INFO_STATE_JOINED)
-    {
-      wifi_cancel(wifi, &wifi->link);
-      wifi->link_due = false;
-    }
+  wifi_leave_now(wifi);
+  wifi->held = true;              /* Until a join, or off and on */
 
   memset(&reply, 0, sizeof(reply));
   pnut_wifi_leave_reply(&wifi->server, req, PNUT_STATUS_OK, &reply);
+  wifi_next(wifi);
+}
+
+/* Known: the known networks, last used first, without passphrases */
+
+static void wifi_do_known(FAR struct wifi_s *wifi,
+                          FAR const struct pnut_request_s *req)
+{
+  FAR pnut_wifi_known_networks_t *out = &wifi->known_out;
+  FAR pnut_wifi_known_network_t *n;
+  int i;
+
+  if (!wifi->known_loaded)
+    {
+      wifi_fail(wifi, req, PNUT_STATUS_UNAVAILABLE,
+                PNUT_WIFI_ERROR_CODE_NONE, "not read from Settings yet");
+      return;
+    }
+
+  memset(out, 0, sizeof(*out));
+  for (i = 0; i < WIFI_KNOWN_MAX && wifi->known[i].name[0] != '\0'; i++)
+    {
+      n = &out->networks[out->networks_count++];
+      strlcpy(n->name, wifi->known[i].name, sizeof(n->name));
+      n->security = wifi->known[i].secured ?
+                    PNUT_WIFI_SECURITY_WIFI_SECURITY_SECURED :
+                    PNUT_WIFI_SECURITY_WIFI_SECURITY_OPEN;
+      n->refused  = wifi->known[i].refused;
+    }
+
+  pnut_wifi_known_reply(&wifi->server, req, PNUT_STATUS_OK, out);
+}
+
+/* Forget: a known network and its passphrase; left, if it is the one
+ * joined or being joined, and others looked for
+ */
+
+static void wifi_do_forget(FAR struct wifi_s *wifi,
+                           FAR const struct pnut_request_s *req,
+                           FAR const pnut_wifi_forget_request_t *in)
+{
+  bool secured = in->security == PNUT_WIFI_SECURITY_WIFI_SECURITY_SECURED;
+  pnut_wifi_reply_t reply;
+  int k = wifi_known_find(wifi, in->name, secured);
+
+  if (!wifi->known_loaded || k < 0)
+    {
+      wifi_fail(wifi, req, PNUT_STATUS_NOTFOUND,
+                PNUT_WIFI_ERROR_CODE_NOT_KNOWN, "no such known network");
+      return;
+    }
+
+  pnut_log(&wifi->module, PNUT_LOG_INFO, "\"%s\" forgotten",
+           wifi->known[k].name);
+  wifi_known_remove(wifi, k);
+  wifi_save(wifi);
+
+  /* Joined, being joined, or about to be: its passphrase being read,
+   * or its join waiting for the worker.  Left, or dropped, so that it is
+   * not joined, and known, again; others are looked for.
+   */
+
+  if (wifi->secured == secured && strcmp(wifi->name, in->name) == 0)
+    {
+      if (wifi->state.state == PNUT_WIFI_INFO_STATE_JOINED ||
+          wifi->state.state == PNUT_WIFI_INFO_STATE_JOINING ||
+          wifi_joining(wifi))
+        {
+          wifi_leave_now(wifi);
+        }
+      else
+        {
+          wifi_drop_join(wifi, PNUT_WIFI_ERROR_CODE_CANCELLED);
+          wifi->seek_wanted = true;
+        }
+    }
+
+  memset(&reply, 0, sizeof(reply));
+  pnut_wifi_forget_reply(&wifi->server, req, PNUT_STATUS_OK, &reply);
   wifi_next(wifi);
 }
 
@@ -840,6 +1844,14 @@ static void wifi_dispatch(FAR struct wifi_s *wifi,
   else if (ask->method == PNUT_WIFI_JOIN)
     {
       wifi_do_join(wifi, &ask->req, &ask->join);
+    }
+  else if (ask->method == PNUT_WIFI_KNOWN)
+    {
+      wifi_do_known(wifi, &ask->req);
+    }
+  else if (ask->method == PNUT_WIFI_FORGET)
+    {
+      wifi_do_forget(wifi, &ask->req, &ask->forget);
     }
   else
     {
@@ -880,7 +1892,8 @@ static void wifi_who(FAR struct pnut_services_client_s *client, int status,
 
 static void wifi_ask(FAR struct wifi_s *wifi, uint8_t method,
                      FAR const struct pnut_request_s *req,
-                     FAR const pnut_wifi_join_request_t *join)
+                     FAR const pnut_wifi_join_request_t *join,
+                     FAR const pnut_wifi_forget_request_t *forget)
 {
   pnut_services_who_request_t who;
   FAR struct wifi_ask_s *ask = NULL;
@@ -911,6 +1924,11 @@ static void wifi_ask(FAR struct wifi_s *wifi, uint8_t method,
       ask->join = *join;
     }
 
+  if (forget != NULL)
+    {
+      ask->forget = *forget;
+    }
+
   if (wifi->config.services == NULL)
     {
       wifi_dispatch(wifi, ask);
@@ -937,7 +1955,7 @@ static void wifi_on_scan(FAR struct pnut_wifi_server_s *server,
                          FAR const pnut_wifi_scan_request_t *in,
                          FAR void *arg)
 {
-  wifi_ask(arg, PNUT_WIFI_SCAN, req, NULL);
+  wifi_ask(arg, PNUT_WIFI_SCAN, req, NULL, NULL);
 }
 
 static void wifi_on_join(FAR struct pnut_wifi_server_s *server,
@@ -945,7 +1963,7 @@ static void wifi_on_join(FAR struct pnut_wifi_server_s *server,
                          FAR const pnut_wifi_join_request_t *in,
                          FAR void *arg)
 {
-  wifi_ask(arg, PNUT_WIFI_JOIN, req, in);
+  wifi_ask(arg, PNUT_WIFI_JOIN, req, in, NULL);
 }
 
 static void wifi_on_leave(FAR struct pnut_wifi_server_s *server,
@@ -953,14 +1971,32 @@ static void wifi_on_leave(FAR struct pnut_wifi_server_s *server,
                           FAR const pnut_wifi_leave_request_t *in,
                           FAR void *arg)
 {
-  wifi_ask(arg, PNUT_WIFI_LEAVE, req, NULL);
+  wifi_ask(arg, PNUT_WIFI_LEAVE, req, NULL, NULL);
+}
+
+static void wifi_on_known(FAR struct pnut_wifi_server_s *server,
+                          FAR const struct pnut_request_s *req,
+                          FAR const pnut_wifi_known_request_t *in,
+                          FAR void *arg)
+{
+  wifi_ask(arg, PNUT_WIFI_KNOWN, req, NULL, NULL);
+}
+
+static void wifi_on_forget(FAR struct pnut_wifi_server_s *server,
+                           FAR const struct pnut_request_s *req,
+                           FAR const pnut_wifi_forget_request_t *in,
+                           FAR void *arg)
+{
+  wifi_ask(arg, PNUT_WIFI_FORGET, req, NULL, in);
 }
 
 static const struct pnut_wifi_handlers_s g_wifi_handlers =
 {
-  .scan  = wifi_on_scan,
-  .join  = wifi_on_join,
-  .leave = wifi_on_leave,
+  .scan   = wifi_on_scan,
+  .join   = wifi_on_join,
+  .leave  = wifi_on_leave,
+  .known  = wifi_on_known,
+  .forget = wifi_on_forget,
 };
 
 /****************************************************************************
@@ -978,8 +2014,20 @@ static void wifi_settings(FAR struct pnut_settings_cache_s *cache,
   FAR struct wifi_s *wifi = arg;
   bool enabled = wifi->settings.values.enabled;
 
-  if (enabled == wifi->enabled)
+  /* The slots are Wi-Fi's: read once, as it starts, and changed only by
+   * its own writes, whose changes come back here
+   */
+
+  if (index == PNUT_SETTINGS_CACHE_ALL && !wifi->known_loaded)
     {
+      wifi_load(wifi);
+      wifi->seek_wanted = true;
+    }
+
+  if ((index != PNUT_SETTINGS_CACHE_ALL &&
+       index != PNUT_WIFI_SETTINGS_ENABLED) || enabled == wifi->enabled)
+    {
+      wifi_next(wifi);
       return;
     }
 
@@ -1011,6 +2059,7 @@ static void wifi_settings(FAR struct pnut_settings_cache_s *cache,
   else
     {
       wifi->radio_failed = false;   /* Off and on: tried again */
+      wifi->held         = false;   /* And known networks looked for */
 
       /* On again before the radio went down */
 
@@ -1090,9 +2139,15 @@ static void wifi_stop(FAR struct pnut_module_s *module,
 
   wifi_forget_pass(wifi);
   explicit_bzero(wifi->asks, sizeof(wifi->asks));
+  explicit_bzero(wifi->known, sizeof(wifi->known));
+  explicit_bzero(wifi->save_psk, sizeof(wifi->save_psk));
+  wifi->known_loaded = false;
+  wifi->saving       = false;
+  wifi->fetching = false;
   wifi_cancel(wifi, &wifi->link);
-  wifi_cancel(wifi, &wifi->again);
   wifi_cancel(wifi, &wifi->kick);
+  wifi_cancel(wifi, &wifi->idle);
+  wifi_cancel(wifi, &wifi->save_timer);
 
   if (wifi->settings_open)
     {

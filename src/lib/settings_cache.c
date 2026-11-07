@@ -235,6 +235,13 @@ static bool cache_store(FAR struct pnut_settings_cache_s *cache,
   uint8_t old[sizeof(int64_t)];
   bool changed;
 
+  /* A secret's field stays empty: its value is read apart, if ever */
+
+  if (decl->type == PNUT_SETTING_TYPE_SECRET)
+    {
+      return false;
+    }
+
   switch (decl->kind)
     {
       case PNUT_SETTING_KIND_BOOL:
@@ -809,6 +816,84 @@ static void link_change(FAR struct pnut_settings_change_reader_s *reader,
 }
 
 /****************************************************************************
+ * Name: cache_slot
+ *
+ * Description:
+ *   A free place for a call about the setting at index, which is to be a
+ *   secret's or not.
+ *
+ ****************************************************************************/
+
+static int cache_slot(FAR struct pnut_settings_cache_s *cache, int index,
+                      bool secret, FAR struct pnut_settings_set_s **setp)
+{
+  FAR struct pnut_settings_set_s *set;
+  int slot;
+
+  if (index < 0 || index >= cache->desc->count ||
+      (cache->desc->decls[index].type == PNUT_SETTING_TYPE_SECRET) !=
+      secret)
+    {
+      return -EINVAL;
+    }
+
+  if (cache->link == NULL || cache->link->client.client == NULL)
+    {
+      return -ENOTCONN;
+    }
+
+  for (slot = 0; slot < PNUT_CLIENT_INFLIGHT; slot++)
+    {
+      set = &cache->sets[slot];
+      if (set->done == NULL && set->got == NULL && set->arg == NULL)
+        {
+          *setp = set;
+          return OK;
+        }
+    }
+
+  return -EBUSY;
+}
+
+/****************************************************************************
+ * Name: cache_got_secret
+ *
+ * Description:
+ *   A secret's value, to the handler; the generated client wipes its copy
+ *   once this returns.
+ *
+ ****************************************************************************/
+
+static void cache_got_secret(FAR struct pnut_settings_client_s *client,
+                             int status,
+                             FAR const pnut_settings_secret_t *out,
+                             FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct pnut_settings_set_s *set = arg;
+  pnut_settings_secret_done_t got;
+  FAR void *garg;
+
+  /* A cache closed since the call has no answer */
+
+  if (set == NULL)
+    {
+      return;
+    }
+
+  got      = set->got;
+  garg     = set->arg;
+  set->got = NULL;
+  set->arg = NULL;
+
+  if (got != NULL)
+    {
+      got(set->cache, status, err != NULL ? err->code : 0,
+          status == PNUT_STATUS_OK && out != NULL ? out->value : "",
+          garg);
+    }
+}
+
+/****************************************************************************
  * Name: cache_answered
  ****************************************************************************/
 
@@ -1102,33 +1187,13 @@ int pnut_settings_cache_set(FAR struct pnut_settings_cache_s *cache,
 {
   FAR struct pnut_settings_set_s *set;
   pnut_settings_set_request_t req;
-  int slot;
   int ret;
 
-  if (index < 0 || index >= cache->desc->count)
+  ret = cache_slot(cache, index, false, &set);
+  if (ret < 0)
     {
-      return -EINVAL;
+      return ret;
     }
-
-  if (cache->link == NULL || cache->link->client.client == NULL)
-    {
-      return -ENOTCONN;
-    }
-
-  for (slot = 0; slot < PNUT_CLIENT_INFLIGHT; slot++)
-    {
-      if (cache->sets[slot].done == NULL && cache->sets[slot].arg == NULL)
-        {
-          break;
-        }
-    }
-
-  if (slot == PNUT_CLIENT_INFLIGHT)
-    {
-      return -EBUSY;
-    }
-
-  set = &cache->sets[slot];
 
   memset(&req, 0, sizeof(req));
   strlcpy(req.owner, cache->desc->owner, sizeof(req.owner));
@@ -1147,6 +1212,109 @@ int pnut_settings_cache_set(FAR struct pnut_settings_cache_s *cache,
 
   set->cache = cache;
   set->done  = done;
+  set->got   = NULL;
+  set->arg   = done != NULL ? arg : (FAR void *)cache;
+  return OK;
+}
+
+/****************************************************************************
+ * Name: pnut_settings_cache_get_secret
+ ****************************************************************************/
+
+int pnut_settings_cache_get_secret(FAR struct pnut_settings_cache_s *cache,
+                                   int index,
+                                   pnut_settings_secret_done_t done,
+                                   FAR void *arg)
+{
+  FAR struct pnut_settings_set_s *set;
+  pnut_settings_get_request_t req;
+  int ret;
+
+  if (done == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = cache_slot(cache, index, true, &set);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  memset(&req, 0, sizeof(req));
+  strlcpy(req.owner, cache->desc->owner, sizeof(req.owner));
+  strlcpy(req.key, cache->desc->decls[index].key, sizeof(req.key));
+
+  ret = pnut_settings_get_secret(&cache->link->client, &req, 0,
+                                 cache_got_secret, set);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  set->cache = cache;
+  set->done  = NULL;
+  set->got   = done;
+  set->arg   = arg;
+  return OK;
+}
+
+/****************************************************************************
+ * Name: pnut_settings_cache_set_secret
+ *
+ * Description:
+ *   The request, a secret's room large, lives on the heap only while it
+ *   is encoded, and is wiped.
+ *
+ ****************************************************************************/
+
+int pnut_settings_cache_set_secret(FAR struct pnut_settings_cache_s *cache,
+                                   int index, FAR const char *value,
+                                   pnut_settings_done_t done,
+                                   FAR void *arg)
+{
+  FAR pnut_settings_secret_request_t *req;
+  FAR struct pnut_settings_set_s *set;
+  int ret;
+
+  if (value == NULL)
+    {
+      return -EINVAL;
+    }
+
+  ret = cache_slot(cache, index, true, &set);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  if (strnlen(value, sizeof(req->value)) >= sizeof(req->value))
+    {
+      return -E2BIG;
+    }
+
+  req = calloc(1, sizeof(*req));
+  if (req == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  strlcpy(req->owner, cache->desc->owner, sizeof(req->owner));
+  strlcpy(req->key, cache->desc->decls[index].key, sizeof(req->key));
+  strlcpy(req->value, value, sizeof(req->value));
+
+  ret = pnut_settings_set_secret(&cache->link->client, req, 0,
+                                 cache_answered, set);
+  explicit_bzero(req, sizeof(*req));
+  free(req);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  set->cache = cache;
+  set->done  = done;
+  set->got   = NULL;
   set->arg   = done != NULL ? arg : (FAR void *)cache;
   return OK;
 }

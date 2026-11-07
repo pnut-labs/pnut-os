@@ -25,4 +25,8 @@ message Prefs {
   string colour = 6 [(pnut.setting) = { choices: ["red", "green", "blue"],
                                         default: "green" },
                      (nanopb).max_size = 8];
+
+  // A secret: registered, never in the struct, read and set apart
+  string token = 7 [(pnut.setting) = { secret: true },
+                    (nanopb).max_size = 33];
 }

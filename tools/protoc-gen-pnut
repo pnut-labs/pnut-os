@@ -565,11 +565,17 @@ class Setting:
         elif field.type == FD.TYPE_STRING:
             self.kind = "TEXT"
             if opts.secret:
-                # Settings never lists a secret's value, nor sets one yet
-                # (RFC 0025), so the cache could neither read nor write it
+                # Sealed by Settings (RFC 0025): never listed, so never in
+                # the struct's values; read and set through its own calls.
+                # No default: Settings refuses one; and never public.
 
-                raise GenError(f"{where}: secrets come later: the typed "
-                               "settings cannot hold one yet")
+                self.type = "SECRET"
+                if self.has_default:
+                    raise GenError(f"{where}: a secret has no default")
+                if self.public:
+                    raise GenError(f"{where}: a secret is never public")
+                if self.choices:
+                    raise GenError(f"{where}: choices are a string's")
             elif self.choices:
                 self.type = "CHOICE"
                 if len(self.choices) > SETTING_LIMITS["choices"]:
@@ -645,6 +651,8 @@ def settings_names(st):
              f"g_{p}_decls", f"{st.upper}_OWNER", f"{st.upper}_NSETTINGS"}
     for s in st.settings:
         names |= {f"{p}_set_{s.field}", f"{st.upper}_{s.upper}"}
+        if s.type == "SECRET":
+            names.add(f"{p}_get_{s.field}")
     return names
 
 
@@ -719,6 +727,10 @@ def settings_header(path, all_settings, fdesc):
                      "UINT32": "uint32_t", "INT64": "int64_t",
                      "TEXT": "FAR const char *"}[s.kind]
             sep = "" if ctype.endswith("*") else " "
+            if s.type == "SECRET":
+                w.append(f"int {p}_get_{s.field}(FAR struct {p}_s *settings,")
+                w.append("    pnut_settings_secret_done_t done, "
+                         "FAR void *arg);")
             w.append(f"int {p}_set_{s.field}(FAR struct {p}_s *settings,")
             w.append(f"    {ctype}{sep}value, pnut_settings_done_t done, "
                      "FAR void *arg);")
@@ -756,13 +768,15 @@ def settings_source(path, all_settings, fdesc):
             w.append(f"typedef char {p}_{s.field}_is_text"
                      f"[sizeof((({t} *)0)->{s.field}[0]) == 1 ? 1 : -1];")
 
-            # Settings takes 1 to 256 bytes
+            # Settings takes 1 to 256 bytes; a secret up to 1024
 
+            bound = ("sizeof(((pnut_settings_secret_t *)0)->value)"
+                     if s.type == "SECRET" else
+                     "sizeof(((pnut_setting_value_t *)0)->value.text)")
             w.append(f"typedef char {p}_{s.field}_size"
                      f"[sizeof((({t} *)0)->{s.field}) >= 2 && "
                      f"sizeof((({t} *)0)->{s.field}) <= "
-                     "sizeof(((pnut_setting_value_t *)0)->value.text) ? "
-                     "1 : -1];")
+                     f"{bound} ? 1 : -1];")
             for i, text in enumerate(([s.default] if s.has_default else []) +
                                      s.choices):
                 w.append(f"typedef char {p}_{s.field}_fits_{i}"
@@ -834,6 +848,29 @@ def settings_source(path, all_settings, fdesc):
                      "UINT32": "uint32_t", "INT64": "int64_t",
                      "TEXT": "FAR const char *"}[s.kind]
             sep = "" if ctype.endswith("*") else " "
+            if s.type == "SECRET":
+                index = f"{st.upper}_{s.upper}"
+                w.append(f"int {p}_get_{s.field}(FAR struct {p}_s *settings,")
+                w.append("    pnut_settings_secret_done_t done, "
+                         "FAR void *arg)")
+                w.append("{")
+                w.append("  return pnut_settings_cache_get_secret("
+                         "&settings->cache,")
+                w.append(f"                                        {index}, "
+                         "done, arg);")
+                w.append("}")
+                w.append("")
+                w.append(f"int {p}_set_{s.field}(FAR struct {p}_s *settings,")
+                w.append(f"    {ctype}{sep}value, pnut_settings_done_t done, "
+                         "FAR void *arg)")
+                w.append("{")
+                w.append("  return pnut_settings_cache_set_secret("
+                         "&settings->cache,")
+                w.append(f"                                        {index}, "
+                         "value, done, arg);")
+                w.append("}")
+                w.append("")
+                continue
             w.append(f"int {p}_set_{s.field}(FAR struct {p}_s *settings,")
             w.append(f"    {ctype}{sep}value, pnut_settings_done_t done, "
                      "FAR void *arg)")
