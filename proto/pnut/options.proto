@@ -58,7 +58,9 @@ extend google.protobuf.MethodOptions {
 // A bool field is a boolean; an integer field an integer, its range the
 // field type's unless given; a string field a string, as long as its
 // nanopb max_size allows (up to 256 bytes), or a choice when it has
-// choices.  At most 64 settings to an owner; secrets come later.
+// choices; a string field marked secret a secret (sealed by Settings,
+// never in the struct's values: read and set through the cache's own
+// calls).  At most 64 settings to an owner.
 extend google.protobuf.MessageOptions {
   // The owner: the service's name
   optional string settings = 51002;
@@ -89,8 +91,9 @@ message SettingOptions {
   // Anyone may read it (RFC 0025)
   optional bool public = 9;
 
-  // Stored encrypted; a string field.  Not taken yet: Settings neither
-  // lists a secret's value nor sets one (RFC 0025)
+  // Stored sealed (RFC 0025); a string field, as long as its nanopb
+  // max_size allows.  No default, never public; read only by the program
+  // that runs its owner
   optional bool secret = 10;
 }
 

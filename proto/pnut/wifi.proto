@@ -7,10 +7,9 @@
 // which have the same rights; apps reach the network through Network
 // (RFC 0015), never here.
 //
-// The networks joined before, kept with their passphrases as secrets in
-// Settings, come with Settings' secrets (RFC 0031's first step): until
-// then a passphrase is given with each join, and kept in Wi-Fi's memory
-// only, to join a lost network again.
+// The networks joined before are known: up to 16, last used first, kept
+// as Wi-Fi's settings with their passphrases as secrets (RFC 0025), and
+// joined on their own whenever Wi-Fi is on and no network is joined.
 
 syntax = "proto3";
 
@@ -40,6 +39,16 @@ service Wifi {
   rpc Leave (WifiLeaveRequest) returns (WifiReply) {
     option (pnut.method) = 3;
   }
+
+  // The known networks, last used first, without their passphrases
+  rpc Known (WifiKnownRequest) returns (WifiKnownNetworks) {
+    option (pnut.method) = 4;
+  }
+
+  // Forget a known network, and its passphrase
+  rpc Forget (WifiForgetRequest) returns (WifiReply) {
+    option (pnut.method) = 5;
+  }
 }
 
 // The detail of an error answer (pnut.Error's code)
@@ -55,6 +64,7 @@ message WifiError {
                                   // (the driver cannot tell them apart)
     NO_ADDRESS = 6;               // Joined, but DHCP gave no address
     CANCELLED = 7;                // Left, or Wi-Fi turned off, first
+    NOT_KNOWN = 8;                // Forget: no such known network
   }
 }
 
@@ -76,8 +86,32 @@ message WifiNetwork {
 message WifiJoinRequest {
   string name = 1 [(nanopb).max_size = 33];
 
-  // For a secured network: 8 to 63 characters; empty for an open one
+  // For a secured network: 8 to 63 characters, a new one or one that
+  // replaces a known network's.  Empty: a known secured network's own, or
+  // else an open network.
   string passphrase = 2 [(nanopb).max_size = 64, (pnut.sensitive) = true];
+}
+
+message WifiKnownRequest {
+}
+
+message WifiKnownNetwork {
+  string name = 1 [(nanopb).max_size = 33];
+  WifiSecurity security = 2;
+
+  // A join the owner asked for failed: not joined on its own again until
+  // the owner joins it again (a wrong passphrase looks like one out of
+  // reach, RFC 0031)
+  bool refused = 3;
+}
+
+message WifiKnownNetworks {
+  repeated WifiKnownNetwork networks = 1 [(nanopb).max_count = 16];
+}
+
+message WifiForgetRequest {
+  string name = 1 [(nanopb).max_size = 33];
+  WifiSecurity security = 2;
 }
 
 message WifiLeaveRequest {
@@ -116,4 +150,138 @@ message WifiSettings {
   bool enabled = 1 [(pnut.setting) = { default: "false",
                                        label: "wifi.enabled",
                                        public: true }];
+
+  // The known networks (RFC 0031): 16 slots, last used first, each a
+  // network's name (bytes that are not UTF-8, and backslashes, escaped
+  // as \xNN: up to 128 characters), its security, and its passphrase, a
+  // secret.  An empty name: a free slot.  Wi-Fi's alone: changed through
+  // its Join and Forget, and read back only as it starts.
+  string net_0 = 2 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.0", group: "known" }];
+  string sec_0 = 3 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.0", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_0 = 4 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.0", group: "known",
+                                          secret: true }];
+  string net_1 = 5 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.1", group: "known" }];
+  string sec_1 = 6 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.1", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_1 = 7 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.1", group: "known",
+                                          secret: true }];
+  string net_2 = 8 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.2", group: "known" }];
+  string sec_2 = 9 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.2", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_2 = 10 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.2", group: "known",
+                                          secret: true }];
+  string net_3 = 11 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.3", group: "known" }];
+  string sec_3 = 12 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.3", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_3 = 13 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.3", group: "known",
+                                          secret: true }];
+  string net_4 = 14 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.4", group: "known" }];
+  string sec_4 = 15 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.4", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_4 = 16 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.4", group: "known",
+                                          secret: true }];
+  string net_5 = 17 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.5", group: "known" }];
+  string sec_5 = 18 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.5", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_5 = 19 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.5", group: "known",
+                                          secret: true }];
+  string net_6 = 20 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.6", group: "known" }];
+  string sec_6 = 21 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.6", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_6 = 22 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.6", group: "known",
+                                          secret: true }];
+  string net_7 = 23 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.7", group: "known" }];
+  string sec_7 = 24 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.7", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_7 = 25 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.7", group: "known",
+                                          secret: true }];
+  string net_8 = 26 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.8", group: "known" }];
+  string sec_8 = 27 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.8", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_8 = 28 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.8", group: "known",
+                                          secret: true }];
+  string net_9 = 29 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.9", group: "known" }];
+  string sec_9 = 30 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.9", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_9 = 31 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.9", group: "known",
+                                          secret: true }];
+  string net_10 = 32 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.10", group: "known" }];
+  string sec_10 = 33 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.10", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_10 = 34 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.10", group: "known",
+                                          secret: true }];
+  string net_11 = 35 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.11", group: "known" }];
+  string sec_11 = 36 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.11", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_11 = 37 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.11", group: "known",
+                                          secret: true }];
+  string net_12 = 38 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.12", group: "known" }];
+  string sec_12 = 39 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.12", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_12 = 40 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.12", group: "known",
+                                          secret: true }];
+  string net_13 = 41 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.13", group: "known" }];
+  string sec_13 = 42 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.13", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_13 = 43 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.13", group: "known",
+                                          secret: true }];
+  string net_14 = 44 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.14", group: "known" }];
+  string sec_14 = 45 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.14", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_14 = 46 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.14", group: "known",
+                                          secret: true }];
+  string net_15 = 47 [(nanopb).max_size = 129,
+                       (pnut.setting) = { key: "net.15", group: "known" }];
+  string sec_15 = 48 [(nanopb).max_size = 8,
+                       (pnut.setting) = { key: "sec.15", group: "known",
+                                          choices: ["open", "secured"] }];
+  string psk_15 = 49 [(nanopb).max_size = 64,
+                       (pnut.setting) = { key: "psk.15", group: "known",
+                                          secret: true }];
 }

@@ -13,7 +13,10 @@
  *   wifi scan                     the networks in reach
  *   wifi join <name> [<pass>]     join one, open or with its passphrase
  *   wifi leave                    leave it
+ *   wifi known                    the known networks, last used first
+ *   wifi forget <name> [open]     forget a known one, secured or open
  *
+ * A known network is joined with its own passphrase: `wifi join <name>`.
  * A passphrase typed here may stay in the shell's history.
  */
 
@@ -55,7 +58,9 @@ enum wifi_op_e
   WIFI_STATE = 0,
   WIFI_SCAN,
   WIFI_JOIN,
-  WIFI_LEAVE
+  WIFI_LEAVE,
+  WIFI_KNOWN,
+  WIFI_FORGET
 };
 
 struct wifi_cmd_s
@@ -69,6 +74,7 @@ struct wifi_cmd_s
   uint8_t op;                     /* enum wifi_op_e */
   int found;
   pnut_wifi_join_request_t join;
+  pnut_wifi_forget_request_t forget;
 };
 
 /****************************************************************************
@@ -86,7 +92,8 @@ static FAR const char * const g_wifi_failures[] =
   "no such network in reach",
   "the network did not take the device (a wrong passphrase, or out of "
   "reach)",
-  "no address from the network", "left, or Wi-Fi turned off, first"
+  "no address from the network", "left, or Wi-Fi turned off, first",
+  "no such known network"
 };
 
 /****************************************************************************
@@ -115,6 +122,8 @@ static void wifi_usage(void)
           "       wifi scan\n"
           "       wifi join <name> [<passphrase>]\n"
           "       wifi leave\n"
+          "       wifi known\n"
+          "       wifi forget <name> [open]\n"
           "  on and off: settings set wifi enabled true|false\n");
 }
 
@@ -258,7 +267,41 @@ static void wifi_replied(FAR struct pnut_wifi_client_s *client, int status,
       return;
     }
 
-  printf("%s\n", cmd->op == WIFI_JOIN ? "Joined" : "Left");
+  printf("%s\n", cmd->op == WIFI_JOIN ? "Joined" :
+         cmd->op == WIFI_FORGET ? "Forgotten" : "Left");
+  wifi_end(cmd, OK);
+}
+
+/* Known's answer: last used first */
+
+static void wifi_listed(FAR struct pnut_wifi_client_s *client, int status,
+                        FAR const pnut_wifi_known_networks_t *out,
+                        FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct wifi_cmd_s *cmd = arg;
+  pb_size_t i;
+
+  if (wifi_failed(cmd, status, err))
+    {
+      return;
+    }
+
+  if (out->networks_count == 0)
+    {
+      printf("No known networks\n");
+    }
+
+  for (i = 0; i < out->networks_count; i++)
+    {
+      printf("%2u  %-7s ", (unsigned)i,
+             out->networks[i].security ==
+             PNUT_WIFI_SECURITY_WIFI_SECURITY_SECURED ? "secured" : "open");
+      wifi_print_name(out->networks[i].name,
+                      sizeof(out->networks[i].name));
+      printf("%s\n", out->networks[i].refused ?
+             "  (refused: join it to try again)" : "");
+    }
+
   wifi_end(cmd, OK);
 }
 
@@ -272,6 +315,7 @@ static void wifi_state(FAR struct pnut_wifi_client_s *client,
   FAR struct wifi_cmd_s *cmd = arg;
   pnut_wifi_scan_request_t scan;
   pnut_wifi_leave_request_t leave;
+  pnut_wifi_known_request_t known;
   uint16_t sno;
   int ret = OK;
 
@@ -297,6 +341,15 @@ static void wifi_state(FAR struct pnut_wifi_client_s *client,
       case WIFI_LEAVE:
         memset(&leave, 0, sizeof(leave));
         ret = pnut_wifi_leave(client, &leave, 0, wifi_replied, cmd);
+        break;
+
+      case WIFI_KNOWN:
+        memset(&known, 0, sizeof(known));
+        ret = pnut_wifi_known(client, &known, 0, wifi_listed, cmd);
+        break;
+
+      case WIFI_FORGET:
+        ret = pnut_wifi_forget(client, &cmd->forget, 0, wifi_replied, cmd);
         break;
 
       default:
@@ -400,6 +453,24 @@ static int wifi_args(FAR struct wifi_cmd_s *cmd, int argc, FAR char *argv[])
   if (strcmp(argv[1], "leave") == 0 && argc == 2)
     {
       cmd->op = WIFI_LEAVE;
+      return OK;
+    }
+
+  if (strcmp(argv[1], "known") == 0 && argc == 2)
+    {
+      cmd->op = WIFI_KNOWN;
+      return OK;
+    }
+
+  if (strcmp(argv[1], "forget") == 0 && (argc == 3 || argc == 4) &&
+      strlen(argv[2]) < sizeof(cmd->forget.name) &&
+      (argc == 3 || strcmp(argv[3], "open") == 0))
+    {
+      cmd->op = WIFI_FORGET;
+      strlcpy(cmd->forget.name, argv[2], sizeof(cmd->forget.name));
+      cmd->forget.security = argc == 3 ?
+                             PNUT_WIFI_SECURITY_WIFI_SECURITY_SECURED :
+                             PNUT_WIFI_SECURITY_WIFI_SECURITY_OPEN;
       return OK;
     }
 

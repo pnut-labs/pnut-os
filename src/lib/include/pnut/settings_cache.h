@@ -119,12 +119,24 @@ typedef CODE void
   (*pnut_settings_done_t)(FAR struct pnut_settings_cache_s *cache,
                           int status, uint32_t code, FAR void *arg);
 
-/* A change asked of Settings and not answered yet */
+/* Called on the loop with a secret's value (RFC 0025), read for the
+ * program that runs its owner: empty when it has none, or when Settings
+ * answered with an error.  The value is wiped once the handler returns:
+ * a handler copies what it keeps.
+ */
+
+typedef CODE void
+  (*pnut_settings_secret_done_t)(FAR struct pnut_settings_cache_s *cache,
+                                 int status, uint32_t code,
+                                 FAR const char *value, FAR void *arg);
+
+/* A change, or a secret's read, asked of Settings and not answered yet */
 
 struct pnut_settings_set_s
 {
   FAR struct pnut_settings_cache_s *cache;
   pnut_settings_done_t done;
+  pnut_settings_secret_done_t got;
   FAR void *arg;
 };
 
@@ -244,6 +256,31 @@ int pnut_settings_cache_set(FAR struct pnut_settings_cache_s *cache,
                             int index,
                             FAR const pnut_setting_value_t *value,
                             pnut_settings_done_t done, FAR void *arg);
+
+/****************************************************************************
+ * Name: pnut_settings_cache_get_secret, pnut_settings_cache_set_secret
+ *
+ * Description:
+ *   Read the secret at index (Settings answers only the program that runs
+ *   its owner), or ask Settings to seal a new value for it, an empty one
+ *   removing it (RFC 0025).  A secret is never in the struct, and its
+ *   value goes nowhere else: the request and the answer are wiped.
+ *
+ * Returned Value:
+ *   As pnut_settings_cache_set(); -EINVAL too for an index that is not a
+ *   secret's.
+ *
+ ****************************************************************************/
+
+int pnut_settings_cache_get_secret(FAR struct pnut_settings_cache_s *cache,
+                                   int index,
+                                   pnut_settings_secret_done_t done,
+                                   FAR void *arg);
+
+int pnut_settings_cache_set_secret(FAR struct pnut_settings_cache_s *cache,
+                                   int index, FAR const char *value,
+                                   pnut_settings_done_t done,
+                                   FAR void *arg);
 
 #ifdef __cplusplus
 }
