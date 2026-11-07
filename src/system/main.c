@@ -253,6 +253,9 @@ int main(int argc, FAR char *argv[])
   sconfig.limits.settings = CONFIG_PNUT_SETTINGS_MAX;
   sconfig.limits.texts    = CONFIG_PNUT_SETTINGS_TEXTS;
   sconfig.limits.choices  = CONFIG_PNUT_SETTINGS_CHOICES;
+#ifdef CONFIG_PNUT_SETTINGS_SECRETS
+  sconfig.limits.secrets  = CONFIG_PNUT_SETTINGS_SECRETS;
+#endif
   sconfig.delay           = CONFIG_PNUT_SETTINGS_DELAY;
   sconfig.who             = system_who;
   sconfig.runs            = system_runs;

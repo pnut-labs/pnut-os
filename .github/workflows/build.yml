@@ -101,11 +101,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install cmocka and protoc
+      - name: Install cmocka, libsodium and protoc
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcmocka-dev protobuf-compiler \
-            python3-protobuf
+          sudo apt-get install -y libcmocka-dev libsodium-dev \
+            protobuf-compiler python3-protobuf
 
       - name: Run the unit tests
         run: make test

@@ -159,6 +159,7 @@ struct settings_s
     pnut_setting_value_t value;
     pnut_settings_values_t values;
     pnut_settings_schema_t schema;
+    pnut_settings_secret_t secret;
   } out;
 };
 
