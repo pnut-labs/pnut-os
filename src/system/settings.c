@@ -1519,6 +1519,23 @@ static int settings_random(FAR void *arg, FAR uint8_t *buf, size_t len)
 }
 
 /****************************************************************************
+ * Name: settings_key_warn
+ *
+ * Description:
+ *   Said at each start while secrets are sealed under Settings' own key
+ *   (RFC 0031): it lies in the flash beside them, so whoever reads the
+ *   flash, or runs native code, has every secret.
+ *
+ ****************************************************************************/
+
+static void settings_key_warn(FAR struct settings_s *settings)
+{
+  pnut_log(&settings->module, PNUT_LOG_WARNING,
+           "Secrets are sealed under Settings' own key, kept beside them: "
+           "whoever reads the flash has them (until Security's key)");
+}
+
+/****************************************************************************
  * Name: settings_key_load
  *
  * Description:
@@ -1598,6 +1615,7 @@ static void settings_key_load(FAR struct settings_s *settings)
         {
           settings_store_key(&settings->store, key);
           sodium_memzero(key, sizeof(key));
+          settings_key_warn(settings);
           return;
         }
 
@@ -1622,6 +1640,7 @@ static void settings_key_load(FAR struct settings_s *settings)
     {
       settings_store_key(&settings->store, key);
       pnut_log(module, PNUT_LOG_INFO, "Made a key for secrets");
+      settings_key_warn(settings);
     }
 
   sodium_memzero(key, sizeof(key));
