@@ -61,6 +61,14 @@
 
 #define WALLCLOCK_SAVE_EVERY 3600000
 
+/* As the module stops, the longest wait for a state file's write on a
+ * worker: it takes a quarter of a second, and one held back behind a busy
+ * worker would not start in a while.  The program has 3 s to stop, and
+ * Settings and Log may each wait up to 2 s too.
+ */
+
+#define WALLCLOCK_STOP_WAIT_MS 500
+
 /* How long a source's reading is at hand, in seconds: a less preferred
  * source does not move the clock meanwhile (RFC 0028).  An hour, as the
  * sources' readings come when they are free; not tied to the state file's
@@ -360,42 +368,49 @@ static void wallclock_zone(FAR struct wallclock_s *wall)
 }
 
 /****************************************************************************
- * Name: wallclock_save
+ * Name: wallclock_line, wallclock_write
  *
  * Description:
- *   Write the state file: the clock's time, and where it came from, so
- *   that after a power loss the clock starts near it.  Its few bytes are
- *   written on the loop, with a change of the clock or its source, at
- *   most hourly for readings that change nothing, and as the module
- *   stops.  A clock never set has nothing worth keeping.  A crash leaves
- *   the old file or the new one.
+ *   The state file's line: the clock's time, and where it came from, so
+ *   that after a power loss the clock starts near it; its length, or -1
+ *   when there is nothing worth keeping (a clock never set).  Written
+ *   beside the file, then renamed over it: a crash leaves the old file or
+ *   the new one.  The write blocks, so it runs on a worker but as the
+ *   module stops.
  *
  ****************************************************************************/
 
-static void wallclock_save(FAR struct wallclock_s *wall)
+static int wallclock_line(FAR struct wallclock_s *wall, FAR char *line,
+                          size_t size)
 {
-  FAR const char *path = wall->config.state;
-  char temp[PATH_MAX];
-  char line[96];
   struct timespec ts;
+  int len;
+
+  if (wall->config.state == NULL ||
+      wall->source == PNUT_TIME_INFO_SOURCE_NONE ||
+      wallclock_now(wall, &ts) < 0)
+    {
+      return -1;
+    }
+
+  len = snprintf(line, size, "%s %d %" PRId64 " %u %" PRId64 "\n",
+                 WALLCLOCK_MAGIC, WALLCLOCK_VERSION, (int64_t)ts.tv_sec,
+                 (unsigned int)wall->source, wall->since);
+  return len > 0 && len < (int)size ? len : -1;
+}
+
+static int wallclock_write(FAR const char *path, FAR const char *line,
+                           int len)
+{
+  char temp[PATH_MAX];
   struct stat st;
   ssize_t n;
-  int len;
   int ret = OK;
   int fd;
 
-  if (path == NULL || wall->source == PNUT_TIME_INFO_SOURCE_NONE ||
-      wallclock_now(wall, &ts) < 0)
-    {
-      return;
-    }
-
-  len = snprintf(line, sizeof(line), "%s %d %" PRId64 " %u %" PRId64 "\n",
-                 WALLCLOCK_MAGIC, WALLCLOCK_VERSION, (int64_t)ts.tv_sec,
-                 (unsigned int)wall->source, wall->since);
   if (snprintf(temp, sizeof(temp), "%s.new", path) >= (int)sizeof(temp))
     {
-      return;
+      return -ENAMETOOLONG;
     }
 
   /* Made afresh, never through a link left at its name */
@@ -439,14 +454,136 @@ static void wallclock_save(FAR struct wallclock_s *wall)
   if (ret < 0)
     {
       unlink(temp);
-      pnut_log(&wall->module, PNUT_LOG_WARNING, "Cannot write %s: %d", path,
-               ret);
+    }
+
+  return ret;
+}
+
+/****************************************************************************
+ * Name: wallclock_save
+ *
+ * Description:
+ *   Write the state file, on a worker, with a change of the clock or its
+ *   source, and at most hourly for readings that change nothing.  One
+ *   asked for while one runs is written after it, with the time then.
+ *
+ ****************************************************************************/
+
+static void wallclock_save(FAR struct wallclock_s *wall);
+
+static void wallclock_save_run(FAR void *arg)
+{
+  FAR struct wallclock_save_s *save = arg;
+
+  save->ret = wallclock_write(save->path, save->line, save->len);
+  __atomic_store_n(&save->finished, true, __ATOMIC_RELEASE);
+}
+
+static void wallclock_save_done(FAR struct pnut_loop_s *loop, FAR void *arg)
+{
+  FAR struct wallclock_s *wall =
+    (FAR struct wallclock_s *)((FAR char *)arg -
+                               offsetof(struct wallclock_s, save));
+
+  wall->save_running = false;
+  if (wall->save.ret < 0)
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING, "Cannot write %s: %d",
+               wall->save.path, wall->save.ret);
+      wall->saved = false;        /* The next reading tries again */
+    }
+
+  if (wall->save_again)
+    {
+      wall->save_again = false;
+      wallclock_save(wall);
+    }
+}
+
+static void wallclock_save(FAR struct wallclock_s *wall)
+{
+  FAR struct wallclock_save_s *save = &wall->save;
+  struct timespec ts;
+  int ret;
+
+  if (wall->save_running)
+    {
+      wall->save_again = true;
       return;
     }
 
+  save->len = wallclock_line(wall, save->line, sizeof(save->line));
+  if (save->len < 0)
+    {
+      return;
+    }
+
+  save->path = wall->config.state;
+  save->ret  = OK;
+  __atomic_store_n(&save->finished, false, __ATOMIC_RELAXED);
+  ret = pnut_job_submit(wall->module.loop, wallclock_save_run,
+                        wallclock_save_done, save);
+  if (ret < 0)
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING,
+               "The state file not written now: %d", ret);
+      wall->saved = false;        /* The next reading tries again */
+      return;
+    }
+
+  wall->save_running = true;
   wall->saved = wallclock_gettime(wall, CLOCK_MONOTONIC, &ts) == OK;
   wall->saved_at = (uint64_t)ts.tv_sec * 1000 +
                    (uint64_t)ts.tv_nsec / 1000000;
+}
+
+/****************************************************************************
+ * Name: wallclock_save_now
+ *
+ * Description:
+ *   The state file written as the module stops, on the loop: after a
+ *   write still on a worker, so that it does not come last with an older
+ *   time; if that one has not ended in a while, none is written here, as
+ *   two writes at once would undo each other (Settings and Log do so too).
+ *
+ ****************************************************************************/
+
+static void wallclock_save_now(FAR struct wallclock_s *wall)
+{
+  char line[sizeof(wall->save.line)];
+  int waited;
+  int len;
+  int ret;
+
+  for (waited = 0;
+       wall->save_running && waited < WALLCLOCK_STOP_WAIT_MS &&
+       !__atomic_load_n(&wall->save.finished, __ATOMIC_ACQUIRE);
+       waited += 10)
+    {
+      usleep(10000);
+    }
+
+  if (wall->save_running &&
+      !__atomic_load_n(&wall->save.finished, __ATOMIC_ACQUIRE))
+    {
+      pnut_log(&wall->module, PNUT_LOG_ERROR,
+               "A write of %s still waits: not written as Time stops",
+               wall->config.state);
+      return;
+    }
+
+  len = wallclock_line(wall, line, sizeof(line));
+  if (len < 0)
+    {
+      return;
+    }
+
+  ret = wallclock_write(wall->config.state, line, len);
+  if (ret < 0)
+    {
+      pnut_log(&wall->module, PNUT_LOG_WARNING, "Cannot write %s: %d",
+               wall->config.state, ret);
+    }
 }
 
 /****************************************************************************
@@ -1473,7 +1610,7 @@ static void wallclock_stop(FAR struct pnut_module_s *module,
 {
   FAR struct wallclock_s *wall = (FAR struct wallclock_s *)module;
 
-  wallclock_save(wall);
+  wallclock_save_now(wall);
 
   if (wall->serving)
     {

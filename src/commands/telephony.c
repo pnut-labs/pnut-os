@@ -521,6 +521,13 @@ int main(int argc, FAR char *argv[])
   config.workers = 0;
   config.initctl = NULL;
 
+  /* A command's handlers print to the console, which takes its time; its
+   * loop serves no one else, so no budget is kept (RFC 0007's is for
+   * services)
+   */
+
+  config.budget  = 0;
+
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)
     {
