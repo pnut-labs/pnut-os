@@ -1540,6 +1540,12 @@ int settings_store_get_secret(FAR struct settings_store_s *store,
   FAR struct settings_entry_s *entry = NULL;
   int ret;
 
+  if (size == 0)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_NONE;
+      return PNUT_STATUS_INVALID;
+    }
+
   out[0] = '\0';
 
   ret = settings_lookup(store, owner, key, &o, &entry, code);

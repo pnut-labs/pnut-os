@@ -1383,8 +1383,9 @@ static void settings_describe(FAR struct pnut_settings_server_s *server,
  *
  * Description:
  *   A secret, to the program that runs its owner and to no other: not the
- *   system UI, nor a command typed in a shell (RFC 0025).  The answer is
- *   wiped once sent.
+ *   system UI, nor a command typed in a shell (RFC 0025).  Without a way to
+ *   tell who calls, no one may: unlike a schema's registration, this fails
+ *   closed.  The answer is wiped once sent.
  *
  ****************************************************************************/
 

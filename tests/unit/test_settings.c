@@ -485,6 +485,9 @@ static void test_settings_secret(void **state)
   assert_int_equal(get_secret(&f->store, "nothing", out,
                               PNUT_SETTINGS_ERROR_CODE_UNKNOWN_KEY),
                    PNUT_STATUS_NOTFOUND);
+  assert_int_equal(settings_store_get_secret(&f->store, OWNER, "passphrase",
+                                             out, 0, &f->code),
+                   PNUT_STATUS_INVALID);
   assert_int_equal(get_secret(&f->store, "passphrase", out, 0),
                    PNUT_STATUS_OK);
   assert_string_equal(out, "hunter2");
@@ -2068,6 +2071,7 @@ struct secrets_s
   FAR const char *me;
   bool unknown;                   /* Who calls cannot be told */
   bool again;                     /* After the restart */
+  bool nowho;                     /* No way to tell who calls */
   int step;
   int status[16];
   uint32_t code[16];
@@ -2267,7 +2271,7 @@ static void secrets_run(FAR struct secrets_s *x)
   sconfig.dir      = x->dir;
   sconfig.limits   = g_limits;
   sconfig.delay    = 20;
-  sconfig.who      = secrets_who;
+  sconfig.who      = x->nowho ? NULL : secrets_who;
   sconfig.runs     = access_runs;
   sconfig.identity = x;
   settings_init(&x->settings, &sconfig);
@@ -2365,6 +2369,20 @@ static void test_settings_secrets_service(void **state)
   assert_int_equal(x->step, 2);
   assert_int_equal(x->status[1], PNUT_STATUS_OK);
   assert_string_equal(x->got[1], "battery staple");
+
+  /* Without a way to tell who calls, no one reads it, though anyone may
+   * register a schema then: a secret fails closed
+   */
+
+  memset(x->status, 0, sizeof(x->status));
+  memset(x->got, 0, sizeof(x->got));
+  x->step  = 0;
+  x->nowho = true;
+  secrets_run(x);
+  assert_int_equal(x->step, 2);
+  assert_int_equal(x->status[0], PNUT_STATUS_OK);
+  assert_int_equal(x->status[1], PNUT_STATUS_DENIED);
+  assert_string_equal(x->got[1], "");
 
   unlink(path);
   snprintf(path, sizeof(path), "%s/secrets.key", x->dir);
