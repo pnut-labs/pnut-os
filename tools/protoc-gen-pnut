@@ -575,7 +575,7 @@ class Setting:
                 if self.public:
                     raise GenError(f"{where}: a secret is never public")
                 if self.choices:
-                    raise GenError(f"{where}: choices are a string's")
+                    raise GenError(f"{where}: a secret has no choices")
             elif self.choices:
                 self.type = "CHOICE"
                 if len(self.choices) > SETTING_LIMITS["choices"]:
