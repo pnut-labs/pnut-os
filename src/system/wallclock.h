@@ -127,6 +127,20 @@ struct wallclock_ntp_s
 };
 #endif
 
+/* The state file's write, on a worker: littlefs takes a quarter of a
+ * second for it, fsync() and the rename
+ */
+
+struct wallclock_save_s
+{
+  FAR const char *path;
+  char line[96];
+  int len;
+  int ret;
+  bool finished;                  /* Set by the worker as it ends
+                                   * (__atomic, release) */
+};
+
 /* A reading held, until another source agrees with it */
 
 struct wallclock_held_s
@@ -181,6 +195,14 @@ struct wallclock_s
   bool settings_open;
   bool network_open;
   bool gnss_open;
+
+  /* The state file's write: one at a time, a later one asked for meanwhile
+   * done after it, with the time then
+   */
+
+  struct wallclock_save_s save;
+  bool save_running;
+  bool save_again;
 
 #ifdef CONFIG_PNUT_TIME_NTP
   /* NTP, while Wi-Fi is joined */
