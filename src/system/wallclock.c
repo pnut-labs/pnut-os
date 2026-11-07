@@ -527,6 +527,7 @@ static void wallclock_save(FAR struct wallclock_s *wall)
     {
       pnut_log(&wall->module, PNUT_LOG_WARNING,
                "The state file not written now: %d", ret);
+      wall->saved = false;        /* The next reading tries again */
       return;
     }
 
