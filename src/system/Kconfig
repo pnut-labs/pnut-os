@@ -8,7 +8,7 @@
 config PNUT_SYSTEM
 	bool "The system program"
 	default n
-	depends on PNUT_LIB && NETUTILS_NANOPB
+	depends on PNUT_LIB && NETUTILS_NANOPB && LIBSODIUM
 	---help---
 		pnut_system, the program of the services every other program waits
 		on (RFC 0007).  So far it serves Board's description of the
@@ -162,6 +162,16 @@ config PNUT_SETTINGS_CHOICES
 	range 1 65535
 	---help---
 		About 40 bytes each.
+
+config PNUT_SETTINGS_SECRETS
+	int "Secrets holding a value, all owners' together"
+	default 24
+	range 0 1024
+	---help---
+		Secrets (RFC 0025) are sealed with libsodium's XChaCha20-Poly1305
+		under Settings' own key, kept in secrets.key beside the owners'
+		files (RFC 0031).  About 1.1 KB each, and as much again in the
+		buffer an owner's file is written from.
 
 config PNUT_SETTINGS_DELAY
 	int "From a change to its write, in milliseconds"

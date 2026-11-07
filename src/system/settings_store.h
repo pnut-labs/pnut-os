@@ -54,6 +54,21 @@
   ((size_t)(settings) * SETTINGS_ENTRY_SMALL + \
    (size_t)(texts) / 2 * SETTINGS_ENTRY_TEXT)
 
+/* The longest secret, in bytes (RFC 0025); sealed, XChaCha20-Poly1305's
+ * 24-byte nonce and 16-byte tag around it; and in a file, its key with it
+ */
+
+#define SETTINGS_SECRET_MAX   1024
+#define SETTINGS_SEALED_EXTRA 40
+#define SETTINGS_SEALED_MAX   (SETTINGS_SECRET_MAX + SETTINGS_SEALED_EXTRA)
+#define SETTINGS_ENTRY_SEALED (SETTINGS_SEALED_MAX + SETTINGS_NAME_MAX + 8)
+#define SETTINGS_SECRETS_FILE_MAX(secrets) \
+  ((size_t)(secrets) * SETTINGS_ENTRY_SEALED)
+
+/* Settings' key for secrets, in bytes */
+
+#define SETTINGS_KEY_BYTES    32
+
 /****************************************************************************
  * Public Types
  ****************************************************************************/
@@ -66,7 +81,13 @@ struct settings_limits_s
   uint16_t settings;              /* Settings, all owners' together */
   uint16_t texts;                 /* Strings: a value and a default each */
   uint16_t choices;               /* Choices' names */
+  uint16_t secrets;               /* Secrets holding a value, together */
 };
+
+/* Random bytes, for a nonce: zero (OK), or a negated errno */
+
+typedef CODE int (*settings_random_t)(FAR void *arg, FAR uint8_t *buf,
+                                      size_t len);
 
 struct settings_owner_s;
 
@@ -99,6 +120,20 @@ struct settings_store_s
 
   settings_default_t defaults;
   FAR void *defaults_arg;
+
+  /* Secrets: their sealed values, from a pool; sealed under key once
+   * settings_store_key() gave it, with nonces from random (set after
+   * settings_store_init(), or left NULL: none is sealed).  Those found in
+   * a file that did not open under the key are counted in dropped.
+   */
+
+  struct pnut_pool_s sealed;
+  uint8_t key[SETTINGS_KEY_BYTES];
+  bool keyed;
+  settings_random_t random;
+  FAR void *random_arg;
+  uint16_t dropped;
+  char opened[SETTINGS_SECRET_MAX + 1];   /* One opened, for a moment */
 };
 
 /****************************************************************************
@@ -188,6 +223,42 @@ int settings_store_set(FAR struct settings_store_s *store,
 int settings_store_reset(FAR struct settings_store_s *store,
                          FAR const char *owner, FAR const char *key,
                          FAR bool *changedp, FAR uint32_t *code);
+
+/****************************************************************************
+ * Name: settings_store_key
+ *
+ * Description:
+ *   Settings' key for secrets, copied: given before any owner's file is
+ *   decoded, so that the secrets in it are opened, and checked, under it.
+ *
+ ****************************************************************************/
+
+void settings_store_key(FAR struct settings_store_s *store,
+                        FAR const uint8_t *key);
+
+/****************************************************************************
+ * Name: settings_store_get_secret, settings_store_set_secret
+ *
+ * Description:
+ *   A secret's value, opened into out (size bytes, SETTINGS_SECRET_MAX + 1
+ *   enough), empty when it has none; or its new value, sealed under the
+ *   key with a fresh nonce, an empty one removing it.  The caller checks
+ *   who may: the store knows nothing of callers.
+ *
+ * Returned Value:
+ *   A pnut status, as settings_store_get() and settings_store_set().
+ *
+ ****************************************************************************/
+
+int settings_store_get_secret(FAR struct settings_store_s *store,
+                              FAR const char *owner, FAR const char *key,
+                              FAR char *out, size_t size,
+                              FAR uint32_t *code);
+
+int settings_store_set_secret(FAR struct settings_store_s *store,
+                              FAR const char *owner, FAR const char *key,
+                              FAR const char *value, FAR bool *changedp,
+                              FAR uint32_t *code);
 
 /****************************************************************************
  * Name: settings_store_list, settings_store_describe

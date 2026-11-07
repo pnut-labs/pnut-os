@@ -24,6 +24,8 @@
 #include <pnut/msg.h>
 #include <pnut/worker.h>
 
+#include <sodium.h>
+
 #include "programs.h"
 #include "settings.h"
 
@@ -72,6 +74,15 @@ static void settings_describe(FAR struct pnut_settings_server_s *server,
                               FAR const struct pnut_request_s *req,
                               FAR const pnut_settings_page_request_t *in,
                               FAR void *arg);
+static void settings_get_secret(FAR struct pnut_settings_server_s *server,
+                                FAR const struct pnut_request_s *req,
+                                FAR const pnut_settings_get_request_t *in,
+                                FAR void *arg);
+static void
+settings_set_secret(FAR struct pnut_settings_server_s *server,
+                    FAR const struct pnut_request_s *req,
+                    FAR const pnut_settings_secret_request_t *in,
+                    FAR void *arg);
 
 /****************************************************************************
  * Private Data
@@ -85,6 +96,8 @@ static const struct pnut_settings_handlers_s g_settings_handlers =
   .reset           = settings_reset,
   .list            = settings_list,
   .describe        = settings_describe,
+  .get_secret      = settings_get_secret,
+  .set_secret      = settings_set_secret,
 };
 
 /* The errors' text, for the log and developers, by code */
@@ -98,7 +111,7 @@ static const char * const g_settings_errors[] =
   "out of range",
   "too long",
   "not a choice",
-  "secrets are not stored yet",
+  "a secret: GetSecret and SetSecret",
   "no room left",
   "bad schema",
   "not registering",
@@ -106,6 +119,7 @@ static const char * const g_settings_errors[] =
   "registering",
   "not the caller's",
   "who calls is not known yet",
+  "no key for secrets",
 };
 
 /* What a caller may do with an owner's settings (RFC 0025) */
@@ -526,6 +540,14 @@ static void settings_apply(FAR struct settings_s *settings,
       if (!settings_store_decode(&settings->store, load->owner, &stream))
         {
           why = "does not decode";
+        }
+
+      if (settings->store.dropped > 0)
+        {
+          pnut_log(&settings->module, PNUT_LOG_WARNING,
+                   "%s: %u secrets did not open, or found no room: dropped",
+                   load->owner, settings->store.dropped);
+          settings->store.dropped = 0;
         }
     }
   else if (error == EFBIG)
@@ -1357,6 +1379,255 @@ static void settings_describe(FAR struct pnut_settings_server_s *server,
 }
 
 /****************************************************************************
+ * Name: settings_get_secret
+ *
+ * Description:
+ *   A secret, to the program that runs its owner and to no other: not the
+ *   system UI, nor a command typed in a shell (RFC 0025).  The answer is
+ *   wiped once sent.
+ *
+ ****************************************************************************/
+
+static void settings_get_secret(FAR struct pnut_settings_server_s *server,
+                                FAR const struct pnut_request_s *req,
+                                FAR const pnut_settings_get_request_t *in,
+                                FAR void *arg)
+{
+  FAR struct settings_s *settings = arg;
+  FAR pnut_settings_secret_t *out = &settings->out.secret;
+  uint32_t code = PNUT_SETTINGS_ERROR_CODE_DENIED;
+  int ret = PNUT_STATUS_DENIED;
+  int access;
+
+  access = settings_allowed(settings, req, in->owner);
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
+  if (access == SETTINGS_OWNER)
+    {
+      ret = settings_store_get_secret(&settings->store, in->owner, in->key,
+                                      out->value, sizeof(out->value),
+                                      &code);
+    }
+
+  if (ret != PNUT_STATUS_OK)
+    {
+      settings_fail(settings, req, ret, code, in->owner, in->key);
+      return;
+    }
+
+  pnut_settings_get_secret_reply(server, req, PNUT_STATUS_OK, out);
+  sodium_memzero(out, sizeof(*out));
+}
+
+/****************************************************************************
+ * Name: settings_set_secret
+ *
+ * Description:
+ *   A secret's new value, from the program that runs its owner, the system
+ *   UI or a shell; sealed at once, and the request wiped.
+ *
+ ****************************************************************************/
+
+static void
+settings_set_secret(FAR struct pnut_settings_server_s *server,
+                    FAR const struct pnut_request_s *req,
+                    FAR const pnut_settings_secret_request_t *in,
+                    FAR void *arg)
+{
+  FAR struct settings_s *settings = arg;
+  uint32_t code = PNUT_SETTINGS_ERROR_CODE_DENIED;
+  bool changed = false;
+  int ret = PNUT_STATUS_DENIED;
+  int access;
+
+  access = settings_allowed(settings, req, in->owner);
+  if (access != SETTINGS_UNKNOWN && access != SETTINGS_PUBLIC)
+    {
+      ret = settings_store_set_secret(&settings->store, in->owner, in->key,
+                                      in->value, &changed, &code);
+    }
+
+  /* The server's own buffer, which the next request overwrites anyway */
+
+  sodium_memzero((FAR char *)in->value, sizeof(in->value));
+
+  if (access == SETTINGS_UNKNOWN)
+    {
+      return;
+    }
+
+  if (ret != PNUT_STATUS_OK)
+    {
+      settings_fail(settings, req, ret, code, in->owner, in->key);
+      return;
+    }
+
+  if (changed)
+    {
+      settings_changed(settings, in->owner, in->key);
+      settings_schedule(settings);
+    }
+
+  pnut_settings_set_secret_reply(server, req, PNUT_STATUS_OK, NULL);
+}
+
+/****************************************************************************
+ * Name: settings_random
+ *
+ * Description:
+ *   Random bytes, from /dev/urandom.  On the ESP32-S3 that is the chip's
+ *   generator, fed by the ADC's noise source, which the start-up code turns
+ *   on (bootloader_init()) and leaves on, and by the radio while it runs.
+ *
+ ****************************************************************************/
+
+static int settings_random(FAR void *arg, FAR uint8_t *buf, size_t len)
+{
+  ssize_t n;
+  int ret = OK;
+  int fd;
+
+  fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    {
+      return -errno;
+    }
+
+  while (len > 0)
+    {
+      n = read(fd, buf, len);
+      if (n < 0 && errno == EINTR)
+        {
+          continue;
+        }
+
+      if (n <= 0)
+        {
+          ret = n < 0 ? -errno : -EIO;
+          break;
+        }
+
+      buf += n;
+      len -= n;
+    }
+
+  close(fd);
+  return ret;
+}
+
+/****************************************************************************
+ * Name: settings_key_load
+ *
+ * Description:
+ *   Settings' key for secrets (RFC 0031: its own, until Security derives
+ *   one from the device's): read from its file beside the owners', or made
+ *   at the first start and written there.  A file that cannot be read
+ *   leaves the secrets closed until a restart, and the file as it is; one
+ *   that holds no key is replaced, and the secrets sealed under the key it
+ *   held are lost, as they would be anyway.
+ *
+ ****************************************************************************/
+
+static void settings_key_load(FAR struct settings_s *settings)
+{
+  FAR struct pnut_module_s *module = &settings->module;
+  uint8_t key[SETTINGS_KEY_BYTES + 1];
+  char path[SETTINGS_PATH_MAX];
+  char temp[SETTINGS_PATH_MAX];
+  size_t got = 0;
+  ssize_t n = 0;
+  int ret;
+  int fd;
+
+  ret = snprintf(temp, sizeof(temp), "%s/secrets.key.new",
+                 settings->config.dir);
+  if (ret < 0 || ret >= (int)sizeof(temp))
+    {
+      pnut_log(module, PNUT_LOG_ERROR,
+               "The key for secrets: its path is too long: closed");
+      return;
+    }
+
+  snprintf(path, sizeof(path), "%s/secrets.key", settings->config.dir);
+
+  fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0 && errno != ENOENT)
+    {
+      pnut_log(module, PNUT_LOG_ERROR,
+               "Cannot open the key for secrets: %d: closed until a "
+               "restart", -errno);
+      return;
+    }
+
+  /* One byte more than a key: a longer file is no key either */
+
+  while (fd >= 0 && got < sizeof(key))
+    {
+      n = read(fd, key + got, sizeof(key) - got);
+      if (n < 0 && errno == EINTR)
+        {
+          continue;
+        }
+
+      if (n <= 0)
+        {
+          break;
+        }
+
+      got += n;
+    }
+
+  if (fd >= 0)
+    {
+      ret = n < 0 ? -errno : OK;
+      close(fd);
+
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_ERROR,
+                   "Cannot read the key for secrets: %d: closed until a "
+                   "restart", ret);
+          sodium_memzero(key, sizeof(key));
+          return;
+        }
+
+      if (got == SETTINGS_KEY_BYTES)
+        {
+          settings_store_key(&settings->store, key);
+          sodium_memzero(key, sizeof(key));
+          return;
+        }
+
+      pnut_log(module, PNUT_LOG_WARNING,
+               "The key for secrets is %zu bytes: replaced, and the secrets "
+               "sealed under it dropped", got);
+    }
+
+  ret = settings_random(NULL, key, SETTINGS_KEY_BYTES);
+  if (ret == OK)
+    {
+      ret = settings_write_file(path, temp, key, SETTINGS_KEY_BYTES);
+    }
+
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_ERROR,
+               "Cannot make a key for secrets: %d: closed until a restart",
+               ret);
+    }
+  else
+    {
+      settings_store_key(&settings->store, key);
+      pnut_log(module, PNUT_LOG_INFO, "Made a key for secrets");
+    }
+
+  sodium_memzero(key, sizeof(key));
+}
+
+/****************************************************************************
  * Name: settings_start
  ****************************************************************************/
 
@@ -1377,7 +1648,8 @@ static int settings_start(FAR struct pnut_module_s *module,
   settings->store.defaults_arg = settings;
   settings_defaults_load(settings);
 
-  settings->size   = SETTINGS_FILE_MAX(limits->settings, limits->texts);
+  settings->size   = SETTINGS_FILE_MAX(limits->settings, limits->texts) +
+                     SETTINGS_SECRETS_FILE_MAX(limits->secrets);
   settings->buffer = malloc(settings->size);
   if (settings->buffer == NULL)
     {
@@ -1391,6 +1663,21 @@ static int settings_start(FAR struct pnut_module_s *module,
       pnut_log(module, PNUT_LOG_ERROR, "Cannot make %s: %d",
                settings->config.dir, ret);
       goto errout;
+    }
+
+  /* Secrets: the key before any owner's file is read */
+
+  if (limits->secrets > 0)
+    {
+      if (sodium_init() < 0)
+        {
+          pnut_log(module, PNUT_LOG_ERROR, "No libsodium: secrets closed");
+        }
+      else
+        {
+          settings->store.random = settings_random;
+          settings_key_load(settings);
+        }
     }
 
   /* Changes are announced where there are topics; Settings serves without

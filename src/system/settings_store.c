@@ -17,15 +17,32 @@
 
 #include <pnut/msg.h>
 
+#include <sodium.h>
+
 #include "settings_store.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* The longest secret, in bytes (RFC 0025) */
+/* A sealed secret: XChaCha20-Poly1305's nonce, then the ciphertext and
+ * its tag
+ */
 
-#define SETTINGS_SECRET_MAX   1024
+#define SETTINGS_NONCE  crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
+#define SETTINGS_TAG    crypto_aead_xchacha20poly1305_ietf_ABYTES
+
+#if SETTINGS_NONCE + SETTINGS_TAG != SETTINGS_SEALED_EXTRA
+#  error "SETTINGS_SEALED_EXTRA is not the nonce and the tag"
+#endif
+
+#if crypto_aead_xchacha20poly1305_ietf_KEYBYTES != SETTINGS_KEY_BYTES
+#  error "SETTINGS_KEY_BYTES is not the cipher's key"
+#endif
+
+/* The associated data: the owner, a NUL, the key */
+
+#define SETTINGS_AD_MAX  (2 * (SETTINGS_NAME_MAX + 1))
 
 /* A page's settings at most (settings.proto) */
 
@@ -56,6 +73,16 @@ struct settings_text_s
   char text[SETTINGS_TEXT_MAX + 1];
 };
 
+/* A secret's value as kept, sealed: the nonce, the ciphertext and its
+ * tag, len bytes of them
+ */
+
+struct settings_sealed_s
+{
+  uint16_t len;
+  uint8_t data[SETTINGS_SEALED_MAX];
+};
+
 /* A value, as its entry's type says */
 
 union settings_val_u
@@ -64,6 +91,7 @@ union settings_val_u
   int64_t integer;
   uint8_t choice;                 /* Its place among the choices */
   FAR struct settings_text_s *text;
+  FAR struct settings_sealed_s *sealed;   /* A secret's, or NULL */
 };
 
 /* A setting: its schema and its value */
@@ -240,6 +268,12 @@ static void settings_entry_release(FAR struct settings_store_s *store,
       pnut_pool_free(&store->texts, entry->def.text);
       entry->value.text = NULL;
       entry->def.text   = NULL;
+    }
+
+  if (entry->type == PNUT_SETTING_TYPE_SECRET)
+    {
+      pnut_pool_free(&store->sealed, entry->value.sealed);
+      entry->value.sealed = NULL;
     }
 
   while (entry->choices != NULL)
@@ -456,17 +490,119 @@ static bool settings_value_put(FAR struct settings_entry_s *entry,
  *
  ****************************************************************************/
 
-static bool settings_reset_one(FAR struct settings_entry_s *entry)
+static bool settings_reset_one(FAR struct settings_store_s *store,
+                               FAR struct settings_entry_s *entry)
 {
   pnut_setting_value_t def;
 
+  /* A secret has no default: it goes */
+
   if (entry->type == PNUT_SETTING_TYPE_SECRET)
     {
-      return false;
+      if (entry->value.sealed == NULL)
+        {
+          return false;
+        }
+
+      pnut_pool_free(&store->sealed, entry->value.sealed);
+      entry->value.sealed = NULL;
+      return true;
     }
 
   settings_value_get(entry, &entry->def, &def);
   return settings_value_put(entry, &entry->value, &def);
+}
+
+/****************************************************************************
+ * Name: settings_ad
+ *
+ * Description:
+ *   A secret's associated data: its owner, a NUL, its key; so that a value
+ *   sealed as one setting's does not open as another's.
+ *
+ ****************************************************************************/
+
+static size_t settings_ad(FAR const char *owner, FAR const char *key,
+                          FAR uint8_t *ad)
+{
+  size_t olen = strnlen(owner, SETTINGS_NAME_MAX);
+  size_t klen = strnlen(key, SETTINGS_NAME_MAX);
+
+  memcpy(ad, owner, olen);
+  ad[olen] = '\0';
+  memcpy(ad + olen + 1, key, klen);
+  return olen + 1 + klen;
+}
+
+/****************************************************************************
+ * Name: settings_seal
+ *
+ * Description:
+ *   A secret's value sealed under Settings' key, with the nonce given.
+ *
+ ****************************************************************************/
+
+static void settings_seal(FAR struct settings_store_s *store,
+                          FAR const char *owner, FAR const char *key,
+                          FAR const char *value, size_t len,
+                          FAR const uint8_t *nonce,
+                          FAR struct settings_sealed_s *out)
+{
+  uint8_t ad[SETTINGS_AD_MAX];
+  unsigned long long clen;
+  size_t adlen;
+
+  adlen = settings_ad(owner, key, ad);
+  memcpy(out->data, nonce, SETTINGS_NONCE);
+  crypto_aead_xchacha20poly1305_ietf_encrypt(out->data + SETTINGS_NONCE,
+                                             &clen,
+                                             (FAR const uint8_t *)value,
+                                             len, ad, adlen, NULL,
+                                             out->data, store->key);
+  out->len = (uint16_t)(SETTINGS_NONCE + clen);
+}
+
+/****************************************************************************
+ * Name: settings_open
+ *
+ * Description:
+ *   A sealed value opened into the store's opened buffer, NUL-terminated;
+ *   the caller wipes it once done.
+ *
+ * Returned Value:
+ *   Its length; -EAGAIN without a key; -EBADMSG if it does not open.
+ *
+ ****************************************************************************/
+
+static int settings_open(FAR struct settings_store_s *store,
+                         FAR const char *owner, FAR const char *key,
+                         FAR const struct settings_sealed_s *in)
+{
+  uint8_t ad[SETTINGS_AD_MAX];
+  unsigned long long mlen;
+  size_t adlen;
+
+  if (!store->keyed)
+    {
+      return -EAGAIN;
+    }
+
+  if (in->len <= SETTINGS_SEALED_EXTRA || in->len > SETTINGS_SEALED_MAX)
+    {
+      return -EBADMSG;
+    }
+
+  adlen = settings_ad(owner, key, ad);
+  if (crypto_aead_xchacha20poly1305_ietf_decrypt(
+        (FAR uint8_t *)store->opened, &mlen, NULL,
+        in->data + SETTINGS_NONCE, in->len - SETTINGS_NONCE, ad, adlen,
+        in->data, store->key) != 0)
+    {
+      return -EBADMSG;
+    }
+
+  store->opened[mlen] = '\0';
+  return (int)mlen;
 }
 
 /****************************************************************************
@@ -650,7 +786,7 @@ static void settings_schema_put(FAR struct settings_store_s *store,
       settings_value_put(entry, &entry->def, &setting->default_value);
     }
 
-  settings_reset_one(entry);
+  settings_reset_one(store, entry);
 }
 
 /****************************************************************************
@@ -738,8 +874,8 @@ static int settings_lookup(FAR struct settings_store_s *store,
  * Name: settings_encode_entries
  *
  * Description:
- *   pnut.SettingsFile's entries, from an owner's values.  A secret has
- *   none yet.
+ *   pnut.SettingsFile's entries, from an owner's values; a secret's go
+ *   apart, sealed.
  *
  ****************************************************************************/
 
@@ -813,6 +949,170 @@ static bool settings_decode_entry(FAR pb_istream_t *stream,
 }
 
 /****************************************************************************
+ * Name: settings_put_sealed, settings_encode_secrets
+ *
+ * Description:
+ *   pnut.SettingsFile's secrets, sealed as they are kept: each written
+ *   from its entry, its size found first by writing it to nothing.
+ *
+ ****************************************************************************/
+
+static bool settings_put_sealed(FAR pb_ostream_t *stream,
+                                FAR const struct settings_entry_s *entry)
+{
+  return pb_encode_tag(stream, PB_WT_STRING, PNUT_SETTINGS_SEALED_KEY_TAG) &&
+         pb_encode_string(stream, (FAR const pb_byte_t *)entry->key,
+                          strlen(entry->key)) &&
+         pb_encode_tag(stream, PB_WT_STRING,
+                       PNUT_SETTINGS_SEALED_SEALED_TAG) &&
+         pb_encode_string(stream, entry->value.sealed->data,
+                          entry->value.sealed->len);
+}
+
+static bool settings_encode_secrets(FAR pb_ostream_t *stream,
+                                    FAR const pb_field_t *field,
+                                    FAR void * const *arg)
+{
+  FAR struct settings_owner_s *owner = *arg;
+  FAR struct settings_entry_s *entry;
+  pb_ostream_t sizing = PB_OSTREAM_SIZING;
+
+  for (entry = owner->entries; entry != NULL; entry = entry->next)
+    {
+      if (entry->type != PNUT_SETTING_TYPE_SECRET ||
+          entry->value.sealed == NULL)
+        {
+          continue;
+        }
+
+      sizing.bytes_written = 0;
+      if (!settings_put_sealed(&sizing, entry) ||
+          !pb_encode_tag_for_field(stream, field) ||
+          !pb_encode_varint(stream, sizing.bytes_written) ||
+          !settings_put_sealed(stream, entry))
+        {
+          return false;
+        }
+    }
+
+  return true;
+}
+
+/****************************************************************************
+ * Name: settings_decode_secret
+ *
+ * Description:
+ *   One of pnut.SettingsFile's secrets, read field by field into a sealed
+ *   value from the pool.  One no longer declared a secret, longer than its
+ *   declaration allows, without room, or that does not open under the key
+ *   is dropped, and the file written again without it.  Without a key,
+ *   it is kept as it is, unopened.
+ *
+ ****************************************************************************/
+
+static bool settings_decode_secret(FAR pb_istream_t *stream,
+                                   FAR const pb_field_t *field,
+                                   FAR void **arg)
+{
+  FAR struct settings_decode_s *ctx = *arg;
+  FAR struct settings_store_s *store = ctx->store;
+  FAR struct settings_entry_s *entry;
+  FAR struct settings_sealed_s *sealed;
+  char key[SETTINGS_NAME_MAX + 1];
+  pb_wire_type_t type;
+  pb_istream_t sub;
+  uint32_t tag;
+  size_t n;
+  bool fits = true;
+  bool eof;
+  bool ok;
+
+  key[0] = '\0';
+  sealed = pnut_pool_alloc(&store->sealed);
+
+  while (stream->bytes_left > 0)
+    {
+      if (!pb_decode_tag(stream, &type, &tag, &eof))
+        {
+          goto errout;
+        }
+
+      if (type != PB_WT_STRING ||
+          (tag != PNUT_SETTINGS_SEALED_KEY_TAG &&
+           tag != PNUT_SETTINGS_SEALED_SEALED_TAG))
+        {
+          if (!pb_skip_field(stream, type))
+            {
+              goto errout;
+            }
+
+          continue;
+        }
+
+      if (!pb_make_string_substream(stream, &sub))
+        {
+          goto errout;
+        }
+
+      n = sub.bytes_left;
+      if (tag == PNUT_SETTINGS_SEALED_KEY_TAG && n < sizeof(key))
+        {
+          ok     = pb_read(&sub, (FAR pb_byte_t *)key, n);
+          key[n] = '\0';
+        }
+      else if (tag == PNUT_SETTINGS_SEALED_SEALED_TAG && sealed != NULL &&
+               n <= sizeof(sealed->data))
+        {
+          ok          = pb_read(&sub, sealed->data, n);
+          sealed->len = (uint16_t)n;
+        }
+      else
+        {
+          ok   = pb_read(&sub, NULL, n);
+          fits = false;
+        }
+
+      if (!pb_close_string_substream(stream, &sub) || !ok)
+        {
+          goto errout;
+        }
+    }
+
+  entry = settings_entry_find(ctx->owner, key);
+  if (sealed == NULL)
+    {
+      store->dropped++;
+    }
+  else if (!fits || entry == NULL ||
+           entry->type != PNUT_SETTING_TYPE_SECRET ||
+           sealed->len <= SETTINGS_SEALED_EXTRA ||
+           sealed->len - SETTINGS_SEALED_EXTRA > entry->max_length)
+    {
+      /* No longer in the schema as it was */
+    }
+  else if (store->keyed &&
+           settings_open(store, ctx->owner->name, entry->key, sealed) < 0)
+    {
+      store->dropped++;
+    }
+  else
+    {
+      sodium_memzero(store->opened, sizeof(store->opened));
+      pnut_pool_free(&store->sealed, entry->value.sealed);
+      entry->value.sealed = sealed;
+      return true;
+    }
+
+  pnut_pool_free(&store->sealed, sealed);
+  ctx->owner->dirty = true;
+  return true;
+
+errout:
+  pnut_pool_free(&store->sealed, sealed);
+  return false;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -846,6 +1146,13 @@ int settings_store_init(FAR struct settings_store_s *store,
                            limits->choices);
     }
 
+  if (ret >= 0)
+    {
+      ret = pnut_pool_init(&store->sealed,
+                           sizeof(struct settings_sealed_s),
+                           limits->secrets);
+    }
+
   if (ret < 0)
     {
       settings_store_deinit(store);
@@ -856,6 +1163,10 @@ int settings_store_init(FAR struct settings_store_s *store,
 
 void settings_store_deinit(FAR struct settings_store_s *store)
 {
+  sodium_memzero(store->key, sizeof(store->key));
+  sodium_memzero(store->opened, sizeof(store->opened));
+  store->keyed = false;
+  pnut_pool_deinit(&store->sealed);
   pnut_pool_deinit(&store->choices);
   pnut_pool_deinit(&store->texts);
   pnut_pool_deinit(&store->entries);
@@ -874,6 +1185,7 @@ int settings_store_register(FAR struct settings_store_s *store,
   FAR struct settings_entry_s *entry = NULL;
   FAR struct settings_owner_s *owner;
   pnut_setting_value_t olds[SETTINGS_PAGE_MAX];
+  FAR struct settings_sealed_s *sealed[SETTINGS_PAGE_MAX];
   pnut_setting_value_t over;
   bool kept[SETTINGS_PAGE_MAX];
   int nentries = 0;
@@ -1007,12 +1319,26 @@ int settings_store_register(FAR struct settings_store_s *store,
 
   for (i = 0; i < in->settings_count; i++)
     {
-      kept[i] = false;
+      kept[i]   = false;
+      sealed[i] = NULL;
       if (found[i] != NULL &&
           found[i]->type == in->settings[i].type &&
           found[i]->type != PNUT_SETTING_TYPE_SECRET)
         {
           settings_value_get(found[i], &found[i]->value, &olds[i]);
+          kept[i] = true;
+        }
+
+      /* A secret still a secret: its sealed value, if any, taken aside,
+       * so that the release below does not give it back
+       */
+
+      if (found[i] != NULL &&
+          found[i]->type == PNUT_SETTING_TYPE_SECRET &&
+          in->settings[i].type == PNUT_SETTING_TYPE_SECRET)
+        {
+          sealed[i] = found[i]->value.sealed;
+          found[i]->value.sealed = NULL;
           kept[i] = true;
         }
 
@@ -1045,13 +1371,29 @@ int settings_store_register(FAR struct settings_store_s *store,
           settings_value_check(entry, &over, &unused) == PNUT_STATUS_OK)
         {
           settings_value_put(entry, &entry->def, &over);
-          settings_reset_one(entry);
+          settings_reset_one(store, entry);
         }
 
-      /* A value the new declaration still allows is kept */
+      /* A value the new declaration still allows is kept: a secret's if
+       * it is no longer than the new longest
+       */
 
-      if (kept[i] &&
-          settings_value_check(entry, &olds[i], &unused) == PNUT_STATUS_OK)
+      if (kept[i] && entry->type == PNUT_SETTING_TYPE_SECRET)
+        {
+          if (sealed[i] == NULL ||
+              sealed[i]->len - SETTINGS_SEALED_EXTRA <= entry->max_length)
+            {
+              entry->value.sealed = sealed[i];
+            }
+          else
+            {
+              pnut_pool_free(&store->sealed, sealed[i]);
+              owner->dirty |= owner->loaded;
+            }
+        }
+      else if (kept[i] &&
+               settings_value_check(entry, &olds[i], &unused) ==
+               PNUT_STATUS_OK)
         {
           settings_value_put(entry, &entry->value, &olds[i]);
         }
@@ -1168,17 +1510,153 @@ int settings_store_reset(FAR struct settings_store_s *store,
 
   if (key[0] != '\0')
     {
-      *changedp = settings_reset_one(entry);
+      *changedp = settings_reset_one(store, entry);
     }
   else
     {
       for (entry = o->entries; entry != NULL; entry = entry->next)
         {
-          *changedp |= settings_reset_one(entry);
+          *changedp |= settings_reset_one(store, entry);
         }
     }
 
   o->dirty |= *changedp;
+  return PNUT_STATUS_OK;
+}
+
+void settings_store_key(FAR struct settings_store_s *store,
+                        FAR const uint8_t *key)
+{
+  memcpy(store->key, key, sizeof(store->key));
+  store->keyed = true;
+}
+
+int settings_store_get_secret(FAR struct settings_store_s *store,
+                              FAR const char *owner, FAR const char *key,
+                              FAR char *out, size_t size,
+                              FAR uint32_t *code)
+{
+  FAR struct settings_owner_s *o;
+  FAR struct settings_entry_s *entry = NULL;
+  int ret;
+
+  out[0] = '\0';
+
+  ret = settings_lookup(store, owner, key, &o, &entry, code);
+  if (ret != PNUT_STATUS_OK)
+    {
+      return ret;
+    }
+
+  if (entry->type != PNUT_SETTING_TYPE_SECRET)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_WRONG_TYPE;
+      return PNUT_STATUS_INVALID;
+    }
+
+  if (entry->value.sealed == NULL)
+    {
+      return PNUT_STATUS_OK;
+    }
+
+  ret = settings_open(store, o->name, entry->key, entry->value.sealed);
+  if (ret == -EAGAIN)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_NO_KEY;
+      return PNUT_STATUS_UNAVAILABLE;
+    }
+  else if (ret < 0)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_NONE;
+      return PNUT_STATUS_INTERNAL;
+    }
+
+  strlcpy(out, store->opened, size);
+  sodium_memzero(store->opened, sizeof(store->opened));
+  return PNUT_STATUS_OK;
+}
+
+int settings_store_set_secret(FAR struct settings_store_s *store,
+                              FAR const char *owner, FAR const char *key,
+                              FAR const char *value, FAR bool *changedp,
+                              FAR uint32_t *code)
+{
+  FAR struct settings_owner_s *o;
+  FAR struct settings_entry_s *entry = NULL;
+  FAR struct settings_sealed_s *sealed;
+  uint8_t nonce[SETTINGS_NONCE];
+  size_t len;
+  bool same;
+  int ret;
+
+  *changedp = false;
+
+  ret = settings_lookup(store, owner, key, &o, &entry, code);
+  if (ret != PNUT_STATUS_OK)
+    {
+      return ret;
+    }
+
+  if (entry->type != PNUT_SETTING_TYPE_SECRET)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_WRONG_TYPE;
+      return PNUT_STATUS_INVALID;
+    }
+
+  len = strnlen(value, SETTINGS_SECRET_MAX + 1);
+  if (len > entry->max_length)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_TOO_LONG;
+      return PNUT_STATUS_INVALID;
+    }
+
+  /* Empty: removed */
+
+  if (len == 0)
+    {
+      *changedp = settings_reset_one(store, entry);
+      o->dirty |= *changedp;
+      return PNUT_STATUS_OK;
+    }
+
+  /* The same as before: nothing to write */
+
+  if (entry->value.sealed != NULL)
+    {
+      ret  = settings_open(store, o->name, entry->key, entry->value.sealed);
+      same = ret >= 0 && (size_t)ret == len &&
+             sodium_memcmp(store->opened, value, len) == 0;
+      sodium_memzero(store->opened, sizeof(store->opened));
+      if (same)
+        {
+          return PNUT_STATUS_OK;
+        }
+    }
+
+  /* The nonce first: nothing is lost if there is none */
+
+  if (!store->keyed || store->random == NULL ||
+      store->random(store->random_arg, nonce, sizeof(nonce)) < 0)
+    {
+      *code = PNUT_SETTINGS_ERROR_CODE_NO_KEY;
+      return PNUT_STATUS_UNAVAILABLE;
+    }
+
+  sealed = entry->value.sealed;
+  if (sealed == NULL)
+    {
+      sealed = pnut_pool_alloc(&store->sealed);
+      if (sealed == NULL)
+        {
+          *code = PNUT_SETTINGS_ERROR_CODE_FULL;
+          return PNUT_STATUS_BUSY;
+        }
+    }
+
+  settings_seal(store, o->name, entry->key, value, len, nonce, sealed);
+  entry->value.sealed = sealed;
+  *changedp = true;
+  o->dirty  = true;
   return PNUT_STATUS_OK;
 }
 
@@ -1400,6 +1878,8 @@ bool settings_store_encode(FAR struct settings_store_s *store,
   memset(&file, 0, sizeof(file));
   file.entries.funcs.encode = settings_encode_entries;
   file.entries.arg          = o;
+  file.secrets.funcs.encode = settings_encode_secrets;
+  file.secrets.arg          = o;
 
   if (!pb_encode(stream, PNUT_SETTINGS_FILE_FIELDS, &file))
     {
@@ -1426,6 +1906,8 @@ bool settings_store_decode(FAR struct settings_store_s *store,
   memset(&file, 0, sizeof(file));
   file.entries.funcs.decode = settings_decode_entry;
   file.entries.arg          = &ctx;
+  file.secrets.funcs.decode = settings_decode_secret;
+  file.secrets.arg          = &ctx;
 
   return pb_decode(stream, PNUT_SETTINGS_FILE_FIELDS, &file);
 }
