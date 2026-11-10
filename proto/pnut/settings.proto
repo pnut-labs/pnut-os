@@ -51,6 +51,19 @@ service Settings {
   rpc Describe (SettingsPageRequest) returns (SettingsSchema) {
     option (pnut.method) = 6;
   }
+
+  // A secret's value (RFC 0025): for its owner's program alone, never the
+  // system UI's; empty when it has none
+  rpc GetSecret (SettingsGetRequest) returns (SettingsSecret) {
+    option (pnut.method) = 7;
+  }
+
+  // A secret's new value: from its owner's program, or the system UI; an
+  // empty one removes it.  Kept encrypted (RFC 0031: under Settings' own
+  // key until Security derives one).
+  rpc SetSecret (SettingsSecretRequest) returns (SettingsReply) {
+    option (pnut.method) = 8;
+  }
 }
 
 // A setting's value: one of these, as its type says
@@ -115,7 +128,7 @@ message SettingsError {
     OUT_OF_RANGE = 4;             // An integer outside its range
     TOO_LONG = 5;                 // A string longer than its schema says
     NOT_A_CHOICE = 6;             // A name not among the choices
-    SECRET = 7;                   // Secrets cannot be stored yet
+    SECRET = 7;                   // A secret: GetSecret and SetSecret
     FULL = 8;                     // No room left in Settings' pools
     BAD_SCHEMA = 9;               // A schema that does not hold together
     NOT_REGISTERING = 10;         // A page of a schema without its first
@@ -124,6 +137,7 @@ message SettingsError {
     REGISTERING = 12;             // Its first schema is not whole yet
     DENIED = 13;                  // Not the caller's to read or change
     CALLER_UNKNOWN = 14;          // Who calls cannot be told now; try again
+    NO_KEY = 15;                  // Settings' key for secrets cannot be had
   }
 }
 
@@ -198,6 +212,25 @@ message SettingsChange {
 // An owner's file in flash: its values, by key
 message SettingsFile {
   repeated SettingsEntry entries = 1;
+  repeated SettingsSealed secrets = 2;
+}
+
+// A secret as kept on flash: XChaCha20-Poly1305 under Settings' key, its
+// nonce first, its owner and key the associated data
+message SettingsSealed {
+  string key = 1 [(nanopb).max_size = 65];
+  bytes sealed = 2 [(nanopb).max_size = 1064];
+}
+
+// A secret's value, to its owner
+message SettingsSecret {
+  string value = 1 [(nanopb).max_size = 1025, (pnut.sensitive) = true];
+}
+
+message SettingsSecretRequest {
+  string owner = 1 [(nanopb).max_size = 65];
+  string key = 2 [(nanopb).max_size = 65];
+  string value = 3 [(nanopb).max_size = 1025, (pnut.sensitive) = true];
 }
 
 // A target's default for a setting, overriding its schema's: written as

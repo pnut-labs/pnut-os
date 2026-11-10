@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -86,7 +87,45 @@ static const struct settings_limits_s g_limits =
   .settings = 32,
   .texts    = 8,
   .choices  = 16,
+  .secrets  = 2,
 };
+
+/* Settings' key for secrets in the tests, and another */
+
+static const uint8_t g_key[SETTINGS_KEY_BYTES] =
+{
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
+};
+
+static const uint8_t g_other_key[SETTINGS_KEY_BYTES] =
+{
+  32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+  16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+};
+
+/* Nonces: a count, so that each differs; or none, when told to fail */
+
+static int g_nonces;
+static bool g_no_random;
+
+static int test_random(FAR void *arg, FAR uint8_t *buf, size_t len)
+{
+  size_t i;
+
+  if (g_no_random)
+    {
+      return -EIO;
+    }
+
+  g_nonces++;
+  for (i = 0; i < len; i++)
+    {
+      buf[i] = (uint8_t)(g_nonces + i);
+    }
+
+  return OK;
+}
 
 static const char * const g_colours[] =
 {
@@ -247,11 +286,25 @@ static int set(FAR struct fixture_s *f, FAR const char *key,
   return ret;
 }
 
+static void keyed(FAR struct settings_store_s *store,
+                  FAR const uint8_t *key)
+{
+  if (key != NULL)
+    {
+      settings_store_key(store, key);
+    }
+
+  store->random     = test_random;
+  store->random_arg = NULL;
+}
+
 static int setup(void **state)
 {
   FAR struct fixture_s *f = calloc(1, sizeof(*f));
 
   assert_int_equal(settings_store_init(&f->store, &g_limits), 0);
+  keyed(&f->store, g_key);
+  g_no_random = false;
   *state = f;
   return 0;
 }
@@ -332,16 +385,57 @@ static void test_settings_checks(void **state)
   assert_null(settings_store_dirty(&f->store, 0));
 }
 
-/* A secret can be declared, but not stored yet */
+/* A secret's declaration */
+
+static void declare_secret(FAR pnut_settings_register_request_t *r,
+                           FAR const char *key, uint32_t max_length)
+{
+  FAR pnut_setting_t *s = declare(r, key, PNUT_SETTING_TYPE_SECRET);
+
+  s->max_length = max_length;
+}
+
+static int get_secret(FAR struct settings_store_s *store,
+                      FAR const char *key, FAR char *out, uint32_t expect)
+{
+  uint32_t code = 0;
+  int ret;
+
+  ret = settings_store_get_secret(store, OWNER, key, out,
+                                  SETTINGS_SECRET_MAX + 1, &code);
+  assert_int_equal(code, expect);
+  return ret;
+}
+
+static int set_secret(FAR struct settings_store_s *store,
+                      FAR const char *key, FAR const char *value,
+                      FAR bool *changed, uint32_t expect)
+{
+  uint32_t code = 0;
+  bool unused;
+  int ret;
+
+  ret = settings_store_set_secret(store, OWNER, key, value,
+                                  changed != NULL ? changed : &unused,
+                                  &code);
+  assert_int_equal(code, expect);
+  return ret;
+}
+
+/* A secret: never through Get or Set; GetSecret and SetSecret, kept
+ * sealed, checked against its schema, removed by an empty value
+ */
 
 static void test_settings_secret(void **state)
 {
   FAR struct fixture_s *f = *state;
-  FAR pnut_setting_t *s;
+  char out[SETTINGS_SECRET_MAX + 1];
+  char long_one[66];
+  bool changed;
 
   page(&f->reg, true, true);
-  s = declare(&f->reg, "passphrase", PNUT_SETTING_TYPE_SECRET);
-  s->max_length = 64;
+  declare_secret(&f->reg, "passphrase", 64);
+  declare_int(&f->reg, "volume", 0, 10, 5);
   assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
 
   assert_int_equal(get(f, "passphrase", PNUT_SETTINGS_ERROR_CODE_SECRET),
@@ -349,6 +443,337 @@ static void test_settings_secret(void **state)
   assert_int_equal(set(f, "passphrase", val_text("x"),
                        PNUT_SETTINGS_ERROR_CODE_SECRET),
                    PNUT_STATUS_UNAVAILABLE);
+
+  /* None yet: empty */
+
+  strcpy(out, "stale");
+  assert_int_equal(get_secret(&f->store, "passphrase", out, 0),
+                   PNUT_STATUS_OK);
+  assert_string_equal(out, "");
+
+  assert_int_equal(set_secret(&f->store, "passphrase", "hunter2", &changed,
+                              0), PNUT_STATUS_OK);
+  assert_true(changed);
+  assert_string_equal(settings_store_dirty(&f->store, 0), OWNER);
+  assert_int_equal(f->store.sealed.avail, g_limits.secrets - 1);
+  assert_int_equal(get_secret(&f->store, "passphrase", out, 0),
+                   PNUT_STATUS_OK);
+  assert_string_equal(out, "hunter2");
+
+  /* The same again: no change, nothing to write */
+
+  assert_true(settings_store_encode(&f->store, OWNER,
+                                    &(pb_ostream_t)PB_OSTREAM_SIZING));
+  assert_int_equal(set_secret(&f->store, "passphrase", "hunter2", &changed,
+                              0), PNUT_STATUS_OK);
+  assert_false(changed);
+  assert_null(settings_store_dirty(&f->store, 0));
+
+  /* Longer than its schema allows; not a secret; not known */
+
+  memset(long_one, 'a', 65);
+  long_one[65] = '\0';
+  assert_int_equal(set_secret(&f->store, "passphrase", long_one, NULL,
+                              PNUT_SETTINGS_ERROR_CODE_TOO_LONG),
+                   PNUT_STATUS_INVALID);
+  assert_int_equal(set_secret(&f->store, "volume", "1", NULL,
+                              PNUT_SETTINGS_ERROR_CODE_WRONG_TYPE),
+                   PNUT_STATUS_INVALID);
+  assert_int_equal(get_secret(&f->store, "volume", out,
+                              PNUT_SETTINGS_ERROR_CODE_WRONG_TYPE),
+                   PNUT_STATUS_INVALID);
+  assert_int_equal(get_secret(&f->store, "nothing", out,
+                              PNUT_SETTINGS_ERROR_CODE_UNKNOWN_KEY),
+                   PNUT_STATUS_NOTFOUND);
+  assert_int_equal(settings_store_get_secret(&f->store, OWNER, "passphrase",
+                                             out, 0, &f->code),
+                   PNUT_STATUS_INVALID);
+  assert_int_equal(get_secret(&f->store, "passphrase", out, 0),
+                   PNUT_STATUS_OK);
+  assert_string_equal(out, "hunter2");
+
+  /* An empty one removes it */
+
+  assert_int_equal(set_secret(&f->store, "passphrase", "", &changed, 0),
+                   PNUT_STATUS_OK);
+  assert_true(changed);
+  assert_int_equal(f->store.sealed.avail, g_limits.secrets);
+  assert_int_equal(get_secret(&f->store, "passphrase", out, 0),
+                   PNUT_STATUS_OK);
+  assert_string_equal(out, "");
+  assert_int_equal(set_secret(&f->store, "passphrase", "", &changed, 0),
+                   PNUT_STATUS_OK);
+  assert_false(changed);
+}
+
+/* Without a key, or random bytes for a nonce, nothing is sealed; secrets
+ * found in a file then stay as they are, unopened
+ */
+
+static void test_settings_secret_no_key(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  struct settings_store_s other;
+  char out[SETTINGS_SECRET_MAX + 1];
+  FAR const char *key;
+  pb_ostream_t out1;
+  pb_ostream_t out2;
+  pb_istream_t in;
+  uint8_t again[4096];
+  uint32_t code;
+  bool load;
+
+  page(&f->reg, true, true);
+  declare_secret(&f->reg, "passphrase", 64);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+
+  g_no_random = true;
+  assert_int_equal(set_secret(&f->store, "passphrase", "hunter2", NULL,
+                              PNUT_SETTINGS_ERROR_CODE_NO_KEY),
+                   PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(f->store.sealed.avail, g_limits.secrets);
+  g_no_random = false;
+
+  assert_int_equal(set_secret(&f->store, "passphrase", "hunter2", NULL, 0),
+                   PNUT_STATUS_OK);
+  out1 = pb_ostream_from_buffer(f->file, sizeof(f->file));
+  assert_true(settings_store_encode(&f->store, OWNER, &out1));
+
+  assert_int_equal(settings_store_init(&other, &g_limits), 0);
+  keyed(&other, NULL);
+  assert_int_equal(settings_store_register(&other, &f->reg, &load, &key,
+                                           &code), PNUT_STATUS_OK);
+  in = pb_istream_from_buffer(f->file, out1.bytes_written);
+  assert_true(settings_store_decode(&other, OWNER, &in));
+  settings_store_loaded(&other, OWNER);
+  assert_null(settings_store_dirty(&other, 0));
+
+  assert_int_equal(get_secret(&other, "passphrase", out,
+                              PNUT_SETTINGS_ERROR_CODE_NO_KEY),
+                   PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(set_secret(&other, "passphrase", "other", NULL,
+                              PNUT_SETTINGS_ERROR_CODE_NO_KEY),
+                   PNUT_STATUS_UNAVAILABLE);
+
+  /* Written again as it was */
+
+  out2 = pb_ostream_from_buffer(again, sizeof(again));
+  assert_true(settings_store_encode(&other, OWNER, &out2));
+  assert_int_equal(out2.bytes_written, out1.bytes_written);
+  assert_memory_equal(again, f->file, out1.bytes_written);
+  settings_store_deinit(&other);
+}
+
+/* A secret survives its owner registering again, while its declaration
+ * still holds it; one that no longer fits goes
+ */
+
+static void test_settings_secret_reregister(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  char out[SETTINGS_SECRET_MAX + 1];
+
+  page(&f->reg, true, true);
+  declare_secret(&f->reg, "passphrase", 64);
+  declare_secret(&f->reg, "pin", 8);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "passphrase", "hunter2", NULL, 0),
+                   PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "pin", "123456", NULL, 0),
+                   PNUT_STATUS_OK);
+  assert_true(settings_store_encode(&f->store, OWNER,
+                                    &(pb_ostream_t)PB_OSTREAM_SIZING));
+
+  page(&f->reg, true, true);
+  declare_secret(&f->reg, "passphrase", 64);
+  declare_secret(&f->reg, "pin", 4);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+
+  assert_int_equal(get_secret(&f->store, "passphrase", out, 0),
+                   PNUT_STATUS_OK);
+  assert_string_equal(out, "hunter2");
+  assert_int_equal(get_secret(&f->store, "pin", out, 0), PNUT_STATUS_OK);
+  assert_string_equal(out, "");
+  assert_string_equal(settings_store_dirty(&f->store, 0), OWNER);
+  assert_int_equal(f->store.sealed.avail, g_limits.secrets - 1);
+
+  /* No longer a secret: gone, its place back in the pool */
+
+  page(&f->reg, true, true);
+  declare_string(&f->reg, "passphrase", 8, "");
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(f->store.sealed.avail, g_limits.secrets);
+
+  /* Reset takes a secret away too */
+
+  page(&f->reg, true, true);
+  declare_secret(&f->reg, "pin", 8);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "pin", "1234", NULL, 0),
+                   PNUT_STATUS_OK);
+  assert_int_equal(settings_store_reset(&f->store, OWNER, "", &f->load,
+                                        &f->code), PNUT_STATUS_OK);
+  assert_true(f->load);
+  assert_int_equal(get_secret(&f->store, "pin", out, 0), PNUT_STATUS_OK);
+  assert_string_equal(out, "");
+  assert_int_equal(f->store.sealed.avail, g_limits.secrets);
+}
+
+/* As many secrets as the pool holds, and no more */
+
+static void test_settings_secret_full(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  struct settings_limits_s limits = g_limits;
+  struct settings_store_s small;
+  char out[SETTINGS_SECRET_MAX + 1];
+  FAR const char *key;
+  pb_ostream_t stream;
+  pb_istream_t in;
+  uint32_t code;
+  bool load;
+
+  page(&f->reg, true, true);
+  declare_secret(&f->reg, "a", 8);
+  declare_secret(&f->reg, "b", 8);
+  declare_secret(&f->reg, "c", 8);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "a", "1", NULL, 0),
+                   PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "b", "2", NULL, 0),
+                   PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "c", "3", NULL,
+                              PNUT_SETTINGS_ERROR_CODE_FULL),
+                   PNUT_STATUS_BUSY);
+
+  /* Changing one takes no more room */
+
+  assert_int_equal(set_secret(&f->store, "b", "22", NULL, 0),
+                   PNUT_STATUS_OK);
+
+  /* A file with more secrets than another store has room for: those
+   * without room go, and are counted
+   */
+
+  stream = pb_ostream_from_buffer(f->file, sizeof(f->file));
+  assert_true(settings_store_encode(&f->store, OWNER, &stream));
+
+  limits.secrets = 1;
+  assert_int_equal(settings_store_init(&small, &limits), 0);
+  keyed(&small, g_key);
+  assert_int_equal(settings_store_register(&small, &f->reg, &load, &key,
+                                           &code), PNUT_STATUS_OK);
+  in = pb_istream_from_buffer(f->file, stream.bytes_written);
+  assert_true(settings_store_decode(&small, OWNER, &in));
+  settings_store_loaded(&small, OWNER);
+  assert_int_equal(small.dropped, 1);
+  assert_int_equal(small.sealed.avail, 0);
+  assert_string_equal(settings_store_dirty(&small, 0), OWNER);
+  assert_int_equal(get_secret(&small, "a", out, 0), PNUT_STATUS_OK);
+  assert_string_equal(out, "1");
+  assert_int_equal(get_secret(&small, "b", out, 0), PNUT_STATUS_OK);
+  assert_string_equal(out, "");
+  settings_store_deinit(&small);
+}
+
+/* In the file: sealed, never as it is; read back under the same key; under
+ * another key, moved to another setting's name, or read as another
+ * owner's, it does not open and goes
+ */
+
+static void test_settings_secret_file(void **state)
+{
+  FAR struct fixture_s *f = *state;
+  struct settings_store_s other;
+  char out[SETTINGS_SECRET_MAX + 1];
+  uint8_t copy[sizeof(f->file)];
+  FAR const char *key;
+  FAR uint8_t *name;
+  pb_ostream_t stream;
+  pb_istream_t in;
+  uint32_t code;
+  bool load;
+  int round;
+
+  page(&f->reg, true, true);
+  declare_secret(&f->reg, "passphrase", 64);
+  declare_secret(&f->reg, "passphrasf", 64);
+  declare_int(&f->reg, "volume", 0, 10, 5);
+  assert_int_equal(reg(f, 0), PNUT_STATUS_OK);
+  assert_int_equal(set(f, "volume", val_int(7), 0), PNUT_STATUS_OK);
+  assert_int_equal(set_secret(&f->store, "passphrase", "hunter2", NULL, 0),
+                   PNUT_STATUS_OK);
+
+  stream = pb_ostream_from_buffer(f->file, sizeof(f->file));
+  assert_true(settings_store_encode(&f->store, OWNER, &stream));
+  assert_null(memmem(f->file, stream.bytes_written, "hunter2", 7));
+  memcpy(copy, f->file, stream.bytes_written);
+
+  for (round = 0; round < 4; round++)
+    {
+      assert_int_equal(settings_store_init(&other, &g_limits), 0);
+      keyed(&other, round == 1 ? g_other_key : g_key);
+
+      /* Round 3: the same file, read as another owner's */
+
+      strcpy(f->reg.owner, round == 3 ? "other.owner" : OWNER);
+      assert_int_equal(settings_store_register(&other, &f->reg, &load,
+                                               &key, &code),
+                       PNUT_STATUS_OK);
+
+      if (round == 2)
+        {
+          /* Its name changed in the file: it was sealed under another */
+
+          name = memmem(f->file, stream.bytes_written, "passphrase", 10);
+          assert_non_null(name);
+          name[9] = 'f';
+        }
+
+      in = pb_istream_from_buffer(round == 3 ? copy : f->file,
+                                  stream.bytes_written);
+      assert_true(settings_store_decode(&other, f->reg.owner, &in));
+      settings_store_loaded(&other, f->reg.owner);
+
+      assert_int_equal(settings_store_get(&other, f->reg.owner, "volume",
+                                          true, &f->value, &code),
+                       PNUT_STATUS_OK);
+      assert_int_equal(f->value.value.integer, 7);
+
+      if (round == 3)
+        {
+          assert_int_equal(settings_store_get_secret(&other, "other.owner",
+                                                     "passphrase", out,
+                                                     sizeof(out), &code),
+                           PNUT_STATUS_OK);
+          assert_string_equal(out, "");
+          assert_string_equal(settings_store_dirty(&other, 0),
+                              "other.owner");
+          assert_int_equal(other.dropped, 1);
+        }
+      else if (round == 0)
+        {
+          assert_int_equal(get_secret(&other, "passphrase", out, 0),
+                           PNUT_STATUS_OK);
+          assert_string_equal(out, "hunter2");
+          assert_null(settings_store_dirty(&other, 0));
+          assert_int_equal(other.dropped, 0);
+        }
+      else
+        {
+          assert_int_equal(get_secret(&other, "passphrase", out, 0),
+                           PNUT_STATUS_OK);
+          assert_string_equal(out, "");
+          assert_int_equal(get_secret(&other, "passphrasf", out, 0),
+                           PNUT_STATUS_OK);
+          assert_string_equal(out, "");
+          assert_string_equal(settings_store_dirty(&other, 0), OWNER);
+          assert_int_equal(other.dropped, 1);
+          assert_int_equal(other.sealed.avail, g_limits.secrets);
+        }
+
+      settings_store_deinit(&other);
+    }
 }
 
 /* A schema in pages, then again, changed: a value the new declaration
@@ -1023,12 +1448,16 @@ static void service_run(FAR struct service_s *s, bool reread)
   settings_deinit(&s->settings);
 }
 
-/* Remove a test's directory, with the settings topic's, on the computer */
+/* Remove a test's directory, with the settings topic's and the key for
+ * secrets Settings made there, on the computer
+ */
 
 static void service_clean(FAR struct service_s *s)
 {
   char path[160];
 
+  snprintf(path, sizeof(path), "%s/secrets.key", s->dir);
+  unlink(path);
   snprintf(path, sizeof(path), "%s/topic.settings/last", s->dir);
   unlink(path);
   snprintf(path, sizeof(path), "%s/topic.settings", s->dir);
@@ -1616,12 +2045,354 @@ static void test_settings_access(void **state)
   unlink(path);
   snprintf(path, sizeof(path), "%s/ui.pb", a->dir);
   unlink(path);
+  snprintf(path, sizeof(path), "%s/secrets.key", a->dir);
+  unlink(path);
   snprintf(path, sizeof(path), "%s/topic.settings/last", a->dir);
   unlink(path);
   snprintf(path, sizeof(path), "%s/topic.settings", a->dir);
   rmdir(path);
   rmdir(a->dir);
   free(a);
+}
+
+/* Secrets through the service: read by the program that runs their owner
+ * alone; set by it, the system UI or a shell, never by a stranger; sealed
+ * in the owner's file under a key Settings makes at its first start, and
+ * read back after a restart
+ */
+
+struct secrets_s
+{
+  FAR struct pnut_loop_s *loop;
+  struct settings_s settings;
+  struct pnut_settings_client_s client;
+  pnut_settings_register_request_t reg;
+  char dir[64];
+  FAR const char *me;
+  bool unknown;                   /* Who calls cannot be told */
+  bool again;                     /* After the restart */
+  bool nowho;                     /* No way to tell who calls */
+  int step;
+  int status[16];
+  uint32_t code[16];
+  char got[16][32];
+};
+
+static void secrets_next(FAR struct secrets_s *x);
+
+static int secrets_who(FAR void *arg, pid_t pid, FAR const char **programp)
+{
+  FAR struct secrets_s *x = arg;
+
+  *programp = x->me;
+  return x->unknown ? -EAGAIN : x->me != NULL ? OK : -ESRCH;
+}
+
+static void secrets_record(FAR struct secrets_s *x, int status,
+                           FAR const pnut_error_t *err)
+{
+  x->status[x->step] = status;
+  x->code[x->step]   = err != NULL ? err->code : 0;
+  x->step++;
+  secrets_next(x);
+}
+
+static void secrets_replied(FAR struct pnut_settings_client_s *client,
+                            int status, FAR const pnut_settings_reply_t *out,
+                            FAR const pnut_error_t *err, FAR void *arg)
+{
+  secrets_record(arg, status, err);
+}
+
+static void secrets_got(FAR struct pnut_settings_client_s *client,
+                        int status, FAR const pnut_settings_secret_t *out,
+                        FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct secrets_s *x = arg;
+
+  if (out != NULL)
+    {
+      strlcpy(x->got[x->step], out->value, sizeof(x->got[0]));
+    }
+
+  secrets_record(x, status, err);
+}
+
+static void secrets_value(FAR struct pnut_settings_client_s *client,
+                          int status, FAR const pnut_setting_value_t *out,
+                          FAR const pnut_error_t *err, FAR void *arg)
+{
+  secrets_record(arg, status, err);
+}
+
+static void secrets_set(FAR struct secrets_s *x, FAR const char *key,
+                        FAR const char *value)
+{
+  pnut_settings_secret_request_t req;
+
+  memset(&req, 0, sizeof(req));
+  strcpy(req.owner, "wifi");
+  strcpy(req.key, key);
+  strcpy(req.value, value);
+  assert_int_equal(pnut_settings_set_secret(&x->client, &req, 0,
+                                            secrets_replied, x), 0);
+}
+
+static void secrets_get(FAR struct secrets_s *x, FAR const char *key)
+{
+  pnut_settings_get_request_t req;
+
+  memset(&req, 0, sizeof(req));
+  strcpy(req.owner, "wifi");
+  strcpy(req.key, key);
+  assert_int_equal(pnut_settings_get_secret(&x->client, &req, 0,
+                                            secrets_got, x), 0);
+}
+
+static void secrets_next(FAR struct secrets_s *x)
+{
+  pnut_settings_get_request_t get;
+
+  if (x->step == 0)
+    {
+      x->me = "radios";
+      page(&x->reg, true, true);
+      strcpy(x->reg.owner, "wifi");
+      declare_secret(&x->reg, "psk", 63);
+      declare_int(&x->reg, "power", 0, 20, 10);
+      assert_int_equal(pnut_settings_register_schema(&x->client, &x->reg,
+                                                     0, secrets_replied,
+                                                     x), 0);
+      return;
+    }
+
+  if (x->again)
+    {
+      if (x->step == 1)
+        {
+          secrets_get(x, "psk");
+        }
+      else
+        {
+          pnut_loop_stop(x->loop, 0);
+        }
+
+      return;
+    }
+
+  switch (x->step)
+    {
+      case 1:
+        secrets_set(x, "psk", "correct horse");
+        break;
+
+      case 2:
+        secrets_get(x, "psk");
+        break;
+
+      case 3:
+        x->me = "ui";
+        secrets_get(x, "psk");
+        break;
+
+      case 4:
+        secrets_set(x, "psk", "battery staple");
+        break;
+
+      case 5:
+        memset(&get, 0, sizeof(get));
+        strcpy(get.owner, "wifi");
+        strcpy(get.key, "psk");
+        assert_int_equal(pnut_settings_get(&x->client, &get, 0,
+                                           secrets_value, x), 0);
+        break;
+
+      case 6:
+        x->me = NULL;
+        secrets_set(x, "psk", "stranger");
+        break;
+
+      case 7:
+        secrets_get(x, "psk");
+        break;
+
+      case 8:
+        x->me = "radios";
+        secrets_get(x, "psk");
+        break;
+
+      case 9:
+        secrets_set(x, "power", "1");
+        break;
+
+      case 10:
+        x->unknown = true;
+        secrets_get(x, "psk");
+        break;
+
+      case 11:
+        secrets_set(x, "psk", "unknown");
+        break;
+
+      case 12:
+        x->unknown = false;
+        secrets_get(x, "psk");
+        break;
+
+      default:
+
+        /* Its file written, after the delay */
+
+        pnut_timer_start(x->loop, 200, 0, service_stop, NULL, NULL);
+        break;
+    }
+}
+
+static void secrets_state(FAR struct pnut_settings_client_s *client,
+                          bool up, FAR void *arg)
+{
+  if (up)
+    {
+      secrets_next(arg);
+    }
+}
+
+static void secrets_run(FAR struct secrets_s *x)
+{
+  struct pnut_loop_config_s config;
+  struct settings_config_s sconfig;
+
+  pnut_loop_defaults(&config);
+  config.rundir  = x->dir;
+  config.initctl = NULL;
+  assert_int_equal(pnut_loop_create(&config, &x->loop), 0);
+
+  memset(&sconfig, 0, sizeof(sconfig));
+  sconfig.dir      = x->dir;
+  sconfig.limits   = g_limits;
+  sconfig.delay    = 20;
+  sconfig.who      = x->nowho ? NULL : secrets_who;
+  sconfig.runs     = access_runs;
+  sconfig.identity = x;
+  settings_init(&x->settings, &sconfig);
+  assert_int_equal(pnut_module_add(x->loop, &x->settings.module), 0);
+  assert_int_equal(pnut_settings_connect(x->loop, SETTINGS_SERVICE,
+                                         secrets_state, x, &x->client), 0);
+  pnut_timer_start(x->loop, 2000, 0, service_stop, NULL, NULL);
+  assert_int_equal(pnut_loop_run(x->loop), 0);
+
+  pnut_settings_disconnect(&x->client);
+  pnut_loop_destroy(x->loop);
+  settings_deinit(&x->settings);
+}
+
+static void test_settings_secrets_service(void **state)
+{
+  FAR struct secrets_s *x = calloc(1, sizeof(*x));
+  char path[160];
+  struct stat st;
+  uint8_t file[4096];
+  ssize_t n;
+  int fd;
+
+  snprintf(x->dir, sizeof(x->dir), "/tmp/pnut-secrets-%d", getpid());
+  mkdir(x->dir, 0700);
+
+  secrets_run(x);
+  assert_int_equal(x->step, 13);
+
+  /* The program that runs wifi: sets and reads it */
+
+  assert_int_equal(x->status[0], PNUT_STATUS_OK);
+  assert_int_equal(x->status[1], PNUT_STATUS_OK);
+  assert_int_equal(x->status[2], PNUT_STATUS_OK);
+  assert_string_equal(x->got[2], "correct horse");
+
+  /* The system UI: sets it, never reads it, not even through Get */
+
+  assert_int_equal(x->status[3], PNUT_STATUS_DENIED);
+  assert_string_equal(x->got[3], "");
+  assert_int_equal(x->status[4], PNUT_STATUS_OK);
+  assert_int_equal(x->status[5], PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(x->code[5], PNUT_SETTINGS_ERROR_CODE_SECRET);
+
+  /* A stranger: neither */
+
+  assert_int_equal(x->status[6], PNUT_STATUS_DENIED);
+  assert_int_equal(x->status[7], PNUT_STATUS_DENIED);
+
+  assert_int_equal(x->status[8], PNUT_STATUS_OK);
+  assert_string_equal(x->got[8], "battery staple");
+  assert_int_equal(x->status[9], PNUT_STATUS_INVALID);
+  assert_int_equal(x->code[9], PNUT_SETTINGS_ERROR_CODE_WRONG_TYPE);
+
+  /* A caller who cannot be told now: to be tried again, and nothing
+   * changed
+   */
+
+  assert_int_equal(x->status[10], PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(x->code[10], PNUT_SETTINGS_ERROR_CODE_CALLER_UNKNOWN);
+  assert_int_equal(x->status[11], PNUT_STATUS_UNAVAILABLE);
+  assert_int_equal(x->code[11], PNUT_SETTINGS_ERROR_CODE_CALLER_UNKNOWN);
+  assert_int_equal(x->status[12], PNUT_STATUS_OK);
+  assert_string_equal(x->got[12], "battery staple");
+
+  /* Its key: made; on the computer, for its owner alone to read (NuttX
+   * has no users, and its tmpfs keeps no modes)
+   */
+
+  snprintf(path, sizeof(path), "%s/secrets.key", x->dir);
+  assert_int_equal(stat(path, &st), 0);
+  assert_int_equal(st.st_size, SETTINGS_KEY_BYTES);
+#ifndef __NuttX__
+  assert_int_equal(st.st_mode & 0777, 0600);
+#endif
+
+  /* The file holds it sealed */
+
+  snprintf(path, sizeof(path), "%s/wifi.pb", x->dir);
+  fd = open(path, O_RDONLY);
+  assert_true(fd >= 0);
+  n = read(fd, file, sizeof(file));
+  close(fd);
+  assert_true(n > 40);
+  assert_null(memmem(file, n, "battery", 7));
+  assert_null(memmem(file, n, "horse", 5));
+
+  /* After a restart: the same key, the same secret */
+
+  memset(x->status, 0, sizeof(x->status));
+  memset(x->got, 0, sizeof(x->got));
+  x->step  = 0;
+  x->again = true;
+  secrets_run(x);
+  assert_int_equal(x->step, 2);
+  assert_int_equal(x->status[1], PNUT_STATUS_OK);
+  assert_string_equal(x->got[1], "battery staple");
+
+  /* Without a way to tell who calls, no one reads it, though anyone may
+   * register a schema then: a secret fails closed
+   */
+
+  memset(x->status, 0, sizeof(x->status));
+  memset(x->got, 0, sizeof(x->got));
+  x->step  = 0;
+  x->nowho = true;
+  secrets_run(x);
+  assert_int_equal(x->step, 2);
+  assert_int_equal(x->status[0], PNUT_STATUS_OK);
+  assert_int_equal(x->status[1], PNUT_STATUS_DENIED);
+  assert_string_equal(x->got[1], "");
+
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/secrets.key", x->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.settings/last", x->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.settings", x->dir);
+  rmdir(path);
+  rmdir(x->dir);
+  free(x);
 }
 
 /****************************************************************************
@@ -1635,6 +2406,14 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_settings_values, setup, teardown),
     cmocka_unit_test_setup_teardown(test_settings_checks, setup, teardown),
     cmocka_unit_test_setup_teardown(test_settings_secret, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_settings_secret_no_key, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_settings_secret_reregister, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_settings_secret_full, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_settings_secret_file, setup,
+                                    teardown),
     cmocka_unit_test_setup_teardown(test_settings_reregister, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_settings_bad_schemas, setup,
@@ -1655,6 +2434,7 @@ int main(void)
                                     teardown),
     cmocka_unit_test(test_settings_service),
     cmocka_unit_test(test_settings_access),
+    cmocka_unit_test(test_settings_secrets_service),
     cmocka_unit_test(test_settings_service_starve),
     cmocka_unit_test(test_settings_service_unreadable),
     cmocka_unit_test(test_settings_service_bad_file),

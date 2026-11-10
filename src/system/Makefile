@@ -31,4 +31,8 @@ GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/netutils/nanopb/nanopb
 
+# libsodium, for Settings' secrets (RFC 0031): nuttx-apps' package
+
+CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/crypto/libsodium/libsodium/src/libsodium/include
+
 include $(APPDIR)/Application.mk

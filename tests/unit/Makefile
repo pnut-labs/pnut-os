@@ -37,7 +37,9 @@ CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
 # Time's NTP, which the host's network can serve the tests
 
 CFLAGS  += -DCONFIG_PNUT_TIME_NTP=1
-LDLIBS  := $(CMOCKA_LIBS) -lpthread
+# Settings' secrets: libsodium (libsodium-dev), as on the targets
+
+LDLIBS  := $(CMOCKA_LIBS) -lsodium -lpthread
 
 # libpnut, the programs' modules, the interfaces' generated code
 # (make gen) and nanopb
