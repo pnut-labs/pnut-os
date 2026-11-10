@@ -635,6 +635,53 @@ static void wall_test_free(FAR struct wall_test_s *t)
  * near one is taken
  */
 
+/* The state file written on a worker while Time runs, not only as it
+ * stops: after the first reading set the clock
+ */
+
+static bool wall_test_saved_steps(FAR struct wall_test_s *t)
+{
+  char want[48];
+  char line[96];
+  ssize_t n;
+  int fd;
+
+  switch (t->step)
+    {
+      case 0:
+        wall_test_network(t, T0 + 100, false, 0, false);
+        return true;
+
+      case 1:
+        if (t->sets == 0)
+          {
+            return false;
+          }
+
+        fd = open(t->state, O_RDONLY);
+        if (fd < 0)
+          {
+            return false;
+          }
+
+        n = read(fd, line, sizeof(line) - 1);
+        close(fd);
+        snprintf(want, sizeof(want), "pnut-time 1 %lld ",
+                 (long long)(T0 + 100));
+        if (n <= 0 || (line[n] = '\0', strncmp(line, want,
+                                                 strlen(want)) != 0))
+          {
+            return false;
+          }
+
+        pnut_loop_stop(t->loop, 0);
+        return true;
+
+      default:
+        return false;
+    }
+}
+
 static bool wall_test_readings_steps(FAR struct wall_test_s *t)
 {
   switch (t->step)
@@ -1088,6 +1135,15 @@ static void wall_test_restart(FAR struct wall_test_s *t)
   t->sets  = 0;
   t->mono += 3600000;
   wall_test_run(t, wall_test_restart_steps);
+}
+
+static void test_wallclock_saved(void **state)
+{
+  FAR struct wall_test_s *t = wall_test_new(false);
+
+  wall_test_run(t, wall_test_saved_steps);
+  assert_int_equal(t->step, 2);
+  wall_test_free(t);
 }
 
 static void test_wallclock_state(void **state)
@@ -1697,6 +1753,7 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test(test_wallclock_readings),
+    cmocka_unit_test(test_wallclock_saved),
     cmocka_unit_test(test_wallclock_preference),
     cmocka_unit_test(test_wallclock_zone),
     cmocka_unit_test(test_wallclock_owner),
