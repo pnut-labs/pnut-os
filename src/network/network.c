@@ -171,7 +171,8 @@ static void network_guard(FAR struct network_s *net)
       if (!net->guard_failed)
         {
           pnut_log(&net->module, PNUT_LOG_ERROR,
-                   "Local ports open on every link: %d", ret);
+                   "Local ports: cannot write the rules: %d (any written "
+                   "before stay)", ret);
         }
 
       net->guard_failed = true;
