@@ -9,14 +9,15 @@
 /* Network (RFC 0015) with a network stack of the test's: the links' state
  * published on the wifi and telephony topics as Wi-Fi and Telephony would,
  * and the link in use read back from the network topic, with the route
- * and the name server set for it.  Mobile data alone, then Wi-Fi joining
- * and joined without a router (not in use), and with one (in use), mobile
- * data off, Wi-Fi left (no link: no route, no name server, both failing
- * once, then set again), mobile data with no name server, and a new PPP
- * session's address.  And the local ports, kept to the local links: at
- * start, failing, then at the next news; again as Wi-Fi's interface
- * comes; failing at a change of Wi-Fi's state, then at the same state
- * again.
+ * and the name server set for it; the route set again at each change of
+ * a link's state or address, not at a repeated one.  Mobile data alone,
+ * then Wi-Fi joining and joined without a router (not in use), and with
+ * one (in use), mobile data off, Wi-Fi left (no link: no route, no name
+ * server, both failing once, then set again), mobile data with no name
+ * server, and a new PPP session's address.  And the local ports, kept to
+ * the local links: at start, failing, then at the next news; again as
+ * Wi-Fi's interface comes; failing at a change of Wi-Fi's state, then at
+ * the same state again.
  */
 
 /****************************************************************************
@@ -241,7 +242,7 @@ static bool nett_steps(FAR struct nett_s *t)
 
         assert_int_equal(t->state.link, PNUT_NETWORK_INFO_LINK_NO_LINK);
         assert_int_equal(t->resolves, 1);
-        assert_int_equal(t->routes, 1);
+        assert_int_equal(t->routes, 2);
         nett_data(t, PNUT_TELEPHONY_INFO_DATA_DATA_ON, MOBILE_ADDR,
                   MOBILE_DNS, MOBILE_DNS2);
         break;
@@ -258,7 +259,7 @@ static bool nett_steps(FAR struct nett_s *t)
         assert_int_equal(t->state.dns, MOBILE_DNS);
         assert_int_equal(t->resolves, 2);
         assert_int_equal(t->server, MOBILE_DNS);
-        assert_int_equal(t->routes, 2);
+        assert_int_equal(t->routes, 3);
         assert_int_equal(t->via, MOBILE_ADDR);
         assert_int_equal(t->guards, 2);    /* Not again: kept */
 
@@ -276,9 +277,11 @@ static bool nett_steps(FAR struct nett_s *t)
             return false;
           }
 
-        /* The same state again (a signal's change): nothing more */
+        /* The same states again (a signal's change): nothing more */
 
         nett_wifi(t, PNUT_WIFI_INFO_STATE_ON, 0, 0, 0);
+        nett_data(t, PNUT_TELEPHONY_INFO_DATA_DATA_ON, MOBILE_ADDR,
+                  MOBILE_DNS, MOBILE_DNS2);
         break;
 
       case 4:
@@ -288,6 +291,7 @@ static bool nett_steps(FAR struct nett_s *t)
           }
 
         assert_int_equal(t->guards, 3);
+        assert_int_equal(t->routes, 4);   /* Not at the same state again */
 
         /* Wi-Fi joining, with no address yet: not in use; the ports kept
          * again, since eth0 is still missing, and failing
@@ -319,6 +323,8 @@ static bool nett_steps(FAR struct nett_s *t)
         assert_int_equal(t->state.link, PNUT_NETWORK_INFO_LINK_MOBILE);
         assert_int_equal(t->resolves, 2);
         assert_int_equal(t->guards, 5);
+        assert_int_equal(t->routes, 5);
+        assert_int_equal(t->via, MOBILE_ADDR);
 
         /* Joined, but DHCP gave no router: no way out, not in use */
 
@@ -332,7 +338,7 @@ static bool nett_steps(FAR struct nett_s *t)
           }
 
         assert_int_equal(t->state.link, PNUT_NETWORK_INFO_LINK_MOBILE);
-        assert_int_equal(t->routes, 2);
+        assert_int_equal(t->routes, 6);
         assert_int_equal(t->resolves, 2);
         nett_wifi(t, PNUT_WIFI_INFO_STATE_JOINED, WIFI_ADDR, WIFI_ROUTER,
                   WIFI_DNS);
@@ -347,12 +353,14 @@ static bool nett_steps(FAR struct nett_s *t)
         assert_false(t->state.metered);
         assert_int_equal(t->state.address, WIFI_ADDR);
         assert_int_equal(t->state.dns, WIFI_DNS);
-        assert_int_equal(t->routes, 3);
+        assert_int_equal(t->routes, 7);
         assert_int_equal(t->via, WIFI_ROUTER);
         assert_int_equal(t->resolves, 3);
         assert_int_equal(t->server, WIFI_DNS);
 
-        /* Mobile data off under Wi-Fi: nothing changes */
+        /* Mobile data off under Wi-Fi: the same link, its route set again
+         * (where a writer of the route would have run)
+         */
 
         nett_data(t, PNUT_TELEPHONY_INFO_DATA_DATA_OFF, 0, 0, 0);
         break;
@@ -364,7 +372,8 @@ static bool nett_steps(FAR struct nett_s *t)
           }
 
         assert_int_equal(t->state.link, PNUT_NETWORK_INFO_LINK_WIFI);
-        assert_int_equal(t->routes, 3);
+        assert_int_equal(t->routes, 8);
+        assert_int_equal(t->via, WIFI_ROUTER);
         assert_int_equal(t->resolves, 3);
 
         /* Wi-Fi left: no link, the route and the resolver failing once */
@@ -381,7 +390,7 @@ static bool nett_steps(FAR struct nett_s *t)
           }
 
         assert_int_equal(t->state.dns, 0);
-        assert_int_equal(t->routes, 4);
+        assert_int_equal(t->routes, 9);
         assert_int_equal(t->via, WIFI_ROUTER);    /* The failed call */
         assert_int_equal(t->resolves, 4);
         assert_int_equal(t->server, WIFI_DNS);
@@ -398,7 +407,7 @@ static bool nett_steps(FAR struct nett_s *t)
           }
 
         assert_int_equal(t->state.dns, 0);
-        assert_int_equal(t->routes, 5);
+        assert_int_equal(t->routes, 10);
         assert_int_equal(t->via, MOBILE_ADDR);
         assert_int_equal(t->resolves, 5);
         assert_int_equal(t->server, 0);
@@ -414,7 +423,7 @@ static bool nett_steps(FAR struct nett_s *t)
             return false;
           }
 
-        assert_int_equal(t->routes, 6);
+        assert_int_equal(t->routes, 11);
         assert_int_equal(t->via, MOBILE_ADDR2);
         assert_int_equal(t->resolves, 5);
         break;
@@ -520,7 +529,8 @@ static void test_network(void **state)
   t->module.stop  = nett_stop;
   assert_int_equal(pnut_module_add(t->loop, &t->module), 0);
 
-  pnut_timer_start(t->loop, 10000, 0, nett_timeout, NULL, NULL);
+  assert_int_equal(pnut_timer_start(t->loop, 10000, 0, nett_timeout, NULL,
+                                    NULL), 0);
   ret = pnut_loop_run(t->loop);
   pnut_loop_destroy(t->loop);
   assert_int_equal(ret, 0);

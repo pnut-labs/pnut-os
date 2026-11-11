@@ -19,6 +19,11 @@
  * T-Deck Max's wlan0 only comes with the radio).  A local network's own
  * addresses still go to its interface: the longest match wins.
  *
+ * Nothing else writes it: netlib_set_dripv4addr() would replace it, and
+ * neither Wi-Fi's DHCP (radio.c) nor pppd, told of its link, calls it.
+ * Still, the route is set again at every change of a link's state or
+ * address, where such a writer would have run.
+ *
  * Name lookups ask the link in use's name server, and only it: a server
  * left from another link would be asked over the wrong one and time out
  * first.
@@ -148,7 +153,13 @@ static void network_guard(FAR struct network_s *net)
   FAR const struct network_config_s *c = &net->config;
   int ret;
 
-  if (net->nports == 0 || (net->guarded && net->found == net->nlinks))
+  /* Nothing to do once every local link has its rule.  A failed call
+   * changes neither count, so it never ends here; guard_failed only
+   * makes that plain.
+   */
+
+  if (net->nports == 0 ||
+      (net->guarded && !net->guard_failed && net->found == net->nlinks))
     {
       return;
     }
@@ -321,10 +332,19 @@ static void network_wifi(FAR struct pnut_wifi_info_reader_s *reader,
                          FAR const pnut_wifi_info_t *msg, FAR void *arg)
 {
   FAR struct network_s *net = arg;
+  bool changed = msg->state != net->wifi_news.state;
 
-  if (msg->state != net->wifi_state || net->guard_failed)
+  if (changed || msg->address != net->wifi_news.address ||
+      msg->router != net->wifi_news.router)
     {
-      net->wifi_state = msg->state;
+      net->routed = false;        /* Set again at a link's change */
+    }
+
+  net->wifi_news.state   = msg->state;
+  net->wifi_news.address = msg->address;
+  net->wifi_news.router  = msg->router;
+  if (changed || net->guard_failed)
+    {
       network_guard(net);
     }
 
@@ -348,6 +368,14 @@ network_telephony(FAR struct pnut_telephony_info_reader_s *reader,
       network_guard(net);
     }
 
+  if (msg->data != net->mobile_news.state ||
+      msg->data_address != net->mobile_news.address)
+    {
+      net->routed = false;        /* Set again at a link's change */
+    }
+
+  net->mobile_news.state   = msg->data;
+  net->mobile_news.address = msg->data_address;
   net->mobile_up      = msg->data == PNUT_TELEPHONY_INFO_DATA_DATA_ON &&
                         msg->data_address != 0;
   net->mobile_address = net->mobile_up ? msg->data_address : 0;

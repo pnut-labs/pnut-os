@@ -30,6 +30,8 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netinet/ether.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <nuttx/ioexpander/gpio.h>
 #include <netutils/dhcpc.h>
@@ -348,6 +350,38 @@ static int radio_join(FAR void *arg, FAR const char *name,
 }
 
 /****************************************************************************
+ * Name: radio_router
+ *
+ * Description:
+ *   The interface's default router, which ifconfig shows and ARP falls
+ *   back to.  Not netlib_set_dripv4addr(): with CONFIG_NET_ROUTE it also
+ *   replaces the default route, which Network keeps (RFC 0015).
+ *
+ ****************************************************************************/
+
+static void radio_router(FAR const char *ifname,
+                         FAR const struct in_addr *router)
+{
+  FAR struct sockaddr_in *in;
+  struct ifreq req;
+  int sock;
+
+  sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (sock < 0)
+    {
+      return;
+    }
+
+  memset(&req, 0, sizeof(req));
+  strlcpy(req.ifr_name, ifname, IFNAMSIZ);
+  in             = (FAR struct sockaddr_in *)&req.ifr_addr;
+  in->sin_family = AF_INET;
+  in->sin_addr   = *router;
+  ioctl(sock, SIOCSIFDSTADDR, (unsigned long)&req);
+  close(sock);
+}
+
+/****************************************************************************
  * Name: radio_address
  *
  * Description:
@@ -394,7 +428,7 @@ static int radio_address(FAR void *arg, FAR struct wifi_lease_s *lease)
 
   if (ds.default_router.s_addr != 0)
     {
-      netlib_set_dripv4addr(r->ifname, &ds.default_router);
+      radio_router(r->ifname, &ds.default_router);
     }
 
   for (i = 0; i < ds.num_dnsaddr && i < WIFI_DNS_MAX; i++)

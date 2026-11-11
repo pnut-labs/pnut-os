@@ -35,6 +35,16 @@
  * Public Types
  ****************************************************************************/
 
+/* A link's state and address as last heard, to see a change */
+
+struct network_news_s
+{
+  uint8_t state;                  /* PNUT_WIFI_INFO_STATE_*, or
+                                   * PNUT_TELEPHONY_INFO_DATA_* */
+  uint32_t address;
+  uint32_t router;
+};
+
 /* What Network does to NuttX's network: quick calls, made on the loop.
  * The program gives NuttX's (network/netstack.c); the tests a fake.
  */
@@ -101,7 +111,7 @@ struct network_s
 
   struct pnut_wifi_info_reader_s wifi;
   bool wifi_open;
-  uint8_t wifi_state;             /* PNUT_WIFI_INFO_STATE_* */
+  struct network_news_s wifi_news;
   bool wifi_up;                   /* Joined, with an address and a router */
   uint32_t wifi_address;
   uint32_t wifi_router;
@@ -109,6 +119,7 @@ struct network_s
 
   struct pnut_telephony_info_reader_s telephony;
   bool telephony_open;
+  struct network_news_s mobile_news;
   bool mobile_up;                 /* Mobile data on, with an address */
   uint32_t mobile_address;
   uint32_t mobile_dns;
