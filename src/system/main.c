@@ -38,6 +38,7 @@
 #include <pnut/module.h>
 
 #include "board.h"
+#include "firmware.h"
 #include "logs.h"
 #include "power.h"
 #include "settings.h"
@@ -120,6 +121,17 @@ static int system_sleep_rate(FAR void *arg, int32_t ppb)
   return ret < 0 ? -errno : ret;
 }
 #endif
+
+/* Every program has stayed ready: the firmware on trial is confirmed
+ * (RFC 0013), or tried again later
+ */
+
+static int system_ready(FAR void *arg)
+{
+  FAR struct states_s *states = arg;
+
+  return firmware_confirm(&states->module);
+}
 
 /* Power stops the other programs before it powers the device off: through
  * Service states, which asks NxInit, and tells it once they have stopped
@@ -243,6 +255,9 @@ int main(int argc, FAR char *argv[])
 #ifdef CONFIG_PNUT_SETTINGS_SHELLS
   tconfig.shells   = CONFIG_PNUT_SETTINGS_SHELLS;
 #endif
+  tconfig.ready      = system_ready;
+  tconfig.ready_arg  = states;
+  tconfig.ready_hold = CONFIG_PNUT_STATES_READY_HOLD;
   states_init(states, &tconfig);
 
   memset(&sconfig, 0, sizeof(sconfig));

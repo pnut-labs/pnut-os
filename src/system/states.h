@@ -77,6 +77,13 @@
 
 typedef CODE void (*states_halted_t)(FAR void *arg, int running);
 
+/* Every program of the table that NxInit has has been ready for
+ * config.ready_hold ms.  Zero (OK): done, not told again; a negated
+ * errno value: told again once they have been ready as long again.
+ */
+
+typedef CODE int (*states_ready_t)(FAR void *arg);
+
 /* A task's parent, or -1 when it cannot be told */
 
 typedef CODE pid_t (*states_parent_t)(pid_t pid);
@@ -94,6 +101,16 @@ struct states_config_s
    */
 
   FAR const char *shells;
+
+  /* Told once every program of the table that NxInit has has been
+   * ready for ready_hold ms, the point at which the firmware on trial
+   * is confirmed (RFC 0013): long enough to see a program that crashes
+   * soon after saying it is ready.  NULL: not told.
+   */
+
+  states_ready_t ready;
+  FAR void *ready_arg;
+  uint32_t ready_hold;
 };
 
 struct states_service_s
@@ -140,6 +157,11 @@ struct states_s
   bool version;                   /* NxInit's version line has come */
   bool listed;                    /* A whole list has come */
   bool warned;                    /* A lost watch was logged */
+  bool all_ready;                 /* config.ready was told, and done */
+
+  /* Running while every program is ready: config.ready_hold */
+
+  FAR struct pnut_timer_s *ready_timer;
   uint16_t listing;               /* Lines of a list still to come */
   uint16_t len;
   char in[STATES_LINE_MAX];

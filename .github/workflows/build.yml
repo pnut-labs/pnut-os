@@ -23,12 +23,14 @@ concurrency:
 
 # Espressif's toolchain and esptool, pinned as in pnut-labs/nuttx's own
 # checks; bump them deliberately.  GCC 15 does not build the ESP HAL of
-# NuttX 13.1, so the toolchain stays at 14.
+# NuttX 13.1, so the toolchain stays at 14.  imgtool, MCUboot's, makes the
+# T-Deck Max's firmware image for MCUboot (RFC 0013).
 
 env:
   XTENSA_GCC: esp-14.2.0_20260121
   XTENSA_GCC_SHA256: da31f36d79d4e99f24e55a90a71e65d5694714f16199960bf7885724b706a48c
   ESPTOOL: 5.4.0
+  IMGTOOL: 2.5.0
 
 jobs:
   build:
@@ -51,11 +53,12 @@ jobs:
           sudo apt-get install -y kconfig-frontends python3-kconfiglib \
             genromfs xxd zlib1g-dev protobuf-compiler python3-protobuf
 
-      - name: Install Espressif's toolchain and esptool
+      - name: Install Espressif's toolchain, esptool and imgtool
         if: ${{ matrix.target != 'sim' }}
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install "esptool==$ESPTOOL"
+          "$RUNNER_TEMP/venv/bin/pip" install "esptool==$ESPTOOL" \
+            "imgtool==$IMGTOOL"
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
           version=${XTENSA_GCC#esp-}
           curl -fsSL -o "$RUNNER_TEMP/xtensa.tar.xz" \

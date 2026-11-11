@@ -37,6 +37,21 @@ config PNUT_STATES_SERVICES
 		Service states keeps each one's name, state and task: about 40
 		bytes each.
 
+config PNUT_STATES_READY_HOLD
+	int "Every program ready this long confirms the firmware, in ms"
+	default 10000
+	range 1000 600000
+	---help---
+		A firmware on trial after an update (RFC 0013) is confirmed to
+		MCUboot once every program has stayed ready this long, so that one
+		which crashes soon after saying it is ready is seen (NxInit starts
+		a crashed program again after
+		CONFIG_SYSTEM_NXINIT_SERVICE_RESTART_PERIOD).  A confirm that
+		fails is tried again after as long.  Until then, MCUboot goes back
+		to the previous firmware at the next start.  Service states learns
+		the programs' states from NxInit's control socket
+		(SYSTEM_NXINIT_CONTROL): without it, nothing is confirmed.
+
 config PNUT_BOARD_DESCRIPTION
 	string "The device's description"
 	default "/etc/pnut/board.pb"

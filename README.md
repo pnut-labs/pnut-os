@@ -34,7 +34,7 @@ warns when they differ from the commits pnut-os records.
 | every target | GNU make; kconfig-frontends; Python 3.11 or later (for its TOML reader) with the kconfiglib module. On Debian or Ubuntu: `apt install kconfig-frontends python3-kconfiglib`. ESP-IDF's Python environment has a kconfiglib of its own that cannot read NuttX's Kconfig: when it comes first on the `PATH`, name another Python, as in `make tdeck-max PYTHON=/usr/bin/python3`. genromfs and xxd, for the image's `/etc`. protoc and Python's protobuf module, for the interfaces' code (`apt install protobuf-compiler python3-protobuf`); curl, which fetches nanopb, checked against its pinned checksum (nuttx-apps fetches libsodium, and checks it the same way) |
 | `sim` | gcc, zlib's headers |
 | `qemu`, `tdeck-max` | Espressif's toolchain `xtensa-esp-elf` 14.2 (GCC 15 does not build the ESP HAL); esptool; Espressif's QEMU, which has the `esp32s3` machine |
-| `tdeck-max` | the network while it builds: NuttX downloads the IMU's firmware image, Bosch's `BHI260AP.fw` (BSD-3-Clause), at a pinned commit and checks its SHA-256. It is kept in the NuttX tree until `make clean` or a build for another target removes it. |
+| `tdeck-max` | the network while it builds: NuttX downloads the IMU's firmware image, Bosch's `BHI260AP.fw` (BSD-3-Clause), at a pinned commit and checks its SHA-256. It is kept in the NuttX tree until `make clean` or a build for another target removes it. MCUboot (Apache-2.0): CMake (and Ninja, if there) to build it, from MCUboot's and Espressif's sources, which NuttX clones at pinned commits and keeps in its tree until `make clean`; and MCUboot's `imgtool` (`pip install imgtool`), which makes the firmware's image for it. nuttx-apps fetches MCUboot's library, at a newer commit of its own, for the system program's confirm |
 | `make test` | cmocka and libsodium (`apt install libcmocka-dev libsodium-dev`), or `CMOCKA_CFLAGS` and `CMOCKA_LIBS` naming cmocka |
 
 ## Building
@@ -82,7 +82,45 @@ How a build goes:
    by running NuttX's make directly, the image lacks pnut.rc, and NxInit,
    which is configured to read it, starts nothing.
 
+6. A target's `AFTER_BUILD`, if its `target.mk` gives one: the T-Deck
+   Max's builds MCUboot (`make -C nuttx bootloader`).
+
 One target is configured at a time; building another configures afresh.
+
+### The T-Deck Max's flash
+
+MCUboot starts the firmware from the first of two slots (RFC 0013).
+`make tdeck-max flash` writes MCUboot, and the firmware into the first
+slot, confirmed: the image is padded to the slot's 4 MB, which esptool
+compresses. The rest of the flash is not written, so the system
+partition keeps its files.
+
+| From | Size | What |
+|---|---|---|
+| `0x0` | 128 KB | MCUboot |
+| `0x20000` | 4 MB | the first slot: the firmware that runs |
+| `0x420000` | 4 MB | the second slot: an update, or the previous firmware |
+| `0x820000` | 256 KB | free: MCUboot swaps the slots by moving their sectors, with no scratch area |
+| `0x860000` | 64 KB | the device's data (RFC 0010), not used yet |
+| `0x870000` | 2 MB | the system partition, littlefs, at `/var/lib` |
+| `0xa70000` | 5.6 MB | free: for the package store (RFC 0009) |
+
+A firmware in the second slot that is marked for a trial is started at
+the next start: MCUboot swaps the slots, so the previous firmware is
+kept in the second. The system program confirms the new one once every
+program in `etc/pnut/programs` that NxInit has has stayed ready for 10 s
+(`PNUT_STATES_READY_HOLD`); if the device starts again before that,
+MCUboot swaps them back. Until Packages
+installs updates, a trial is made by hand, from a build's `nuttx/nuttx.hex`:
+
+```sh
+imgtool sign --pad --align 4 -v 0 -s auto -H 32 --pad-header \
+  -S 0x400000 -M 1024 nuttx.hex trial.bin
+esptool -p /dev/ttyACM0 write-flash 0x420000 trial.bin
+```
+
+as `tools/esp32s3/Config.mk` signs, but without `--confirm`; `--pad`
+puts the mark for a trial at the end of the slot.
 
 ## adb over Wi-Fi
 

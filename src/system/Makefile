@@ -16,7 +16,8 @@ STACKSIZE = $(CONFIG_PNUT_SYSTEM_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_SYSTEM)
 
 MAINSRC   = main.c
-CSRCS     = board.c logs.c power.c programs.c settings.c settings_store.c
+CSRCS     = board.c firmware.c logs.c power.c programs.c settings.c
+CSRCS    += settings_store.c
 CSRCS    += states.c
 CSRCS    += wallclock.c
 
