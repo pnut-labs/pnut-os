@@ -22,6 +22,15 @@ config PNUT_TELEPHONY_STACKSIZE
 	int "The program's stack, in bytes"
 	default 8192
 
+config PNUT_TELEPHONY_PPP_STACKSIZE
+	int "Mobile data's pppd thread stack, in bytes"
+	default 6144
+	depends on NETUTILS_PPPD
+	---help---
+		pppd runs on a thread of the telephony program's, on the
+		pseudo-terminal Telephony gives it (RFC 0030).  Without
+		NETUTILS_PPPD there is no mobile data.
+
 config PNUT_TELEPHONY_FINISH
 	int "Time to power the modem down when asked to stop, in ms"
 	default 9500

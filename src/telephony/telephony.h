@@ -31,6 +31,7 @@
 #include "pnut/time.topics.h"
 
 #include "at.h"
+#include "data.h"
 #include "mux.h"
 #include "transport.h"
 
@@ -89,6 +90,12 @@ struct telephony_config_s
                                    * they answer */
   uint32_t wait;                  /* For Settings' values, at start */
   uint32_t sms_tick;              /* Between the transport's looks */
+
+  /* Mobile data's link: pppd on the device, a fake in the tests; NULL for
+   * no mobile data (data.h)
+   */
+
+  FAR const struct data_link_ops_s *link;
 };
 
 /* A request kept while Service states says who sent it */
@@ -196,6 +203,10 @@ struct telephony_s
   /* The sms transport (RFC 0029) */
 
   struct transport_s transport;
+
+  /* Mobile data (RFC 0030, step 4) */
+
+  struct data_s data;
 
   /* Requests waiting for the modem */
 

@@ -32,6 +32,8 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <arpa/inet.h>
+
 #include <cmocka.h>
 
 #include <pb_encode.h>
@@ -141,6 +143,45 @@ struct tel_test_s
   uint64_t cmgs_at;
   bool cmgs_fail;                 /* Every part refused */
   bool texting;                   /* After the prompt, the PDU comes */
+
+  /* Mobile data: channel 2 dials, PPP's bytes go both ways, and the
+   * link is the test's
+   */
+
+  bool data;                      /* Wanted from the start */
+  bool data_fail;                 /* ATD answered NO CARRIER */
+  bool data_stop_up;              /* The program stops while data is up */
+  bool data_left_on;              /* A call left in data mode at start */
+  bool data_once;                 /* The run ends once data is on */
+  FAR const char *apn;            /* The access point's name, or NULL */
+  bool data_connected;            /* Past CONNECT, till the hang-up */
+  bool d2;                        /* AT&D2 given: DTR dropped hangs up;
+                                   * else ignored, as the A7682E starts */
+  bool hung_up;                   /* A call ended by DTR */
+  bool again;                     /* Data off, then on again */
+  int escapes;                    /* "+++" taken in data mode */
+  int probes2;                    /* AT&D2 on channel 2 */
+  bool dialing;                   /* ATD taken, CONNECT not yet sent */
+  uint64_t connect_at;            /* When CONNECT goes */
+  int dials;
+  int hangups;
+  int at_during_dial;             /* AT channel commands while dialing */
+  int at_after_dial;
+  int link_starts;
+  int link_stops;
+  int link_tty;                   /* The link's end of the terminal */
+  int link_fd;                    /* Its records to the program */
+  bool data_sent;                 /* PPP's test frames sent */
+  bool data_done;                 /* Both arrived */
+  uint64_t done_at;
+  int data_at_stop;               /* The data state when the run ended */
+  char line2[64];                 /* Channel 2's command line */
+  size_t l2len;
+  uint8_t from_modem[64];         /* What the link read from its end */
+  size_t fm_len;
+  uint8_t to_modem[64];           /* What channel 2 carried after CONNECT */
+  size_t tm_len;
+  struct data_link_ops_s link;
 
   /* What the program announced */
 
@@ -543,6 +584,134 @@ static void tel_test_text(FAR struct tel_test_s *t, FAR const uint8_t *p,
     }
 }
 
+/* Channel 2: "AT" and the dial, then PPP's bytes */
+
+static void tel_test_data(FAR struct tel_test_s *t, FAR const uint8_t *p,
+                          size_t n)
+{
+  size_t i;
+
+  if (t->data_connected)
+    {
+      if (n == 3 && memcmp(p, "+++", 3) == 0)
+        {
+          t->escapes++;
+          t->data_connected = false;
+          tel_test_frame(t, 2, 0xef, "\r\nOK\r\n", 6);
+          return;
+        }
+
+      for (i = 0; i < n && t->tm_len < sizeof(t->to_modem); i++)
+        {
+          t->to_modem[t->tm_len++] = p[i];
+        }
+
+      return;
+    }
+
+  for (i = 0; i < n; i++)
+    {
+      if (p[i] != '\r')
+        {
+          if (t->l2len < sizeof(t->line2) - 1)
+            {
+              t->line2[t->l2len++] = (char)p[i];
+            }
+
+          continue;
+        }
+
+      t->line2[t->l2len] = '\0';
+      t->l2len = 0;
+      if (strcmp(t->line2, "AT") == 0)
+        {
+          tel_test_frame(t, 2, 0xef, "\r\nOK\r\n", 6);
+        }
+      else if (strcmp(t->line2, "AT&D2") == 0 ||
+               strcmp(t->line2, "ATH&D2") == 0)
+        {
+          t->probes2 += t->line2[2] == '&';
+          t->d2 = true;
+          tel_test_frame(t, 2, 0xef, "\r\nOK\r\n", 6);
+        }
+      else if (strcmp(t->line2, "ATD*99***1#") == 0)
+        {
+          t->dials++;
+          if (t->data_fail)
+            {
+              tel_test_frame(t, 2, 0xef, "\r\nNO CARRIER\r\n", 14);
+              continue;
+            }
+
+          /* CONNECT a moment later; meanwhile a report on the AT channel
+           * asks for a refresh, whose commands must wait
+           */
+
+          t->dialing    = true;
+          t->connect_at = pnut_now() + 300;
+          tel_test_say(t, "+CEREG: 1");
+        }
+    }
+}
+
+/* The test's link, in place of pppd: its end of the terminal read, and
+ * its records written as the test goes
+ */
+
+static void tel_test_link_read(FAR struct pnut_loop_s *loop, int fd,
+                               uint32_t events, FAR void *arg)
+{
+  FAR struct tel_test_s *t = arg;
+  ssize_t n;
+
+  n = read(fd, t->from_modem + t->fm_len,
+           sizeof(t->from_modem) - t->fm_len);
+  if (n > 0)
+    {
+      t->fm_len += n;
+    }
+}
+
+static void tel_test_link_tell(FAR struct tel_test_s *t, uint8_t event)
+{
+  struct data_event_s ev;
+
+  memset(&ev, 0, sizeof(ev));
+  ev.event = event;
+  if (event == DATA_LINK_UP)
+    {
+      strlcpy(ev.ifname, "ppp0", sizeof(ev.ifname));
+      ev.local.s_addr = htonl(0x0a000001);
+    }
+
+  assert_int_equal(write(t->link_fd, &ev, sizeof(ev)), sizeof(ev));
+}
+
+static int tel_test_link_start(FAR void *arg, FAR const char *tty, int fd)
+{
+  FAR struct tel_test_s *t = arg;
+
+  t->link_starts++;
+  t->link_tty = open(tty, O_RDWR | O_NOCTTY | O_NONBLOCK);
+  assert_true(t->link_tty >= 0);
+  assert_int_equal(pnut_loop_watch(t->loop, t->link_tty, EPOLLIN,
+                                   tel_test_link_read, t), 0);
+  t->link_fd = fd;
+  tel_test_link_tell(t, DATA_LINK_UP);
+  return 0;
+}
+
+static void tel_test_link_stop(FAR void *arg)
+{
+  FAR struct tel_test_s *t = arg;
+
+  t->link_stops++;
+  pnut_loop_unwatch(t->loop, t->link_tty);
+  close(t->link_tty);
+  t->link_tty = -1;
+  tel_test_link_tell(t, DATA_LINK_ENDED);
+}
+
 /* A whole frame from the program */
 
 static void tel_test_on_frame(FAR struct tel_test_s *t)
@@ -565,10 +734,35 @@ static void tel_test_on_frame(FAR struct tel_test_s *t)
           t->kicks++;
           t->mux = false;
         }
+      else if ((t->frame[4] & ~0x02) == 0xe1 && n >= 4 &&
+               (t->frame[6] >> 2) == 2 && t->frame[7] == 0x89)
+        {
+          t->hangups++;                           /* MSC: DTR dropped */
+          if (t->d2 && (t->data_connected || t->dialing))
+            {
+              t->hung_up        = true;
+              t->data_connected = false;
+              t->dialing        = false;
+              tel_test_frame(t, 2, 0xef, "\r\nNO CARRIER\r\n", 14);
+            }
+        }
     }
   else if (ctrl == 0xef && dlci == 1)
     {
+      if (t->dialing)
+        {
+          t->at_during_dial++;
+        }
+      else if (t->data_connected)
+        {
+          t->at_after_dial++;
+        }
+
       tel_test_text(t, t->frame + 4, n);
+    }
+  else if (ctrl == 0xef && dlci == 2)
+    {
+      tel_test_data(t, t->frame + 4, n);
     }
 }
 
@@ -767,6 +961,74 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
       tel_test_say(t, "+CEREG: 0");     /* Not registered: no change */
     }
 
+  if (t->dialing && pnut_now() >= t->connect_at)
+    {
+      t->dialing        = false;
+      t->data_connected = true;
+      tel_test_frame(t, 2, 0xef, "\r\nCONNECT 150000000\r\n", 21);
+    }
+
+  if (t->data)
+    {
+      /* Up: a PPP frame each way, then data off (or the program asked to
+       * stop); a failed dial: its hang-up
+       */
+
+      if (t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_ON &&
+          !t->data_sent && !t->data_left_on && !t->data_once)
+        {
+          t->data_sent = true;
+          tel_test_frame(t, 2, 0xef, "\x7e\xff\x03he\rl\nlo\x7e", 11);
+          assert_int_equal(write(t->link_tty, "\x7e\xff\x03wo\rr\nld\x7e",
+                                 11), 11);
+          return;
+        }
+
+      if (t->data_sent && !t->data_done && t->fm_len >= 11 &&
+          t->tm_len >= 11)
+        {
+          t->data_done = true;
+          t->done_at   = pnut_now();
+          if (t->data_stop_up)
+            {
+              t->data_at_stop = t->info.data;
+              t->stop_at      = pnut_now();
+              pnut_loop_stop(loop, 0);
+            }
+          else
+            {
+              data_want(&t->tel.data, false, "");
+            }
+
+          return;
+        }
+
+      /* Off: on again, which dials again */
+
+      if (t->data_done && !t->data_stop_up && !t->again &&
+          t->hangups > 0 &&
+          t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_OFF)
+        {
+          t->again = true;
+          data_want(&t->tel.data, true, "");
+          return;
+        }
+
+      if (t->stop_at == 0 &&
+          (((t->again || t->data_left_on || t->data_once) &&
+            t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_ON) ||
+           (t->data_fail && t->hangups > 0 &&
+            t->info.data == PNUT_TELEPHONY_INFO_DATA_CONNECTING) ||
+           (t->apn != NULL && !t->data_once && t->tel.data.fails > 0)))
+        {
+          t->data_at_stop = t->info.data;
+          t->stop_at      = pnut_now();
+          pnut_loop_stop(loop, 0);
+        }
+
+      return;
+    }
+
   if (t->sms)
     {
       /* Every SMS dealt with, and a moment for anything more */
@@ -824,6 +1086,11 @@ static int tel_test_start(FAR struct pnut_module_s *module,
       msg.on = true;
       assert_int_equal(pnut_airplane_mode_advertise(loop, &t->airplanes), 0);
       assert_int_equal(pnut_airplane_mode_publish(t->airplanes, &msg), 0);
+    }
+
+  if (t->data)
+    {
+      data_want(&t->tel.data, true, t->apn != NULL ? t->apn : "");
     }
 
   pnut_module_ready(module);
@@ -984,6 +1251,15 @@ static int tel_test_run(FAR struct tel_test_s *t)
   tconfig.ready     = 20;
   tconfig.wait      = 50;
   tconfig.open      = 50;
+  if (t->data)
+    {
+      t->link.start = tel_test_link_start;
+      t->link.stop  = tel_test_link_stop;
+      t->link.arg   = t;
+      t->link_tty   = -1;
+      tconfig.link  = &t->link;
+    }
+
   if (t->sms)
     {
       struct messages_config_s mconfig;
@@ -1681,6 +1957,151 @@ static void test_telephony_sms_full(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telephony_data
+ *
+ * Description:
+ *   Mobile data wanted: once the modem is registered, channel 2 answers
+ *   "AT" and dials; the AT channel's commands wait until CONNECT; the link
+ *   starts on a raw pseudo-terminal and comes up; a PPP frame goes each
+ *   way, whole; data off stops the link and hangs the call up (the probe
+ *   gave DTR that meaning, AT&D2); data on again dials again.
+ *
+ ****************************************************************************/
+
+static void test_telephony_data(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->data = true;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_int_equal(t->dials, 2);
+  assert_int_equal(t->at_during_dial, 0);
+  assert_true(t->at_after_dial > 0);
+  assert_int_equal(t->link_starts, 2);
+  assert_true(t->link_stops >= 1);
+  assert_true(t->hangups >= 1);
+  assert_true(t->hung_up);
+  assert_int_equal(t->escapes, 0);
+  assert_int_equal(t->fm_len, 11);
+  assert_memory_equal(t->from_modem, "\x7e\xff\x03he\rl\nlo\x7e", 11);
+  assert_int_equal(t->tm_len, 11);
+  assert_memory_equal(t->to_modem, "\x7e\xff\x03wo\rr\nld\x7e", 11);
+  assert_int_equal(t->data_at_stop, PNUT_TELEPHONY_INFO_DATA_DATA_ON);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_data_escape
+ *
+ * Description:
+ *   A call left in data mode on channel 2 (a modem that ignored DTR): the
+ *   probes go unanswered, so "+++" takes the channel out of data mode and
+ *   ATH&D2 hangs up; then it dials, and data comes up.
+ *
+ ****************************************************************************/
+
+static void test_telephony_data_escape(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->data           = true;
+  t->data_left_on   = true;
+  t->data_connected = true;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_int_equal(t->escapes, 1);
+  assert_true(t->d2);
+  assert_int_equal(t->dials, 1);
+  assert_int_equal(t->link_starts, 1);
+  assert_int_equal(t->data_at_stop, PNUT_TELEPHONY_INFO_DATA_DATA_ON);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_data_apn
+ *
+ * Description:
+ *   An access point's name: AT+CGDCONT on the AT channel before the dial.
+ *   One with a character an operator's name has not: no command, no dial,
+ *   a failure.
+ *
+ ****************************************************************************/
+
+static void test_telephony_data_apn(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->data      = true;
+  t->data_once = true;
+  t->apn       = "inter.net-1";
+  assert_int_equal(tel_test_run(t), 0);
+  assert_non_null(strstr(t->commands,
+                         "AT+CGDCONT=1,\"IP\",\"inter.net-1\";"));
+  assert_int_equal(t->dials, 1);
+  assert_int_equal(t->data_at_stop, PNUT_TELEPHONY_INFO_DATA_DATA_ON);
+  tel_test_free(t);
+
+  t = tel_test_new();
+  t->data = true;
+  t->apn  = "bad\",\"x";
+  assert_int_equal(tel_test_run(t), 0);
+  assert_null(strstr(t->commands, "CGDCONT"));
+  assert_int_equal(t->dials, 0);
+  assert_int_equal(t->tel.data.fails, 1);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_data_fail
+ *
+ * Description:
+ *   A dial the network refuses (NO CARRIER): hung up, no link started,
+ *   and "connecting" while it waits to try again.  The program then
+ *   stops while data waits: the modem's power-down starts no attempt on
+ *   the way (it once did, the state still saying "on" while data reset).
+ *
+ ****************************************************************************/
+
+static void test_telephony_data_fail(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->data      = true;
+  t->data_fail = true;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_int_equal(t->dials, 1);
+  assert_int_equal(t->hangups, 1);
+  assert_int_equal(t->link_starts, 0);
+  assert_int_equal(t->data_at_stop, PNUT_TELEPHONY_INFO_DATA_CONNECTING);
+  assert_int_equal(t->probes2, 1);
+  assert_int_equal(t->tel.data.fails, 1);
+  tel_test_free(t);
+}
+
+/****************************************************************************
+ * Name: test_telephony_data_stop
+ *
+ * Description:
+ *   The program asked to stop while data is up: the link is stopped, and
+ *   the modem powered down as ever.
+ *
+ ****************************************************************************/
+
+static void test_telephony_data_stop(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->data         = true;
+  t->data_stop_up = true;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_int_equal(t->data_at_stop, PNUT_TELEPHONY_INFO_DATA_DATA_ON);
+  assert_int_equal(t->link_starts, 1);
+  assert_int_equal(t->link_stops, 1);
+  assert_int_equal(t->hangups, 0);
+  assert_true(t->off_seen);
+  tel_test_free(t);
+}
+
+/****************************************************************************
  * Name: test_telephony_no_channels
  *
  * Description:
@@ -1728,6 +2149,11 @@ int main(void)
     cmocka_unit_test(test_telephony_sms_undeleted),
     cmocka_unit_test(test_telephony_sms_send),
     cmocka_unit_test(test_telephony_sms_send_fail),
+    cmocka_unit_test(test_telephony_data),
+    cmocka_unit_test(test_telephony_data_escape),
+    cmocka_unit_test(test_telephony_data_apn),
+    cmocka_unit_test(test_telephony_data_fail),
+    cmocka_unit_test(test_telephony_data_stop),
   };
 
   return cmocka_run_group_tests_name("telephony", tests, NULL, NULL);
