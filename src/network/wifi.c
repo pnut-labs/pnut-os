@@ -577,15 +577,15 @@ static void wifi_kick_timer(FAR struct pnut_loop_s *loop,
   wifi_next(wifi);
 }
 
-static void wifi_timer(FAR struct wifi_s *wifi,
-                       FAR struct pnut_timer_s **timer, uint32_t ms,
-                       pnut_timer_handler_t cb)
+static int wifi_timer(FAR struct wifi_s *wifi,
+                      FAR struct pnut_timer_s **timer, uint32_t ms,
+                      pnut_timer_handler_t cb)
 {
   int ret;
 
   if (*timer != NULL)
     {
-      return;
+      return 0;
     }
 
   ret = pnut_timer_start(wifi->module.loop, ms, 0, cb, wifi, timer);
@@ -594,6 +594,8 @@ static void wifi_timer(FAR struct wifi_s *wifi,
       pnut_log(&wifi->module, PNUT_LOG_WARNING, "No timer: %d", ret);
       *timer = NULL;
     }
+
+  return ret;
 }
 
 static void wifi_cancel(FAR struct wifi_s *wifi,
@@ -768,9 +770,20 @@ static void wifi_save_failed(FAR struct wifi_s *wifi, int ret,
                "Writing the known networks: %d; again", ret);
     }
 
-  wifi_timer(wifi, &wifi->save_timer,
-             ms < WIFI_SAVE_MAX_MS ? ms : WIFI_SAVE_MAX_MS,
-             wifi_save_timer);
+  /* No timer to try again: the write ends, rather than stay "saving" for
+   * ever; the next change writes the known networks again (a passphrase
+   * this write was moving is lost then: its network asks to be joined
+   * again)
+   */
+
+  if (wifi_timer(wifi, &wifi->save_timer,
+                 ms < WIFI_SAVE_MAX_MS ? ms : WIFI_SAVE_MAX_MS,
+                 wifi_save_timer) < 0)
+    {
+      pnut_log(&wifi->module, PNUT_LOG_ERROR,
+               "The known networks not written: no timer to try again");
+      wifi_save_end(wifi);
+    }
 }
 
 /* Settings' answers that no retry mends: the call itself refused */
