@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -109,7 +110,7 @@ struct fixture_s
   CODE void (*after)(FAR struct fixture_s *f);
   struct pnut_services_client_s client;
   int readies;                    /* config.ready told */
-  uint32_t mark;                  /* elapsed, at a step */
+  uint32_t mark;                  /* now_ms(), at a step */
   int mark2;
 };
 
@@ -795,6 +796,19 @@ static void test_states_watch(void **state)
 
 #define READY_HOLD_MS 300
 
+/* The steps' waits are measured on the timers' own clock: the fixture's
+ * elapsed counts its ticks, which a busy machine (or the simulator) runs
+ * late, and a wait counted in them would end after the hold's timer
+ */
+
+static uint32_t now_ms(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
 static int ready_told(FAR void *arg)
 {
   FAR struct fixture_s *f = arg;
@@ -825,7 +839,7 @@ static bool telephony_ready(FAR struct fixture_s *f)
 static bool crashed_a_while(FAR struct fixture_s *f)
 {
   return telephony_is(f, PNUT_SERVICE_STATE_STATE_RESTARTING) &&
-         f->elapsed >= f->mark + READY_HOLD_MS / 3;
+         now_ms() - f->mark >= READY_HOLD_MS / 3;
 }
 
 /* Five sixths of a hold since telephony came back: a wait not started
@@ -834,7 +848,7 @@ static bool crashed_a_while(FAR struct fixture_s *f)
 
 static bool back_a_while(FAR struct fixture_s *f)
 {
-  return telephony_ready(f) && f->elapsed >= f->mark + 5 * READY_HOLD_MS / 6;
+  return telephony_ready(f) && now_ms() - f->mark >= 5 * READY_HOLD_MS / 6;
 }
 
 /* Told twice, then two holds more for any tell still due */
@@ -843,11 +857,11 @@ static bool told_twice(FAR struct fixture_s *f)
 {
   if (f->readies >= 2 && f->mark2 == 0)
     {
-      f->mark  = f->elapsed;
+      f->mark  = now_ms();
       f->mark2 = 1;
     }
 
-  return f->mark2 != 0 && f->elapsed >= f->mark + 2 * READY_HOLD_MS;
+  return f->mark2 != 0 && now_ms() - f->mark >= 2 * READY_HOLD_MS;
 }
 
 static void not_yet(FAR struct fixture_s *f)
@@ -860,7 +874,7 @@ static void not_yet(FAR struct fixture_s *f)
 static void telephony_back(FAR struct fixture_s *f)
 {
   fake_set(&f->fake, "telephony", "ready", 10, true);
-  f->mark  = f->elapsed;
+  f->mark  = now_ms();
   f->until = back_a_while;
   f->then  = not_yet;
 }
@@ -869,7 +883,7 @@ static void telephony_crash(FAR struct fixture_s *f)
 {
   f->rets[1] = f->readies;
   fake_set(&f->fake, "telephony", "restarting", 0, true);
-  f->mark  = f->elapsed;
+  f->mark  = now_ms();
   f->until = crashed_a_while;
   f->then  = telephony_back;
 }
