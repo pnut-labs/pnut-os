@@ -582,6 +582,13 @@ static void test_settings_cache_full(void **state)
 
 /* An index out of range is refused before anything is sent */
 
+static void bad_index_got(FAR struct pnut_settings_cache_s *cache,
+                          int status, uint32_t code, FAR const char *value,
+                          FAR void *arg)
+{
+  fail();
+}
+
 static void test_settings_cache_bad_index(void **state)
 {
   struct pnut_settings_cache_s cache;
@@ -596,6 +603,31 @@ static void test_settings_cache_bad_index(void **state)
                                            PNUT_TEST_PREFS_NSETTINGS,
                                            &value, NULL, NULL),
                    -EINVAL);
+
+  /* A secret only through its own calls, and those only for a secret */
+
+  assert_int_equal(pnut_settings_cache_set(&cache, PNUT_TEST_PREFS_TOKEN,
+                                           &value, NULL, NULL),
+                   -EINVAL);
+  assert_int_equal(pnut_settings_cache_set_secret(&cache,
+                                                  PNUT_TEST_PREFS_NAME,
+                                                  "x", NULL, NULL),
+                   -EINVAL);
+  assert_int_equal(pnut_settings_cache_get_secret(&cache,
+                                                  PNUT_TEST_PREFS_LOUD,
+                                                  bad_index_got, NULL),
+                   -EINVAL);
+  assert_int_equal(pnut_settings_cache_get_secret(&cache,
+                                                  PNUT_TEST_PREFS_TOKEN,
+                                                  NULL, NULL),
+                   -EINVAL);
+
+  /* Not connected: a secret's calls wait for Settings like the others */
+
+  assert_int_equal(pnut_settings_cache_get_secret(&cache,
+                                                  PNUT_TEST_PREFS_TOKEN,
+                                                  bad_index_got, NULL),
+                   -ENOTCONN);
 }
 
 /* Modules' log levels as settings (RFC 0026), with the loop's levels: one

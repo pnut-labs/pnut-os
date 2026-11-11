@@ -34,6 +34,7 @@
 #define WIFI_SCAN_MAX     24      /* Networks a scan keeps, the strongest */
 #define WIFI_NAME_MAX     33      /* A network's name, its NUL included */
 #define WIFI_PASS_MAX     64
+#define WIFI_KNOWN_MAX    16      /* Known networks (RFC 0031) */
 
 /****************************************************************************
  * Public Types
@@ -96,10 +97,44 @@ struct wifi_config_s
   FAR void *arg;
   uint32_t link_ms;               /* Between looks at the link; 0 for
                                    * 10 s */
-  uint32_t again_ms;              /* Before a lost network is joined
-                                   * again, the first time; 0 for 30 s.
-                                   * Doubled after each failure, up to 16
-                                   * times as long */
+  uint32_t again_ms;              /* Before a known network whose join
+                                   * failed is tried on its own again,
+                                   * the first time; 0 for 30 s.  Doubled
+                                   * after each failure, up to 8 minutes
+                                   * (RFC 0031) */
+  uint32_t idle_ms;               /* Between looks for a known network
+                                   * while none is in reach; 0 for 60 s */
+};
+
+/* A known network (RFC 0031): in memory, last used first */
+
+struct wifi_known_s
+{
+  char name[WIFI_NAME_MAX];       /* Empty: none */
+  bool secured;
+  bool refused;                   /* A join the owner asked for failed:
+                                   * not joined on its own until the
+                                   * owner joins it again */
+  uint8_t fails;                  /* Joins on its own failed in a row */
+  uint64_t not_before;            /* Not joined on its own before, in
+                                   * milliseconds of the monotonic clock */
+
+  /* Its passphrase, new or given by the owner, until a write takes it:
+   * then kept in Settings only
+   */
+
+  bool pending;
+  char pass[WIFI_PASS_MAX];
+};
+
+/* A slot of Wi-Fi's settings, as Settings holds it */
+
+struct wifi_slot_s
+{
+  char name[WIFI_NAME_MAX];       /* Empty: free */
+  bool secured;
+  bool unsure;                    /* Its write stopped half way: its
+                                   * passphrase may be another's */
 };
 
 /* A request waiting for Service states to say who sent it */
@@ -111,6 +146,7 @@ struct wifi_ask_s
   uint8_t method;
   struct pnut_request_s req;
   pnut_wifi_join_request_t join;
+  pnut_wifi_forget_request_t forget;
 };
 
 /* What a worker does: one job at a time */
@@ -164,6 +200,31 @@ struct wifi_s
   bool settings_open;
   bool enabled;                   /* wifi.enabled, as read */
 
+  /* The known networks (RFC 0031): in memory, last used first, read from
+   * the slots as Wi-Fi starts; and the slots, written to match after
+   * each change, one setting at a time
+   */
+
+  struct wifi_known_s known[WIFI_KNOWN_MAX];
+  struct wifi_slot_s slots[WIFI_KNOWN_MAX];
+  bool known_loaded;
+  pnut_wifi_known_networks_t known_out;   /* Known's answer */
+
+  /* The write running: each slot's plan and its passphrase, read before
+   * any slot is written
+   */
+
+  bool saving;
+  bool save_again;                /* The known networks changed since */
+  bool save_reading;              /* Reading, then writing */
+  uint8_t save_at;                /* The slot */
+  uint8_t save_step;              /* Its passphrase, name, security */
+  uint8_t save_fails;             /* Calls failed in a row */
+  int8_t save_from[WIFI_KNOWN_MAX];
+  struct wifi_slot_s save_to[WIFI_KNOWN_MAX];
+  char save_psk[WIFI_KNOWN_MAX][WIFI_PASS_MAX];
+  FAR struct pnut_timer_s *save_timer;    /* A failed call, again */
+
   /* The radio, and the work on it */
 
   bool radio;                     /* Up */
@@ -187,14 +248,28 @@ struct wifi_s
   bool joining_req;               /* A request waits for the join */
   struct pnut_request_s join_req;
   char name[WIFI_NAME_MAX];       /* The network joined, or to join */
-  char passphrase[WIFI_PASS_MAX]; /* Its passphrase, in memory only, to
-                                   * join it again once lost */
-  uint8_t tries;                  /* Joins of a lost network failed */
+  bool secured;                   /* Its security */
+  bool new_pass;                  /* The owner gave its passphrase */
+  char passphrase[WIFI_PASS_MAX]; /* Until joined: then kept in Settings
+                                   * as a secret, never in memory */
   bool leave_wanted;
+
+  /* Joining a known network on its own (RFC 0031): a scan, then the
+   * one joined last if in reach, else the strongest; its passphrase read
+   * from Settings first
+   */
+
+  bool held;                      /* Left by the owner: not until a join
+                                   * or Wi-Fi off and on */
+  bool seek_wanted;               /* A look for a known network is due */
+  bool seeking;                   /* The scan runs for it */
+  bool fetch_wanted;              /* A passphrase is to be read */
+  bool fetching;                  /* And is being read */
+  bool fetch_stale;               /* Its answer is no longer wanted */
+  FAR struct pnut_timer_s *idle;  /* Until the next look */
 
   bool link_due;                  /* A look at the link is due */
   FAR struct pnut_timer_s *link;  /* Until the next look at the link */
-  FAR struct pnut_timer_s *again; /* Until a lost network is joined */
   FAR struct pnut_timer_s *kick;  /* A job not submitted: once more */
 };
 
