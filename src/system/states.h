@@ -156,6 +156,7 @@ struct states_s
   uint32_t backoff;
   bool version;                   /* NxInit's version line has come */
   bool listed;                    /* A whole list has come */
+  bool current;                   /* A whole list has come on this watch */
   bool warned;                    /* A lost watch was logged */
   bool all_ready;                 /* config.ready was told, and done */
 

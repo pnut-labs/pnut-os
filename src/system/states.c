@@ -359,8 +359,8 @@ static void states_halt_over(FAR struct pnut_loop_s *loop,
  *   this build, and is passed over; so are NxInit's services that are no
  *   program (a shell, a oneshot).  NxInit has the services of its
  *   configuration before they start, as stopped, so programs started late
- *   are waited for.  While a list comes again, after a lost watch, the
- *   states are part old, part new: not yet.
+ *   are waited for.  From a lost watch until a whole list has come
+ *   again the states are old, or part old: not yet.
  *
  ****************************************************************************/
 
@@ -370,7 +370,7 @@ static bool states_all_ready(FAR struct states_s *states)
   uint8_t found = 0;
   uint8_t i;
 
-  if (!states->listed || states->listing > 0 || states->fd < 0)
+  if (!states->current)
     {
       return false;
     }
@@ -575,7 +575,8 @@ static void states_listed(FAR struct states_s *states)
         }
     }
 
-  states->listed = true;
+  states->listed  = true;
+  states->current = true;
   if (first)
     {
       pnut_module_ready(&states->module);
@@ -645,6 +646,7 @@ static void states_close(FAR struct states_s *states)
 
   /* The states are old until a list comes again */
 
+  states->current = false;
   states_ready_cancel(states);
 
   if (states->fd >= 0)

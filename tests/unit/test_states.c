@@ -78,6 +78,9 @@ struct fake_s
   char stops[128];                      /* Every stop, ';' after each */
   bool silent;                          /* Leaves "who" unanswered */
   bool broken;                          /* A write failed */
+  bool hold;                            /* Leaves "state" unanswered */
+  int held;                             /* The client it left, or -1 */
+  int accepts;                          /* Clients taken */
 };
 
 struct fixture_s
@@ -184,6 +187,21 @@ static void fake_set(FAR struct fake_s *fake, FAR const char *name,
   pthread_mutex_unlock(&fake->lock);
 }
 
+static void fake_list(FAR struct fake_s *fake, int fd)
+{
+  char out[80];
+  int j;
+
+  snprintf(out, sizeof(out), "ok %d\n", fake->ntable);
+  fake_send(fake, fd, out);
+  for (j = 0; j < fake->ntable; j++)
+    {
+      snprintf(out, sizeof(out), "%s %s %d\n", fake->table[j].name,
+               fake->table[j].state, fake->table[j].pid);
+      fake_send(fake, fd, out);
+    }
+}
+
 static void fake_line(FAR struct fake_s *fake, int i, FAR char *line)
 {
   FAR struct fake_service_s *service;
@@ -199,14 +217,13 @@ static void fake_line(FAR struct fake_s *fake, int i, FAR char *line)
     }
   else if (strcmp(line, "state") == 0)
     {
-      snprintf(out, sizeof(out), "ok %d\n", fake->ntable);
-      fake_send(fake, fd, out);
-      for (j = 0; j < fake->ntable; j++)
+      if (fake->hold)
         {
-          snprintf(out, sizeof(out), "%s %s %d\n", fake->table[j].name,
-                   fake->table[j].state, fake->table[j].pid);
-          fake_send(fake, fd, out);
+          fake->held = i;
+          return;
         }
+
+      fake_list(fake, fd);
     }
   else if (sscanf(line, "who %d", &pid) == 1)
     {
@@ -255,6 +272,11 @@ static void fake_line(FAR struct fake_s *fake, int i, FAR char *line)
 
 static void fake_close(FAR struct fake_s *fake, int i)
 {
+  if (fake->held == i)
+    {
+      fake->held = -1;
+    }
+
   close(fake->clients[i]);
   fake->clients[i]  = -1;
   fake->watching[i] = false;
@@ -267,6 +289,7 @@ static FAR void *fake_main(FAR void *arg)
   struct pollfd pfds[2 + FAKE_CLIENTS];
   FAR char *nl;
   ssize_t n;
+  char c;
   int fd;
   int i;
 
@@ -287,9 +310,28 @@ static FAR void *fake_main(FAR void *arg)
           continue;
         }
 
+      /* 'q' ends the thread; 'k' lets every client go, as an NxInit
+       * that restarts would
+       */
+
       if (pfds[0].revents != 0)
         {
-          return NULL;
+          if (read(fake->wake[0], &c, 1) != 1 || c != 'k')
+            {
+              return NULL;
+            }
+
+          pthread_mutex_lock(&fake->lock);
+          for (i = 0; i < FAKE_CLIENTS; i++)
+            {
+              if (fake->clients[i] >= 0)
+                {
+                  fake_close(fake, i);
+                }
+            }
+
+          pthread_mutex_unlock(&fake->lock);
+          continue;
         }
 
       pthread_mutex_lock(&fake->lock);
@@ -297,6 +339,11 @@ static FAR void *fake_main(FAR void *arg)
       if (pfds[1].revents & POLLIN)
         {
           fd = accept(fake->listener, NULL, NULL);
+          if (fd >= 0)
+            {
+              fake->accepts++;
+            }
+
           for (i = 0; fd >= 0 && i < FAKE_CLIENTS; i++)
             {
               if (fake->clients[i] < 0)
@@ -365,6 +412,7 @@ static void fake_start(FAR struct fake_s *fake, FAR const char *path)
       fake->clients[i] = -1;
     }
 
+  fake->held = -1;
   pthread_mutex_init(&fake->lock, NULL);
   assert_int_equal(pthread_create(&fake->thread, NULL, fake_main, fake),
                    0);
@@ -938,6 +986,124 @@ static void test_states_ready(void **state)
 }
 
 /****************************************************************************
+ * Name: test_states_ready_relisted
+ *
+ * Description:
+ *   After a lost watch the states are old until NxInit has listed them
+ *   again: an event before the list starts no hold, though the old states
+ *   were all ready (telephony has crashed meanwhile); the list does.
+ ****************************************************************************/
+
+static int ready_counted(FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  f->readies++;
+  return 0;
+}
+
+/* The fake has taken the module again, and it watches */
+
+static bool rewatched(FAR struct fixture_s *f)
+{
+  bool watching = false;
+  int i;
+
+  pthread_mutex_lock(&f->fake.lock);
+  for (i = 0; f->fake.accepts >= 2 && i < FAKE_CLIENTS; i++)
+    {
+      watching |= f->fake.watching[i];
+    }
+
+  pthread_mutex_unlock(&f->fake.lock);
+  return watching;
+}
+
+static bool two_holds(FAR struct fixture_s *f)
+{
+  return now_ms() - f->mark >= 2 * READY_HOLD_MS;
+}
+
+static bool told_relisted(FAR struct fixture_s *f)
+{
+  return f->readies > 0 && two_holds(f);
+}
+
+static void relist(FAR struct fixture_s *f)
+{
+  FAR struct states_service_s *console = service(f, "console");
+
+  /* The event came, before the list */
+
+  assert_non_null(console);
+  assert_int_equal(console->state, PNUT_SERVICE_STATE_STATE_READY);
+
+  f->rets[1] = f->readies;
+  fake_set(&f->fake, "telephony", "ready", 10, false);
+
+  pthread_mutex_lock(&f->fake.lock);
+  f->fake.hold = false;
+  assert_true(f->fake.held >= 0);
+  fake_list(&f->fake, f->fake.clients[f->fake.held]);
+  pthread_mutex_unlock(&f->fake.lock);
+
+  f->mark  = now_ms();
+  f->until = told_relisted;
+  f->then  = NULL;
+}
+
+static void event_unlisted(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "console", "ready", 7, true);
+  f->mark  = now_ms();
+  f->until = two_holds;
+  f->then  = relist;
+}
+
+static void kick(FAR struct fixture_s *f)
+{
+  f->rets[0] = f->readies;
+  fake_set(&f->fake, "telephony", "restarting", 0, false);
+
+  pthread_mutex_lock(&f->fake.lock);
+  f->fake.hold = true;
+  pthread_mutex_unlock(&f->fake.lock);
+
+  assert_int_equal(write(f->fake.wake[1], "k", 1), 1);
+  f->until = rewatched;
+  f->then  = event_unlisted;
+}
+
+static void test_states_ready_relisted(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "system states\ntelephony telephony\n");
+  f.states.config.ready      = ready_counted;
+  f.states.config.ready_arg  = &f;
+  f.states.config.ready_hold = READY_HOLD_MS;
+
+  fake_set(&f.fake, "system", "ready", 8, false);
+  fake_set(&f.fake, "telephony", "ready", 9, false);
+
+  f.until = listed;
+  f.then  = kick;
+  fixture_run(&f);
+
+  /* Not told before the watch was lost, nor in the two holds without a
+   * list; told once from the list
+   */
+
+  assert_int_equal(f.rets[0], 0);
+  assert_int_equal(f.rets[1], 0);
+  assert_int_equal(f.readies, 1);
+  assert_int_equal(service(&f, "telephony")->pid, 10);
+  assert_false(f.fake.broken);
+
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
  * Name: test_states_who
  *
  * Description:
@@ -1380,6 +1546,7 @@ int main(void)
     cmocka_unit_test(test_states_programs),
     cmocka_unit_test(test_states_watch),
     cmocka_unit_test(test_states_ready),
+    cmocka_unit_test(test_states_ready_relisted),
     cmocka_unit_test(test_states_halt),
     cmocka_unit_test(test_states_who),
     cmocka_unit_test(test_states_who_unanswered),
