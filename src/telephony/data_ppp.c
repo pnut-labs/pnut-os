@@ -117,8 +117,8 @@ static void data_ppp_tell(FAR struct data_ppp_s *ppp,
  *
  * Description:
  *   pppd's notice, on its thread.  The interface gets a host-only netmask
- *   before Telephony hears of it: until Network chooses the link (RFC
- *   0015), Wi-Fi then keeps the traffic while it is up.
+ *   before Telephony hears of it: no address but its own is on it, and
+ *   traffic goes where Network's default route sends it (RFC 0015).
  *
  ****************************************************************************/
 

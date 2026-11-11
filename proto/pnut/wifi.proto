@@ -139,6 +139,12 @@ message WifiInfo {
   sint32 signal = 3;              // dBm, when joined
   fixed32 address = 4;            // IPv4, network order, when joined
   WifiError.Code failure = 5;     // Why the last join failed; NONE if not
+
+  // The network's name servers and router (DHCP's), IPv4, network
+  // order, when joined; 0 for no router: for Network (RFC 0015), which
+  // chooses the link in use
+  repeated fixed32 dns = 6 [(nanopb).max_count = 2];
+  fixed32 router = 7;
 }
 
 // Wi-Fi's settings (RFC 0025)

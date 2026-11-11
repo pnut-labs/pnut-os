@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Network (RFC 0015), a module of the network program: so far, its first
+// part, connectivity.  It reads the links' state on the wifi and
+// telephony topics, says which link carries traffic on the network topic,
+// and gives the device's name lookups that link's name server.  Apps'
+// connections, and the interface that reaches them, come with the
+// runtime (RFC 0008).
+//
+// Wi-Fi carries traffic whenever it is joined with an address and a
+// router; mobile data otherwise, when it is on.  Network sets NuttX's
+// default route through that link, and its name server for name lookups.
+
+syntax = "proto3";
+
+package pnut;
+
+import "pnut/options.proto";
+
+// The link in use, on the network topic
+message NetworkInfo {
+  option (pnut.topic) = "network";
+
+  enum Link {
+    NO_LINK = 0;
+    WIFI = 1;
+    MOBILE = 2;                   // Mobile data (RFC 0030)
+  }
+
+  Link link = 1;
+  bool metered = 2;               // The link costs money: mobile data
+  fixed32 address = 3;            // The device's, IPv4, network order
+  fixed32 dns = 4;                // The name server in use; 0 for none
+}

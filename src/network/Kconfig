@@ -10,9 +10,10 @@ config PNUT_NETWORK
 	default n
 	depends on PNUT_LIB && NETUTILS_NANOPB && PNUT_SYSTEM && WIRELESS_WAPI && NETUTILS_DHCPC && NETUTILS_NETLIB
 	---help---
-		The network program (RFC 0031): Wi-Fi, which scans, joins a
+		The network program: Wi-Fi (RFC 0031), which scans, joins a
 		network and takes an address, and says the link's state on the
-		wifi topic; RFC 0015's Network later.
+		wifi topic; and Network (RFC 0015), so far the link in use, on
+		the network topic, and its name server.
 
 if PNUT_NETWORK
 
@@ -27,6 +28,24 @@ config PNUT_NETWORK_WORKER_STACKSIZE
 		The worker makes the radio's calls: the driver's association
 		and DHCP run on its stack, as they ran on the system before
 		this one's 6 KB thread.
+
+config PNUT_NETWORK_LOCAL_LINKS
+	string "The local links"
+	default "wlan0"
+	---help---
+		The interfaces of the networks the device is in, as Wi-Fi's or
+		Ethernet's, never mobile data's, separated by spaces: the local
+		ports reach the device on them only (RFC 0012).
+
+config PNUT_NETWORK_LOCAL_PORTS
+	string "TCP ports served on the local links only"
+	default ""
+	---help---
+		Besides adb's (ADBD_TCP_SERVER_PORT), always one, separated by
+		spaces: connections to them from any other link, as mobile
+		data, are dropped.  Through NuttX's packet filter
+		(NET_IPFILTER): without it, Network says so in the log, and the
+		ports are open on every link.
 
 config PNUT_WIFI_IFNAME
 	string "The Wi-Fi interface"

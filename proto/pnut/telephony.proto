@@ -124,6 +124,12 @@ message TelephonyInfo {
   uint32 tries = 9;               // For the PIN, or for the PUK when it
                                   // needs that; 0 when not known
   Reason reason = 10;
+
+  // Mobile data's link, while data is DATA_ON: the device's address and
+  // the network's name servers (PPP's), IPv4, network order; for Network
+  // (RFC 0015), which chooses the link in use
+  fixed32 data_address = 11;
+  repeated fixed32 data_dns = 12 [(nanopb).max_count = 2];
 }
 
 // The PIN: sensitive (RFC 0026), never logged, never kept.  Up to 8

@@ -35,6 +35,7 @@
 #define WIFI_NAME_MAX     33      /* A network's name, its NUL included */
 #define WIFI_PASS_MAX     64
 #define WIFI_KNOWN_MAX    16      /* Known networks (RFC 0031) */
+#define WIFI_DNS_MAX      2       /* Name servers kept from DHCP */
 
 /****************************************************************************
  * Public Types
@@ -48,6 +49,15 @@ struct wifi_found_s
   int16_t signal;                 /* dBm */
   uint8_t channel;                /* 0: not known */
   bool secured;
+};
+
+/* What DHCP gave: IPv4, network order, 0 for none */
+
+struct wifi_lease_s
+{
+  uint32_t addr;
+  uint32_t router;
+  uint32_t dns[WIFI_DNS_MAX];
 };
 
 /* The radio, as the driver works it: each call blocks, and runs on a
@@ -78,11 +88,12 @@ struct wifi_ops_s
   CODE int (*join)(FAR void *arg, FAR const char *name,
                    FAR const char *passphrase, FAR int16_t *signal);
 
-  /* An address from the network (DHCP), set with its router and name
-   * servers: 0 and the address, network order; or a negated errno value
+  /* An address from the network (DHCP), set with its router as the
+   * interface's: 0 and the lease, whose router and name servers Network
+   * may use (RFC 0015); or a negated errno value
    */
 
-  CODE int (*address)(FAR void *arg, FAR uint32_t *addr);
+  CODE int (*address)(FAR void *arg, FAR struct wifi_lease_s *lease);
 
   /* Whether still joined, and the signal */
 
@@ -173,7 +184,7 @@ struct wifi_work_s
   struct wifi_found_s found[WIFI_SCAN_MAX];
   int nfound;
   int16_t signal;
-  uint32_t addr;
+  struct wifi_lease_s lease;
   int ret;
   bool linked;
   bool radio;                     /* The radio up when it ends */

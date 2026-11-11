@@ -479,6 +479,34 @@ static FAR const char *tel_why(int result, FAR const char *reply,
  *
  ****************************************************************************/
 
+/* Mobile data's address and name servers, those not 0, in order; none
+ * while it is not on
+ */
+
+static void tel_publish_link(FAR pnut_telephony_info_t *s,
+                             FAR const struct data_event_s *link)
+{
+  size_t i;
+
+  s->data_address   = 0;
+  s->data_dns_count = 0;
+  memset(s->data_dns, 0, sizeof(s->data_dns));
+  if (link == NULL)
+    {
+      return;
+    }
+
+  s->data_address = link->local.s_addr;
+  for (i = 0; i < sizeof(link->dns) / sizeof(link->dns[0]); i++)
+    {
+      if (link->dns[i].s_addr != 0 &&
+          s->data_dns_count < sizeof(s->data_dns) / sizeof(s->data_dns[0]))
+        {
+          s->data_dns[s->data_dns_count++] = link->dns[i].s_addr;
+        }
+    }
+}
+
 static void tel_publish(FAR struct telephony_s *tel)
 {
   FAR pnut_telephony_info_t *s = &tel->state;
@@ -548,6 +576,7 @@ static void tel_publish(FAR struct telephony_s *tel)
               s->registration == PNUT_TELEPHONY_INFO_REGISTRATION_ROAMING),
              on_air);
   s->data = data_state(&tel->data);
+  tel_publish_link(s, data_link(&tel->data));
 
   if (tel->states == NULL ||
       (tel->announced && memcmp(s, &tel->published, sizeof(*s)) == 0))
