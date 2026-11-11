@@ -16,7 +16,8 @@ STACKSIZE = $(CONFIG_PNUT_TELEPHONY_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_TELEPHONY)
 
 MAINSRC   = main.c
-CSRCS     = at.c mux.c parse.c sms.c smsjoin.c telephony.c transport.c
+CSRCS     = at.c data.c data_ppp.c mux.c parse.c sms.c smsjoin.c
+CSRCS    += telephony.c transport.c
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)

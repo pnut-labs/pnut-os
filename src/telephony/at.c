@@ -118,7 +118,7 @@ static void at_next(FAR struct at_s *at)
   int ret;
 
   while (!at->sent && !at->escaping && at->cancelling == 0 &&
-         at->count > 0)
+         !at->held && at->count > 0)
     {
       cmd       = &at->queue[at->head];
       at->rlen  = 0;
@@ -551,6 +551,23 @@ void at_cancel(FAR struct at_s *at, int result)
   at->cancelling--;
   at_next(at);
 }
+
+/****************************************************************************
+ * Name: at_hold
+ ****************************************************************************/
+
+void at_hold(FAR struct at_s *at, bool hold)
+{
+  at->held = hold;
+  if (!hold)
+    {
+      at_next(at);
+    }
+}
+
+/****************************************************************************
+ * Name: at_idle
+ ****************************************************************************/
 
 bool at_idle(FAR const struct at_s *at)
 {

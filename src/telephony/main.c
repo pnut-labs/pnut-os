@@ -123,6 +123,14 @@ int main(int argc, FAR char *argv[])
 
   config.finish = CONFIG_PNUT_TELEPHONY_FINISH;
 
+  /* A handler's budget: twice the default.  With mobile data sending, a
+   * write of one multiplexer frame to the UART takes about the frame's
+   * time on the line (12 ms at 115200 baud), though the UART does not
+   * block (BACKLOG.md, Telephony); mobile data sends one frame a wake-up.
+   */
+
+  config.budget = 20;
+
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)
     {
@@ -139,6 +147,9 @@ int main(int argc, FAR char *argv[])
   tconfig.open_line = telephony_open_line;
   tconfig.set_line  = telephony_set_line;
   tconfig.get_line  = telephony_get_line;
+#ifdef CONFIG_NETUTILS_PPPD
+  tconfig.link      = &g_data_ppp;
+#endif
   telephony_init(tel, &tconfig);
 
   ret = pnut_module_add(loop, &tel->module);
@@ -148,6 +159,7 @@ int main(int argc, FAR char *argv[])
     }
 
   pnut_loop_destroy(loop);
+  telephony_deinit(tel);
   free(tel);
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -311,13 +311,25 @@ static void tel_untime(FAR struct telephony_s *tel)
 
 static void tel_step(FAR struct telephony_s *tel, uint8_t step)
 {
-  if (tel->step == STEP_ON && step != STEP_ON)
+  bool left = tel->step == STEP_ON && step != STEP_ON;
+
+  if (left)
     {
       transport_gone(&tel->transport);
     }
 
   tel->step  = step;
   tel->since = tel_now();
+
+  /* After the step changed: data's reset publishes, and the state it
+   * publishes must no longer say the modem is on
+   */
+
+  if (left)
+    {
+      data_reset(&tel->data);
+    }
+
   tel_publish(tel);
 }
 
@@ -470,6 +482,7 @@ static FAR const char *tel_why(int result, FAR const char *reply,
 static void tel_publish(FAR struct telephony_s *tel)
 {
   FAR pnut_telephony_info_t *s = &tel->state;
+  bool on_air;
   int ret;
 
   switch (tel->step)
@@ -521,6 +534,20 @@ static void tel_publish(FAR struct telephony_s *tel)
     {
       s->reason = PNUT_TELEPHONY_INFO_REASON_NO_REASON;
     }
+
+  /* Mobile data, while the modem has a network and is on the air; a
+   * network lost for a moment keeps a call, airplane mode or the SIM gone
+   * end it.  It may publish again from inside, with the same readiness:
+   * no deeper.
+   */
+
+  on_air = s->modem == PNUT_TELEPHONY_INFO_MODEM_ON && !tel->airplane &&
+           s->sim == PNUT_TELEPHONY_INFO_SIM_READY;
+  data_ready(&tel->data, on_air &&
+             (s->registration == PNUT_TELEPHONY_INFO_REGISTRATION_HOME ||
+              s->registration == PNUT_TELEPHONY_INFO_REGISTRATION_ROAMING),
+             on_air);
+  s->data = data_state(&tel->data);
 
   if (tel->states == NULL ||
       (tel->announced && memcmp(s, &tel->published, sizeof(*s)) == 0))
@@ -1556,8 +1583,10 @@ static void tel_mux_data(FAR void *arg, uint8_t dlci,
     {
       at_input(&tel->at, (FAR const char *)buf, len);
     }
-
-  /* The data channel's, PPP's, come with mobile data (step 4) */
+  else if (dlci == MUX_DATA)
+    {
+      data_input(&tel->data, buf, len);
+    }
 }
 
 /****************************************************************************
@@ -1626,6 +1655,7 @@ static void tel_mux_event(FAR void *arg, uint8_t dlci, int event)
 
       case MUX_ROOM:
         at_room(&tel->at);
+        data_room(&tel->data);
         break;
     }
 }
@@ -2706,6 +2736,9 @@ static void tel_settings(FAR struct pnut_settings_cache_s *cache, int index,
   bool enabled = tel->settings.values.enabled;
   bool gsm = tel->settings.values.gsm;
 
+  data_want(&tel->data, tel->settings.values.data,
+            tel->settings.values.apn);
+
   if (!tel->settings_read)
     {
       tel->settings_read = true;
@@ -3504,6 +3537,127 @@ static const struct at_ops_s g_tel_at_ops =
   .urc  = tel_urc,
 };
 
+/****************************************************************************
+ * Name: tel_data_*
+ *
+ * Description:
+ *   What mobile data needs of Telephony (data.h): channel 2, its hang-up,
+ *   the AT channel held while it dials, the access point, the state.
+ *
+ ****************************************************************************/
+
+static int tel_data_send(FAR void *arg, FAR const uint8_t *buf, size_t len)
+{
+  FAR struct telephony_s *tel = arg;
+  int ret;
+
+  ret = mux_send(&tel->mux, MUX_DATA, buf, len);
+  if (ret >= 0)
+    {
+      tel_flush(tel);
+    }
+
+  return ret;
+}
+
+static void tel_data_dtr(FAR void *arg, bool high)
+{
+  FAR struct telephony_s *tel = arg;
+
+  /* DTR is RTC in channel 2's MSC */
+
+  int ret;
+
+  ret = mux_signals(&tel->mux, MUX_DATA, high ? MUX_V24 : MUX_V24_HANGUP);
+  if (ret < 0)
+    {
+      pnut_log(&tel->module, PNUT_LOG_INFO,
+               "Channel 2's DTR not %s: %d", high ? "raised" : "dropped",
+               ret);
+      return;
+    }
+
+  tel_flush(tel);
+}
+
+static void tel_data_hold(FAR void *arg, bool hold)
+{
+  FAR struct telephony_s *tel = arg;
+
+  at_hold(&tel->at, hold);
+}
+
+static bool tel_data_idle(FAR void *arg)
+{
+  FAR struct telephony_s *tel = arg;
+
+  return tel->step == STEP_ON && at_idle(&tel->at);
+}
+
+static void tel_data_apn_done(FAR void *arg, int result,
+                              FAR const char *reply)
+{
+  FAR struct telephony_s *tel = arg;
+
+  /* Cancelled: the modem goes, and data's reset follows */
+
+  if (result == -ECANCELED)
+    {
+      return;
+    }
+
+  if (!tel_answered(tel, result))
+    {
+      data_apn_done(&tel->data, result < 0 ? result : -ETIMEDOUT);
+      return;
+    }
+
+  data_apn_done(&tel->data, result);
+}
+
+static int tel_data_apn(FAR void *arg, FAR const char *apn)
+{
+  FAR struct telephony_s *tel = arg;
+  char cmd[32 + DATA_APN];
+  FAR const char *p;
+
+  /* An access point's name: labels of letters, digits and hyphens,
+   * between dots (and underscores, which some operators use).  Nothing
+   * else reaches the command.
+   */
+
+  for (p = apn; *p != '\0'; p++)
+    {
+      if (!isalnum((unsigned char)*p) && *p != '.' && *p != '-' &&
+          *p != '_')
+        {
+          pnut_log(&tel->module, PNUT_LOG_WARNING,
+                   "The access point's name has a '%c': not set", *p);
+          return -EINVAL;
+        }
+    }
+
+  snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
+  return tel_send(tel, cmd, NULL, 0, tel_data_apn_done);
+}
+
+static void tel_data_changed(FAR void *arg)
+{
+  FAR struct telephony_s *tel = arg;
+
+  tel_publish(tel);
+}
+
+static const struct data_ops_s g_tel_data_ops =
+{
+  .send    = tel_data_send,
+  .dtr     = tel_data_dtr,
+  .hold    = tel_data_hold,
+  .idle    = tel_data_idle,
+  .apn     = tel_data_apn,
+  .changed = tel_data_changed,
+};
+
 static int tel_start(FAR struct pnut_module_s *module,
                      FAR struct pnut_loop_s *loop)
 {
@@ -3590,6 +3744,12 @@ static int tel_start(FAR struct pnut_module_s *module,
 
   transport_start(&tel->transport, loop);
 
+  ret = data_start(&tel->data, loop);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_ERROR, "No mobile data: %d", ret);
+    }
+
   ret = pnut_board_connect(loop, tel->config.board, tel_board, tel,
                            &tel->board);
   if (ret < 0)
@@ -3647,6 +3807,7 @@ static void tel_stop(FAR struct pnut_module_s *module,
   int i;
 
   transport_stop(&tel->transport);
+  data_stop(&tel->data);
   tel_untime(tel);
   at_cancel(&tel->at, -ECANCELED);
 
@@ -3736,4 +3897,14 @@ void telephony_init(FAR struct telephony_s *tel,
     }
 
   transport_init(&tel->transport, tel, config->messages, config->sms_tick);
+  data_init(&tel->data, &tel->module, &g_tel_data_ops, tel, config->link);
+}
+
+/****************************************************************************
+ * Name: telephony_deinit
+ ****************************************************************************/
+
+void telephony_deinit(FAR struct telephony_s *tel)
+{
+  data_deinit(&tel->data);
 }

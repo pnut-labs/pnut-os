@@ -168,4 +168,17 @@ message TelephonySettings {
   // it on in its target's defaults (RFC 0025).
   bool gsm = 2 [(pnut.setting) = { default: "false",
                                    label: "telephony.gsm" }];
+
+  // Mobile data: PPP over the modem while it is registered (RFC 0030,
+  // step 4).  Off by default: on most plans it costs money.
+  bool data = 3 [(pnut.setting) = { default: "false",
+                                    label: "telephony.data",
+                                    public: true }];
+
+  // The access point's name, set with AT+CGDCONT before each call; empty
+  // for the one the network gives.  Letters, digits, dots, hyphens and
+  // underscores.
+  string apn = 4 [(pnut.setting) = { default: "",
+                                     label: "telephony.apn" },
+                  (nanopb).max_size = 64];
 }

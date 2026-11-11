@@ -103,6 +103,7 @@ struct at_s
                                    * before it */
   uint8_t cancelling;             /* In at_cancel(), nested perhaps:
                                    * nothing is sent */
+  bool held;                      /* at_hold(): nothing is sent */
   FAR struct pnut_timer_s *timer; /* Its timeout */
 
   size_t rlen;
@@ -208,6 +209,19 @@ void at_room(FAR struct at_s *at);
  ****************************************************************************/
 
 void at_cancel(FAR struct at_s *at, int result);
+
+/****************************************************************************
+ * Name: at_hold
+ *
+ * Description:
+ *   Hold the queue, or let it go: while held, nothing more is sent, so
+ *   nothing more times out (the modem answers nothing on the AT channel
+ *   while channel 2 dials).  A command already sent is left to its answer
+ *   or its timeout.
+ *
+ ****************************************************************************/
+
+void at_hold(FAR struct at_s *at, bool hold);
 
 /****************************************************************************
  * Name: at_idle
