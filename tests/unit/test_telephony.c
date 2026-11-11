@@ -681,7 +681,8 @@ static void tel_test_link_tell(FAR struct tel_test_s *t, uint8_t event)
   if (event == DATA_LINK_UP)
     {
       strlcpy(ev.ifname, "ppp0", sizeof(ev.ifname));
-      ev.local.s_addr = htonl(0x0a000001);
+      ev.local.s_addr  = htonl(0x0a000001);
+      ev.dns[1].s_addr = htonl(0x0a000035);   /* The first not given */
     }
 
   assert_int_equal(write(t->link_fd, &ev, sizeof(ev)), sizeof(ev));
@@ -978,6 +979,9 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
           !t->data_sent && !t->data_left_on && !t->data_once)
         {
           t->data_sent = true;
+          assert_int_equal(t->info.data_address, htonl(0x0a000001));
+          assert_int_equal(t->info.data_dns_count, 1);
+          assert_int_equal(t->info.data_dns[0], htonl(0x0a000035));
           tel_test_frame(t, 2, 0xef, "\x7e\xff\x03he\rl\nlo\x7e", 11);
           assert_int_equal(write(t->link_tty, "\x7e\xff\x03wo\rr\nld\x7e",
                                  11), 11);
@@ -1009,6 +1013,8 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
           t->hangups > 0 &&
           t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_OFF)
         {
+          assert_int_equal(t->info.data_address, 0);
+          assert_int_equal(t->info.data_dns_count, 0);
           t->again = true;
           data_want(&t->tel.data, true, "");
           return;

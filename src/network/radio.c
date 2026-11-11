@@ -351,11 +351,13 @@ static int radio_join(FAR void *arg, FAR const char *name,
  * Name: radio_address
  *
  * Description:
- *   An address by DHCP, set with the router and the name servers.
+ *   An address by DHCP, set with the router.  The router and name servers
+ *   are given back: Network chooses the link in use, and its name server
+ *   (RFC 0015).
  *
  ****************************************************************************/
 
-static int radio_address(FAR void *arg, FAR uint32_t *addr)
+static int radio_address(FAR void *arg, FAR struct wifi_lease_s *lease)
 {
   FAR struct radio_s *r = arg;
   struct dhcpc_state ds;
@@ -395,15 +397,13 @@ static int radio_address(FAR void *arg, FAR uint32_t *addr)
       netlib_set_dripv4addr(r->ifname, &ds.default_router);
     }
 
-  for (i = 0; i < ds.num_dnsaddr; i++)
+  for (i = 0; i < ds.num_dnsaddr && i < WIFI_DNS_MAX; i++)
     {
-      if (ds.dnsaddr[i].s_addr != 0)
-        {
-          netlib_set_ipv4dnsaddr(&ds.dnsaddr[i]);
-        }
+      lease->dns[i] = ds.dnsaddr[i].s_addr;
     }
 
-  *addr = ds.ipaddr.s_addr;
+  lease->addr   = ds.ipaddr.s_addr;
+  lease->router = ds.default_router.s_addr;
   return OK;
 }
 

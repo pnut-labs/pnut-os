@@ -1588,6 +1588,12 @@ void data_room(FAR struct data_s *data)
  * Name: data_state
  ****************************************************************************/
 
+FAR const struct data_event_s *data_link(FAR const struct data_s *data)
+{
+  return data_state(data) == PNUT_TELEPHONY_INFO_DATA_DATA_ON ?
+         &data->link_info : NULL;
+}
+
 int data_state(FAR const struct data_s *data)
 {
   if (!data->want || data->link == NULL)

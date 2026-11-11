@@ -49,6 +49,7 @@
 #define HOME_PASS   "correct-horse"
 #define CAFE        "caf\xe9"           /* Latin-1: not UTF-8 */
 #define HOME_ADDR   htonl(0x0a000005)   /* 10.0.0.5 */
+#define HOME_DNS    htonl(0x0a000001)   /* 10.0.0.1 */
 
 /****************************************************************************
  * Private Types
@@ -193,9 +194,11 @@ static int fake_join(FAR void *arg, FAR const char *name,
   return OK;
 }
 
-static int fake_address(FAR void *arg, FAR uint32_t *addr)
+static int fake_address(FAR void *arg, FAR struct wifi_lease_s *lease)
 {
-  *addr = HOME_ADDR;
+  lease->addr   = HOME_ADDR;
+  lease->router = HOME_DNS;
+  lease->dns[1] = HOME_DNS;       /* The first none: left out */
   return OK;
 }
 
@@ -468,6 +471,9 @@ static bool wifit_flow(FAR struct wifit_s *t)
 
         assert_string_equal(t->state.name, "home");
         assert_int_equal(t->state.address, HOME_ADDR);
+        assert_int_equal(t->state.dns_count, 1);
+        assert_int_equal(t->state.dns[0], HOME_DNS);
+        assert_int_equal(t->state.router, HOME_DNS);
         assert_int_equal(t->joins, 2);
         t->linked = false;        /* The network lost */
         break;
@@ -487,6 +493,10 @@ static bool wifit_flow(FAR struct wifit_s *t)
           {
             return false;
           }
+
+        assert_int_equal(t->state.address, 0);
+        assert_int_equal(t->state.router, 0);
+        assert_int_equal(t->state.dns_count, 0);
 
         wifit_enable(t, false);
         break;

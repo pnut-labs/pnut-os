@@ -16,7 +16,7 @@ STACKSIZE = $(CONFIG_PNUT_NETWORK_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_NETWORK)
 
 MAINSRC   = main.c
-CSRCS     = radio.c wifi.c
+CSRCS     = netstack.c network.c radio.c wifi.c
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)

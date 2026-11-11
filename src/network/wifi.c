@@ -316,13 +316,33 @@ static void wifi_publish(FAR struct wifi_s *wifi)
     }
 }
 
+/* The name servers DHCP gave, those not 0, in order */
+
+static void wifi_dns(FAR struct wifi_s *wifi, FAR const uint32_t *dns)
+{
+  int i;
+
+  wifi->state.dns_count = 0;
+  memset(wifi->state.dns, 0, sizeof(wifi->state.dns));
+  for (i = 0; i < WIFI_DNS_MAX; i++)
+    {
+      if (dns[i] != 0 && wifi->state.dns_count < WIFI_DNS_MAX)
+        {
+          wifi->state.dns[wifi->state.dns_count++] = dns[i];
+        }
+    }
+}
+
 static void wifi_set_state(FAR struct wifi_s *wifi, uint8_t state)
 {
   wifi->state.state = state;
   if (state != PNUT_WIFI_INFO_STATE_JOINED)
     {
-      wifi->state.signal  = 0;
-      wifi->state.address = 0;
+      wifi->state.signal    = 0;
+      wifi->state.address   = 0;
+      wifi->state.router    = 0;
+      wifi->state.dns_count = 0;
+      memset(wifi->state.dns, 0, sizeof(wifi->state.dns));
     }
 
   if (state == PNUT_WIFI_INFO_STATE_OFF ||
@@ -529,7 +549,8 @@ static void wifi_run(FAR void *arg)
         w->ret   = ops->join(w->arg, w->name, w->passphrase, &w->signal);
         if (w->ret == OK)
           {
-            w->ret = ops->address(w->arg, &w->addr);
+            memset(&w->lease, 0, sizeof(w->lease));
+            w->ret = ops->address(w->arg, &w->lease);
             w->linked = w->ret == OK;
           }
 
@@ -1353,8 +1374,10 @@ static void wifi_done(FAR struct pnut_loop_s *loop, FAR void *arg)
         else if (w->ret == OK)
           {
             wifi->state.signal  = w->signal;
-            wifi->state.address = w->addr;
+            wifi->state.address = w->lease.addr;
+            wifi->state.router  = w->lease.router;
             wifi->state.failure = PNUT_WIFI_ERROR_CODE_NONE;
+            wifi_dns(wifi, w->lease.dns);
             strlcpy(wifi->state.name, w->name, sizeof(wifi->state.name));
             pnut_log(&wifi->module, PNUT_LOG_INFO, "Joined \"%s\", %d dBm",
                      w->name, w->signal);

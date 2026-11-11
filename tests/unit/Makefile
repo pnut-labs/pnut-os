@@ -53,7 +53,7 @@ SRCS    += $(filter-out %/main.c,$(wildcard $(DATA)/*.c))
 # The network program's Wi-Fi; its radio is NuttX's driver: the tests
 # give a fake
 
-SRCS    += $(NETWORK)/wifi.c
+SRCS    += $(NETWORK)/network.c $(NETWORK)/wifi.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
 HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)

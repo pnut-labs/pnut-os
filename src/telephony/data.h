@@ -306,4 +306,15 @@ void data_room(FAR struct data_s *data);
 
 int data_state(FAR const struct data_s *data);
 
+/****************************************************************************
+ * Name: data_link
+ *
+ * Description:
+ *   The link's addresses and name servers while data is on (data_state()
+ *   PNUT_TELEPHONY_INFO_DATA_DATA_ON); NULL otherwise.
+ *
+ ****************************************************************************/
+
+FAR const struct data_event_s *data_link(FAR const struct data_s *data);
+
 #endif /* __PNUT_OS_TELEPHONY_DATA_H */
