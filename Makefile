@@ -19,7 +19,9 @@
 #
 # A target is a directory in configs/: its target.mk names the board's
 # configuration, and its fragment.config holds pnut-os's options, merged
-# over the board's by tools/configure-target.sh.
+# over the board's by tools/configure-target.sh.  target.mk may also give
+# AFTER_BUILD, run once NuttX is built (a bootloader, say), and RUN, FLASH
+# and TEST, the commands of make <target> run, flash and test.
 
 ROOT    := $(CURDIR)
 NUTTX   := $(ROOT)/nuttx
@@ -125,6 +127,7 @@ $(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
 	$(nanopb_link)
 	$(ROOT)/tools/stage-etc.sh $(ROOT) $(ETC) $(TARGET) $(PYTHON) $(GEN)
 	$(MAKE) -C $(NUTTX) $(NUTTXJOBS)
+	$(AFTER_BUILD)
 
 .PRECIOUS: $(NUTTX)/.config
 

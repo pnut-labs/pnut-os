@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -108,6 +109,9 @@ struct fixture_s
   FAR struct call_s *call;
   CODE void (*after)(FAR struct fixture_s *f);
   struct pnut_services_client_s client;
+  int readies;                    /* config.ready told */
+  uint32_t mark;                  /* now_ms(), at a step */
+  int mark2;
 };
 
 /****************************************************************************
@@ -778,6 +782,162 @@ static void test_states_watch(void **state)
 }
 
 /****************************************************************************
+ * Name: test_states_ready
+ *
+ * Description:
+ *   Told once every program of the table that NxInit has has stayed ready
+ *   for the hold: not while one is stopped (not started yet) or starting;
+ *   a program that crashes soon after saying it is ready, and comes back
+ *   within the hold, starts the wait again from its return; a program
+ *   NxInit does not have (radios) and a service that is no program
+ *   (console, starting) are passed over.  A failed tell is told again a
+ *   hold later; a done one is not.
+ ****************************************************************************/
+
+#define READY_HOLD_MS 300
+
+/* The steps' waits are measured on the timers' own clock: the fixture's
+ * elapsed counts its ticks, which a busy machine (or the simulator) runs
+ * late, and a wait counted in them would end after the hold's timer
+ */
+
+static uint32_t now_ms(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static int ready_told(FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  f->readies++;
+  return f->readies == 1 ? -EIO : 0;
+}
+
+static bool telephony_is(FAR struct fixture_s *f, uint8_t state)
+{
+  FAR struct states_service_s *s = service(f, "telephony");
+
+  return s != NULL && s->state == state;
+}
+
+static bool telephony_starting(FAR struct fixture_s *f)
+{
+  return telephony_is(f, PNUT_SERVICE_STATE_STATE_STARTING);
+}
+
+static bool telephony_ready(FAR struct fixture_s *f)
+{
+  return telephony_is(f, PNUT_SERVICE_STATE_STATE_READY);
+}
+
+/* A third of a hold since the crash, telephony still restarting */
+
+static bool crashed_a_while(FAR struct fixture_s *f)
+{
+  return telephony_is(f, PNUT_SERVICE_STATE_STATE_RESTARTING) &&
+         now_ms() - f->mark >= READY_HOLD_MS / 3;
+}
+
+/* Five sixths of a hold since telephony came back: a wait not started
+ * again at its return, but at its first ready, would be over
+ */
+
+static bool back_a_while(FAR struct fixture_s *f)
+{
+  return telephony_ready(f) && now_ms() - f->mark >= 5 * READY_HOLD_MS / 6;
+}
+
+/* Told twice, then two holds more for any tell still due */
+
+static bool told_twice(FAR struct fixture_s *f)
+{
+  if (f->readies >= 2 && f->mark2 == 0)
+    {
+      f->mark  = now_ms();
+      f->mark2 = 1;
+    }
+
+  return f->mark2 != 0 && now_ms() - f->mark >= 2 * READY_HOLD_MS;
+}
+
+static void not_yet(FAR struct fixture_s *f)
+{
+  f->rets[2] = f->readies;
+  f->until   = told_twice;
+  f->then    = NULL;
+}
+
+static void telephony_back(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "telephony", "ready", 10, true);
+  f->mark  = now_ms();
+  f->until = back_a_while;
+  f->then  = not_yet;
+}
+
+static void telephony_crash(FAR struct fixture_s *f)
+{
+  f->rets[1] = f->readies;
+  fake_set(&f->fake, "telephony", "restarting", 0, true);
+  f->mark  = now_ms();
+  f->until = crashed_a_while;
+  f->then  = telephony_back;
+}
+
+static void telephony_up(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "telephony", "ready", 9, true);
+  f->until = telephony_ready;
+  f->then  = telephony_crash;
+}
+
+static void telephony_start(FAR struct fixture_s *f)
+{
+  f->rets[0] = f->readies;
+  fake_set(&f->fake, "telephony", "starting", 9, true);
+  f->until = telephony_starting;
+  f->then  = telephony_up;
+}
+
+static void test_states_ready(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "system states\ntelephony telephony\n"
+                    "radios radio\n");
+  f.states.config.ready      = ready_told;
+  f.states.config.ready_arg  = &f;
+  f.states.config.ready_hold = READY_HOLD_MS;
+
+  fake_set(&f.fake, "system", "ready", 8, false);
+  fake_set(&f.fake, "telephony", "stopped", 0, false);
+  fake_set(&f.fake, "console", "starting", 7, false);
+
+  f.until = listed;
+  f.then  = telephony_start;
+  fixture_run(&f);
+
+  /* Nothing while telephony was stopped or starting, nor when it crashed
+   * at once, nor before a whole hold after it came back; then told,
+   * failed, told again a hold later, done
+   */
+
+  assert_int_equal(f.rets[0], 0);
+  assert_int_equal(f.rets[1], 0);
+  assert_int_equal(f.rets[2], 0);
+  assert_int_equal(f.readies, 2);
+  assert_int_equal(service(&f, "telephony")->state,
+                   PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(service(&f, "telephony")->pid, 10);
+
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
  * Name: test_states_who
  *
  * Description:
@@ -1219,6 +1379,7 @@ int main(void)
   {
     cmocka_unit_test(test_states_programs),
     cmocka_unit_test(test_states_watch),
+    cmocka_unit_test(test_states_ready),
     cmocka_unit_test(test_states_halt),
     cmocka_unit_test(test_states_who),
     cmocka_unit_test(test_states_who_unanswered),

@@ -351,6 +351,133 @@ static void states_halt_over(FAR struct pnut_loop_s *loop,
 }
 
 /****************************************************************************
+ * Name: states_all_ready
+ *
+ * Description:
+ *   Whether every program of the table that NxInit has is ready, as a
+ *   whole list has shown them.  A program NxInit does not have is not in
+ *   this build, and is passed over; so are NxInit's services that are no
+ *   program (a shell, a oneshot).  NxInit has the services of its
+ *   configuration before they start, as stopped, so programs started late
+ *   are waited for.  While a list comes again, after a lost watch, the
+ *   states are part old, part new: not yet.
+ *
+ ****************************************************************************/
+
+static bool states_all_ready(FAR struct states_s *states)
+{
+  FAR struct states_service_s *service;
+  uint8_t found = 0;
+  uint8_t i;
+
+  if (!states->listed || states->listing > 0 || states->fd < 0)
+    {
+      return false;
+    }
+
+  for (i = 0; i < states->programs.nprograms; i++)
+    {
+      service = states_find(states, states->programs.programs[i].name);
+      if (service == NULL)
+        {
+          continue;
+        }
+
+      if (service->state != PNUT_SERVICE_STATE_STATE_READY)
+        {
+          return false;
+        }
+
+      found++;
+    }
+
+  return found > 0;
+}
+
+/****************************************************************************
+ * Name: states_ready_cancel
+ ****************************************************************************/
+
+static void states_ready_cancel(FAR struct states_s *states)
+{
+  if (states->ready_timer != NULL)
+    {
+      pnut_timer_cancel(states->module.loop, states->ready_timer);
+      states->ready_timer = NULL;
+    }
+}
+
+/****************************************************************************
+ * Name: states_ready_over
+ *
+ * Description:
+ *   Every program has been ready for config.ready_hold: tell config.ready.
+ *   The timer is periodic: if the tell fails, it is told again a hold
+ *   later, with no other timer to start.
+ *
+ ****************************************************************************/
+
+static void states_ready_over(FAR struct pnut_loop_s *loop,
+                              FAR struct pnut_timer_s *timer,
+                              FAR void *arg)
+{
+  FAR struct states_s *states = arg;
+
+  if (states->all_ready || !states_all_ready(states))
+    {
+      states_ready_cancel(states);
+      return;
+    }
+
+  if (states->config.ready(states->config.ready_arg) >= 0)
+    {
+      states->all_ready = true;
+      states_ready_cancel(states);
+    }
+}
+
+/****************************************************************************
+ * Name: states_ready_check
+ *
+ * Description:
+ *   Hold while every program is ready, and tell config.ready once they
+ *   have been for config.ready_hold; a program that leaves ready meanwhile
+ *   starts the wait again.
+ *
+ ****************************************************************************/
+
+static void states_ready_check(FAR struct states_s *states)
+{
+  int ret;
+
+  if (states->config.ready == NULL || states->all_ready)
+    {
+      return;
+    }
+
+  if (!states_all_ready(states))
+    {
+      states_ready_cancel(states);
+      return;
+    }
+
+  if (states->ready_timer != NULL)
+    {
+      return;
+    }
+
+  ret = pnut_timer_start(states->module.loop, states->config.ready_hold,
+                         states->config.ready_hold, states_ready_over,
+                         states, &states->ready_timer);
+  if (ret < 0)
+    {
+      states->ready_timer = NULL;
+      pnut_log(&states->module, PNUT_LOG_WARNING,
+               "Cannot wait for the programs to stay ready: %d", ret);
+    }
+}
+
+/****************************************************************************
  * Name: states_update
  *
  * Description:
@@ -413,6 +540,7 @@ static void states_update(FAR struct states_s *states, FAR char *line)
         }
 
       states_halt_check(states);
+      states_ready_check(states);
     }
 }
 
@@ -454,6 +582,7 @@ static void states_listed(FAR struct states_s *states)
     }
 
   states_halt_check(states);
+  states_ready_check(states);
 }
 
 /****************************************************************************
@@ -513,6 +642,10 @@ static void states_answer(FAR struct states_s *states,
 static void states_close(FAR struct states_s *states)
 {
   FAR struct states_command_s *command;
+
+  /* The states are old until a list comes again */
+
+  states_ready_cancel(states);
 
   if (states->fd >= 0)
     {
@@ -1306,7 +1439,8 @@ static void states_stop(FAR struct pnut_module_s *module,
       states->halt_timer = NULL;
     }
 
-  states->halted = NULL;
+  states->halted   = NULL;
+  states->all_ready = false;
   states_close(states);
 
   if (states->serving)
