@@ -1346,7 +1346,7 @@ void data_stop(FAR struct data_s *data)
 
 void data_deinit(FAR struct data_s *data)
 {
-  FAR const struct data_event_s *ev;
+  struct data_event_s ev;
   ssize_t n;
 
   /* The records the link wrote since data_stop(): its end among them? */
@@ -1359,8 +1359,8 @@ void data_deinit(FAR struct data_s *data)
       if (data->elen == sizeof(data->ebuf))
         {
           data->elen = 0;
-          ev = (FAR const struct data_event_s *)data->ebuf;
-          if (ev->event == DATA_LINK_ENDED)
+          memcpy(&ev, data->ebuf, sizeof(ev));
+          if (ev.event == DATA_LINK_ENDED)
             {
               data->linked = false;
               data->alive  = false;
