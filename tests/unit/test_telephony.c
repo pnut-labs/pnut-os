@@ -1291,6 +1291,7 @@ static int tel_test_run(FAR struct tel_test_s *t)
   pnut_timer_start(t->loop, 15000, 0, tel_test_stop, NULL, NULL);
   ret = pnut_loop_run(t->loop);
   pnut_loop_destroy(t->loop);
+  telephony_deinit(&t->tel);
   if (t->sms)
     {
       messages_deinit(&t->messages);

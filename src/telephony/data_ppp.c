@@ -48,11 +48,15 @@
  * Private Types
  ****************************************************************************/
 
+/* stop and running are shared with pppd's thread: stored and loaded with
+ * the compiler's atomics (pppd reads stop through its volatile pointer)
+ */
+
 struct data_ppp_s
 {
   struct pppd_settings_s settings;
   volatile bool stop;
-  volatile bool running;            /* The thread has not ended yet */
+  bool running;                     /* The thread has not ended yet */
   int fd;                           /* Telephony's pipe */
 };
 
@@ -156,7 +160,7 @@ static FAR void *data_ppp_thread(FAR void *arg)
   struct data_event_s ev;
 
   pppd(&ppp->settings);
-  ppp->running = false;
+  __atomic_store_n(&ppp->running, false, __ATOMIC_RELEASE);
 
   memset(&ev, 0, sizeof(ev));
   ev.event = DATA_LINK_ENDED;
@@ -182,7 +186,7 @@ static int data_ppp_start(FAR void *arg, FAR const char *tty, int fd)
 
   /* One link at a time: one Telephony gave up waiting for still runs */
 
-  if (ppp->running)
+  if (__atomic_load_n(&ppp->running, __ATOMIC_ACQUIRE))
     {
       return -EBUSY;
     }
@@ -193,9 +197,9 @@ static int data_ppp_start(FAR void *arg, FAR const char *tty, int fd)
   ppp->settings.stop   = &ppp->stop;
   ppp->settings.notify = data_ppp_notify;
   ppp->settings.arg    = ppp;
-  ppp->stop            = false;
   ppp->fd              = fd;
-  ppp->running         = true;
+  __atomic_store_n(&ppp->stop, false, __ATOMIC_RELAXED);
+  __atomic_store_n(&ppp->running, true, __ATOMIC_RELAXED);
 
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, CONFIG_PNUT_TELEPHONY_PPP_STACKSIZE);
@@ -204,7 +208,7 @@ static int data_ppp_start(FAR void *arg, FAR const char *tty, int fd)
   pthread_attr_destroy(&attr);
   if (ret != 0)
     {
-      ppp->running = false;
+      __atomic_store_n(&ppp->running, false, __ATOMIC_RELAXED);
       return -ret;
     }
 
@@ -220,7 +224,7 @@ static void data_ppp_stop(FAR void *arg)
 {
   FAR struct data_ppp_s *ppp = arg;
 
-  ppp->stop = true;
+  __atomic_store_n(&ppp->stop, true, __ATOMIC_RELEASE);
 }
 
 #endif /* CONFIG_NETUTILS_PPPD */

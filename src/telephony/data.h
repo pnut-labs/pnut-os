@@ -148,6 +148,8 @@ struct data_s
   bool held;                        /* The AT channel held */
   bool calling;                     /* ATD sent: hang up at the end */
   bool linked;                      /* The link runs: DATA_LINK_ENDED due */
+  bool alive;                       /* Its thread has not sent ENDED (a
+                                     * link given up on stays alive) */
   bool retrying;                    /* After the end, wait and try again */
   bool up;                          /* PPP up */
   uint32_t retry;                   /* The next wait, in ms */
@@ -224,6 +226,19 @@ void data_init(FAR struct data_s *data, FAR struct pnut_module_s *module,
 
 int data_start(FAR struct data_s *data, FAR struct pnut_loop_s *loop);
 void data_stop(FAR struct data_s *data);
+
+/****************************************************************************
+ * Name: data_deinit
+ *
+ * Description:
+ *   After data_stop() and the loop's end: the pseudo-terminal, the pipe and
+ *   the ring let go, once the link has ended (its last records read from
+ *   the pipe).  While its thread may still write, they stay, for the
+ *   program's end to close.
+ *
+ ****************************************************************************/
+
+void data_deinit(FAR struct data_s *data);
 
 /****************************************************************************
  * Name: data_want

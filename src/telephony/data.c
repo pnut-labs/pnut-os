@@ -619,6 +619,7 @@ static void data_connected(FAR struct data_s *data)
     }
 
   data->linked = true;
+  data->alive  = true;
   data->step   = DATA_STEP_LINK;
   data_timer(data, DATA_LINK_MS, data_link_tick);
 }
@@ -963,6 +964,7 @@ static void data_event(FAR struct data_s *data,
 
       case DATA_LINK_ENDED:
         data->linked = false;
+        data->alive  = false;
         if (data->step == DATA_STEP_STOPPING)
           {
             data_finish(data);
@@ -1336,6 +1338,63 @@ void data_stop(FAR struct data_s *data)
 
   pnut_loop_unwatch(data->loop, data->events[0]);
   data->step = DATA_STEP_OFF;
+}
+
+/****************************************************************************
+ * Name: data_deinit
+ ****************************************************************************/
+
+void data_deinit(FAR struct data_s *data)
+{
+  FAR const struct data_event_s *ev;
+  ssize_t n;
+
+  /* The records the link wrote since data_stop(): its end among them? */
+
+  while (data->alive && data->events[0] >= 0 &&
+         (n = read(data->events[0], data->ebuf + data->elen,
+                   sizeof(data->ebuf) - data->elen)) > 0)
+    {
+      data->elen += n;
+      if (data->elen == sizeof(data->ebuf))
+        {
+          data->elen = 0;
+          ev = (FAR const struct data_event_s *)data->ebuf;
+          if (ev->event == DATA_LINK_ENDED)
+            {
+              data->linked = false;
+              data->alive  = false;
+            }
+        }
+    }
+
+  if (data->alive)
+    {
+      return;                       /* Its thread may still write */
+    }
+
+  if (data->master >= 0)
+    {
+      close(data->master);
+      data->master = -1;
+    }
+
+  if (data->slave >= 0)
+    {
+      close(data->slave);
+      data->slave = -1;
+    }
+
+  if (data->events[0] >= 0)
+    {
+      close(data->events[0]);
+      close(data->events[1]);
+      data->events[0] = -1;
+      data->events[1] = -1;
+    }
+
+  free(data->ring);
+  data->ring = NULL;
 }
 
 /****************************************************************************

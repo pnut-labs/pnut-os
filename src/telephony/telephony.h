@@ -231,4 +231,15 @@ struct telephony_s
 void telephony_init(FAR struct telephony_s *tel,
                     FAR const struct telephony_config_s *config);
 
+/****************************************************************************
+ * Name: telephony_deinit
+ *
+ * Description:
+ *   After the loop's end: what the module holds outside the loop let go
+ *   (mobile data's descriptors and buffer, once its link has ended).
+ *
+ ****************************************************************************/
+
+void telephony_deinit(FAR struct telephony_s *tel);
+
 #endif /* __PNUT_OS_TELEPHONY_TELEPHONY_H */

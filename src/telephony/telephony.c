@@ -3899,3 +3899,12 @@ void telephony_init(FAR struct telephony_s *tel,
   transport_init(&tel->transport, tel, config->messages, config->sms_tick);
   data_init(&tel->data, &tel->module, &g_tel_data_ops, tel, config->link);
 }
+
+/****************************************************************************
+ * Name: telephony_deinit
+ ****************************************************************************/
+
+void telephony_deinit(FAR struct telephony_s *tel)
+{
+  data_deinit(&tel->data);
+}

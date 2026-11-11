@@ -159,6 +159,7 @@ int main(int argc, FAR char *argv[])
     }
 
   pnut_loop_destroy(loop);
+  telephony_deinit(tel);
   free(tel);
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
