@@ -138,6 +138,15 @@ struct data_s
   bool ready;                       /* Registered, on the air */
   char apn[DATA_APN];
 
+  /* Once Wi-Fi has carried the traffic for wifi_hold ms (0: never), no
+   * call, standby, until it no longer does
+   */
+
+  uint32_t wifi_hold;
+  bool wifi;                        /* Wi-Fi carries the traffic */
+  bool standby;                     /* For the hold: no call */
+  FAR struct pnut_timer_s *wifi_timer;
+
   bool started;                     /* data_start() ran */
   uint8_t step;                     /* enum data_step_e (data.c) */
   uint8_t probes;                   /* Probes sent on channel 2 */
@@ -262,6 +271,18 @@ void data_want(FAR struct data_s *data, bool want, FAR const char *apn);
  ****************************************************************************/
 
 void data_ready(FAR struct data_s *data, bool ready, bool keep);
+
+/****************************************************************************
+ * Name: data_wifi
+ *
+ * Description:
+ *   Whether Wi-Fi carries the traffic (Network's link).  After wifi_hold
+ *   ms of it, standby: a call hung up, none dialled, the data setting
+ *   still on; dialled again, afresh, once Wi-Fi no longer carries it.
+ *
+ ****************************************************************************/
+
+void data_wifi(FAR struct data_s *data, bool carries);
 
 /****************************************************************************
  * Name: data_apn_done

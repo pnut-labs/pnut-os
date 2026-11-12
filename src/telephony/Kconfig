@@ -31,6 +31,18 @@ config PNUT_TELEPHONY_PPP_STACKSIZE
 		pseudo-terminal Telephony gives it (RFC 0030).  Without
 		NETUTILS_PPPD there is no mobile data.
 
+config PNUT_TELEPHONY_DATA_WIFI
+	int "Mobile data's standby after Wi-Fi carries the traffic, in seconds"
+	default 300
+	range 0 86400
+	depends on NETUTILS_PPPD
+	---help---
+		Once Wi-Fi has carried the traffic (Network's link in use) this
+		long, mobile data goes on standby: a call is hung up, none is
+		dialled, the data setting stays on.  Until then a call is kept,
+		a quick way back should Wi-Fi go; once Wi-Fi no longer carries
+		the traffic, mobile data dials again.  0: no standby.
+
 config PNUT_TELEPHONY_FINISH
 	int "Time to power the modem down when asked to stop, in ms"
 	default 9500

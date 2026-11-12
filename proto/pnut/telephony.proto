@@ -98,6 +98,8 @@ message TelephonyInfo {
     CONNECTING = 1;
     DATA_ON = 2;
     DATA_FAILED = 3;
+    DATA_STANDBY = 4;             // No call while Wi-Fi carries the
+                                  // traffic; dialled once it does not
   }
 
   // Why the modem is off, failed, or off the air

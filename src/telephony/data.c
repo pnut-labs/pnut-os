@@ -860,14 +860,15 @@ static void data_begin(FAR struct data_s *data)
  *
  * Description:
  *   Start or end, as the setting and the network allow.  A network lost
- *   for less than DATA_GAP_MS keeps a call.
+ *   for less than DATA_GAP_MS keeps a call; standby, Wi-Fi carrying the
+ *   traffic for wifi_hold, ends one.
  *
  ****************************************************************************/
 
 static void data_check(FAR struct data_s *data)
 {
   bool keep = data->started && data->link != NULL && data->want &&
-              (data->ready || data->gap != NULL);
+              !data->standby && (data->ready || data->gap != NULL);
 
   if (keep)
     {
@@ -910,6 +911,27 @@ static void data_gap_tick(FAR struct pnut_loop_s *loop,
   FAR struct data_s *data = arg;
 
   data->gap = NULL;
+  data_check(data);
+}
+
+/****************************************************************************
+ * Name: data_wifi_tick
+ *
+ * Description:
+ *   Wi-Fi has carried the traffic for the hold: standby, a call hung up.
+ *
+ ****************************************************************************/
+
+static void data_wifi_tick(FAR struct pnut_loop_s *loop,
+                           FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct data_s *data = arg;
+
+  data->wifi_timer = NULL;
+  data->standby    = true;
+  pnut_log(data->module, PNUT_LOG_INFO,
+           "Mobile data on standby: Wi-Fi carries the traffic");
+  data_changed(data);
   data_check(data);
 }
 
@@ -1320,6 +1342,15 @@ void data_stop(FAR struct data_s *data)
       data->gap = NULL;
     }
 
+  if (data->wifi_timer != NULL)
+    {
+      pnut_timer_cancel(data->loop, data->wifi_timer);
+      data->wifi_timer = NULL;
+    }
+
+  data->wifi    = false;              /* Told again, at a start */
+  data->standby = false;
+
   if (data->flush != NULL)
     {
       pnut_timer_cancel(data->loop, data->flush);
@@ -1464,6 +1495,59 @@ void data_ready(FAR struct data_s *data, bool ready, bool keep)
 }
 
 /****************************************************************************
+ * Name: data_wifi
+ ****************************************************************************/
+
+void data_wifi(FAR struct data_s *data, bool carries)
+{
+  if (carries == data->wifi)
+    {
+      return;
+    }
+
+  data->wifi = carries;
+  if (carries)
+    {
+      if (data->wifi_hold > 0 && data->started &&
+          pnut_timer_start(data->loop, data->wifi_hold, 0, data_wifi_tick,
+                           data, &data->wifi_timer) < 0)
+        {
+          data->wifi_timer = NULL;    /* No standby, as without a hold */
+        }
+
+      return;
+    }
+
+  if (data->wifi_timer != NULL)
+    {
+      pnut_timer_cancel(data->loop, data->wifi_timer);
+      data->wifi_timer = NULL;
+    }
+
+  if (!data->standby)
+    {
+      return;
+    }
+
+  /* Back, afresh: without a failure's wait */
+
+  data->standby = false;
+  data->fails   = 0;
+  data->failed  = false;
+  data->retry   = DATA_RETRY_MS;
+  if (data->step == DATA_STEP_RETRY)
+    {
+      data_untime(data);
+      data->step = DATA_STEP_OFF;
+    }
+
+  pnut_log(data->module, PNUT_LOG_INFO,
+           "Mobile data off standby: Wi-Fi no longer carries the traffic");
+  data_changed(data);
+  data_check(data);
+}
+
+/****************************************************************************
  * Name: data_apn_done
  ****************************************************************************/
 
@@ -1599,6 +1683,15 @@ int data_state(FAR const struct data_s *data)
   if (!data->want || data->link == NULL)
     {
       return PNUT_TELEPHONY_INFO_DATA_DATA_OFF;
+    }
+
+  /* Standby while there could be a call: not with the modem off, or
+   * off the air
+   */
+
+  if (data->standby && (data->ready || data->step != DATA_STEP_OFF))
+    {
+      return PNUT_TELEPHONY_INFO_DATA_DATA_STANDBY;
     }
 
   if (data->step == DATA_STEP_UP)

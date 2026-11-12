@@ -108,7 +108,7 @@ static FAR const char *const g_telephony_tech[] =
 
 static FAR const char *const g_telephony_data[] =
 {
-  "off", "connecting", "on", "failed"
+  "off", "connecting", "on", "failed", "standby"
 };
 
 static FAR const char *const g_telephony_reason[] =

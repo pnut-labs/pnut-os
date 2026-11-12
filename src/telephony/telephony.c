@@ -2830,6 +2830,23 @@ static void tel_settings(FAR struct pnut_settings_cache_s *cache, int index,
 }
 
 /****************************************************************************
+ * Name: tel_network
+ *
+ * Description:
+ *   Network's link in use: Wi-Fi carrying the traffic puts mobile data on
+ *   standby, after a while.
+ *
+ ****************************************************************************/
+
+static void tel_network(FAR struct pnut_network_info_reader_s *reader,
+                        FAR const pnut_network_info_t *msg, FAR void *arg)
+{
+  FAR struct telephony_s *tel = arg;
+
+  data_wifi(&tel->data, msg->link == PNUT_NETWORK_INFO_LINK_WIFI);
+}
+
+/****************************************************************************
  * Name: tel_airplane
  ****************************************************************************/
 
@@ -3779,6 +3796,18 @@ static int tel_start(FAR struct pnut_module_s *module,
       pnut_log(module, PNUT_LOG_ERROR, "No mobile data: %d", ret);
     }
 
+  ret = pnut_network_info_subscribe(loop, tel_network, tel,
+                                    &tel->network);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_WARNING,
+               "No network topic: %d; mobile data kept on Wi-Fi", ret);
+    }
+  else
+    {
+      tel->network_open = true;
+    }
+
   ret = pnut_board_connect(loop, tel->config.board, tel_board, tel,
                            &tel->board);
   if (ret < 0)
@@ -3886,6 +3915,12 @@ static void tel_stop(FAR struct pnut_module_s *module,
       tel->airplanes_open = false;
     }
 
+  if (tel->network_open)
+    {
+      pnut_network_info_unsubscribe(&tel->network);
+      tel->network_open = false;
+    }
+
   if (tel->settings_open)
     {
       pnut_telephony_settings_close(&tel->settings);
@@ -3927,6 +3962,7 @@ void telephony_init(FAR struct telephony_s *tel,
 
   transport_init(&tel->transport, tel, config->messages, config->sms_tick);
   data_init(&tel->data, &tel->module, &g_tel_data_ops, tel, config->link);
+  tel->data.wifi_hold = config->data_wifi_hold;
 }
 
 /****************************************************************************
