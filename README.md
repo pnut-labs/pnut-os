@@ -110,7 +110,10 @@ the next start: MCUboot swaps the slots, so the previous firmware is
 kept in the second. The system program confirms the new one once every
 program in `etc/pnut/programs` that NxInit has has stayed ready for 10 s
 (`PNUT_STATES_READY_HOLD`); if the device starts again before that,
-MCUboot swaps them back. Until Packages
+MCUboot swaps them back. A swap takes about 70 s for a 1.5 MB firmware,
+and MCUboot shows it on the screen: "Installing the update" (or
+"Undoing the update") and a bar of ten blocks (`ESP32S3_MCUBOOT_PROGRESS`,
+the board's `bootloader/progress.c` in the NuttX fork). Until Packages
 installs updates, a trial is made by hand, from a build's `nuttx/nuttx.hex`:
 
 ```sh
