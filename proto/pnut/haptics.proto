@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Haptics (RFC 0033), a module of the media program: it owns the
+// vibration motors.  It plays named effects, which it maps to the
+// device's motor so that they feel the same on every device, and short
+// patterns of its callers' own.  One vibration plays at a time, by use:
+// a higher use stops a lower one; a lower one asked while a higher plays
+// is dropped.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Haptics {
+  option (pnut.iface) = 9;
+
+  // A named effect, with its use
+  rpc Effect (HapticsEffectRequest) returns (HapticsReply) {
+    option (pnut.method) = 1;
+  }
+
+  // The caller's own pattern, played once
+  rpc Pattern (HapticsPatternRequest) returns (HapticsReply) {
+    option (pnut.method) = 2;
+  }
+
+  // Stop the vibration of a use, if it plays
+  rpc Stop (HapticsStopRequest) returns (HapticsReply) {
+    option (pnut.method) = 3;
+  }
+}
+
+message HapticsError {
+  enum Code {
+    NONE = 0;
+    NO_MOTOR = 1;                 // The device has none, or it failed
+    BUSY = 2;                     // A higher use plays: dropped
+    TOO_LONG = 3;                 // A pattern not of 1 to 16 steps, each
+                                  // 1 to 5000 ms and a strength up to 100,
+                                  // 5 s in all
+    TOO_OFTEN = 4;                // An app's: more than one a second
+    OFF = 5;                      // The interface's, with haptics.interface
+                                  // off
+  }
+}
+
+// What a vibration is for, lowest first: a higher one stops a lower
+enum HapticsUse {
+  HAPTICS_USE_APP = 0;
+  HAPTICS_USE_INTERFACE = 1;      // Ticks and clicks of the system UI
+  HAPTICS_USE_NOTIFICATION = 2;
+  HAPTICS_USE_RING = 3;           // An incoming call
+  HAPTICS_USE_ALARM = 4;
+}
+
+enum HapticsEffectName {
+  HAPTICS_EFFECT_TICK = 0;        // A key, a step in a list
+  HAPTICS_EFFECT_CLICK = 1;       // A press that did something
+  HAPTICS_EFFECT_DOUBLE_CLICK = 2;  // A choice confirmed
+  HAPTICS_EFFECT_NOTIFICATION = 3;
+  HAPTICS_EFFECT_RING = 4;        // Repeats until stopped
+  HAPTICS_EFFECT_ALARM = 5;       // Repeats until stopped
+  HAPTICS_EFFECT_SUCCESS = 6;
+  HAPTICS_EFFECT_ERROR = 7;
+}
+
+message HapticsEffectRequest {
+  HapticsEffectName effect = 1;
+  HapticsUse use = 2;
+}
+
+// A step of a pattern: the motor at a strength, 0 (still) to 100, for a
+// time
+message HapticsStep {
+  uint32 ms = 1;
+  uint32 strength = 2;
+}
+
+message HapticsPatternRequest {
+  repeated HapticsStep steps = 1 [(nanopb).max_count = 16];
+  HapticsUse use = 2;
+}
+
+message HapticsStopRequest {
+  HapticsUse use = 1;
+}
+
+message HapticsReply {
+}
+
+// What plays, for the system UI and tests
+message HapticsInfo {
+  option (pnut.topic) = "haptics";
+
+  bool playing = 1;
+  HapticsUse use = 2;
+  bool pattern = 3;               // A caller's pattern, not an effect
+  HapticsEffectName effect = 4;   // When not a pattern
+}
+
+message HapticsSettings {
+  option (pnut.settings) = "haptics";
+
+  // Every effect's strength: the motor's lighter effects, or its level
+  // scaled
+  string strength = 1 [(nanopb).max_size = 8,
+                       (pnut.setting) = { default: "medium",
+                                          label: "haptics.strength",
+                                          public: true,
+                                          choices: ["weak", "medium",
+                                                    "strong"] }];
+
+  // Ticks and clicks of the system UI: off on a device with a keyboard
+  bool interface = 2 [(pnut.setting) = { default: "false",
+                                         label: "haptics.interface",
+                                         public: true }];
+}
