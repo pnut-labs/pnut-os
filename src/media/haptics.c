@@ -599,16 +599,18 @@ static void haptics_described(FAR struct pnut_board_client_s *client,
   FAR const pnut_board_part_t *part = NULL;
   pb_size_t i;
 
-  if (status == PNUT_STATUS_TIMEOUT ||
-      (status == PNUT_STATUS_UNAVAILABLE && err == NULL))
+  if (status == PNUT_STATUS_TIMEOUT)
     {
       pnut_log(&haptics->module, PNUT_LOG_WARNING,
-               "No answer from Board: status %d; asking again", status);
-      if (status == PNUT_STATUS_TIMEOUT)
-        {
-          haptics_board(client, true, haptics);
-        }
+               "No answer from Board: asking again");
+      haptics_board(client, true, haptics);
+      return;
+    }
 
+  if (status == PNUT_STATUS_UNAVAILABLE && err == NULL)
+    {
+      pnut_log(&haptics->module, PNUT_LOG_WARNING,
+               "Board went away: asked again once it is back");
       return;
     }
 

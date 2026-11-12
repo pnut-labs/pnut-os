@@ -154,8 +154,16 @@ static void haptics_replied(FAR struct pnut_haptics_client_s *client,
       return;
     }
 
-  if (err != NULL && err->code != 0 &&
-      err->code < sizeof(g_haptics_failures) / sizeof(g_haptics_failures[0]))
+  /* NO_MOTOR is also a motor that failed: then the status is INTERNAL */
+
+  if (err != NULL && err->code == PNUT_HAPTICS_ERROR_CODE_NO_MOTOR &&
+      status == PNUT_STATUS_INTERNAL)
+    {
+      fprintf(stderr, "haptics: the motor failed\n");
+    }
+  else if (err != NULL && err->code != 0 &&
+           err->code < sizeof(g_haptics_failures) /
+                       sizeof(g_haptics_failures[0]))
     {
       fprintf(stderr, "haptics: %s\n", g_haptics_failures[err->code]);
     }
