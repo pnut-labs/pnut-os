@@ -56,10 +56,17 @@ static struct motor_ff_s g_motor =
 static int motor_play(int fd, int16_t id, int value)
 {
   struct ff_event_s event;
+  ssize_t n;
 
   event.code  = id;
   event.value = value;
-  return write(fd, &event, sizeof(event)) == sizeof(event) ? OK : -errno;
+  n = write(fd, &event, sizeof(event));
+  if (n < 0)
+    {
+      return -errno;
+    }
+
+  return n == sizeof(event) ? OK : -EIO;   /* A short write: none expected */
 }
 
 static int motor_upload(FAR struct motor_ff_s *m, FAR struct ff_effect *e,

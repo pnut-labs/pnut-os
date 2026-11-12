@@ -39,7 +39,9 @@ message HapticsError {
     NONE = 0;
     NO_MOTOR = 1;                 // The device has none, or it failed
     BUSY = 2;                     // A higher use plays: dropped
-    TOO_LONG = 3;                 // A pattern over 5 s, or of no steps
+    TOO_LONG = 3;                 // A pattern not of 1 to 16 steps, each
+                                  // 1 to 5000 ms and a strength up to 100,
+                                  // 5 s in all
     TOO_OFTEN = 4;                // An app's: more than one a second
     OFF = 5;                      // The interface's, with haptics.interface
                                   // off
