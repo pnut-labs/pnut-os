@@ -67,9 +67,9 @@ typedef CODE int (*wallclock_who_t)(FAR void *arg, pid_t pid,
  * NTP: Time asks its server itself (ntp_server) over the link Network
  * says is in use (the network topic, RFC 0015): Wi-Fi or mobile data, at
  * once and then hourly at most, a failure tried again a minute later, the
- * wait doubling up to the hour; a new link asks a failed question again.
- * The question runs on a worker: the name's lookup and the answer's wait
- * block.
+ * wait doubling up to the hour; a new link, or a new address on it, asks
+ * a failed question again at once.  The question runs on a worker: the
+ * name's lookup and the answer's wait block.
  */
 
 struct wallclock_config_s
