@@ -126,9 +126,9 @@ struct wall_test_s
   bool saw_warsaw;                /* The topic told of Warsaw's rule */
 
 #ifdef CONFIG_PNUT_TIME_NTP
-  /* Wi-Fi's topic, and an NTP server on 127.0.0.1 */
+  /* Network's topic, and an NTP server on 127.0.0.1 */
 
-  FAR struct pnut_publisher_s *wifi;
+  FAR struct pnut_publisher_s *links;
   int ntp_sock;                   /* -1: none */
   uint16_t ntp_port;
   uint32_t ntp_every;
@@ -342,22 +342,31 @@ static uint64_t ntp_test_now(void)
   return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
-/* Wi-Fi joined or not, as its topic says */
+/* The link in use, or none, as Network's topic says, with the device's
+ * address on it
+ */
 
-static void wall_test_wifi(FAR struct wall_test_s *t, bool joined)
+static void wall_test_link_at(FAR struct wall_test_s *t,
+                              pnut_network_info_link_t link,
+                              uint32_t address)
 {
-  pnut_wifi_info_t msg;
+  pnut_network_info_t msg;
 
   memset(&msg, 0, sizeof(msg));
-  msg.state = joined ? PNUT_WIFI_INFO_STATE_JOINED :
-              PNUT_WIFI_INFO_STATE_ON;
-  if (joined)
+  msg.link = link;
+  if (link != PNUT_NETWORK_INFO_LINK_NO_LINK)
     {
-      strlcpy(msg.name, "home", sizeof(msg.name));
-      msg.address = htonl(0x7f000001);
+      msg.metered = link == PNUT_NETWORK_INFO_LINK_MOBILE;
+      msg.address = htonl(address);
     }
 
-  assert_int_equal(pnut_wifi_info_publish(t->wifi, &msg), 0);
+  assert_int_equal(pnut_network_info_publish(t->links, &msg), 0);
+}
+
+static void wall_test_link(FAR struct wall_test_s *t,
+                           pnut_network_info_link_t link)
+{
+  wall_test_link_at(t, link, 0x7f000001);
 }
 
 /* The NTP server: a request answered as the test's mode says */
@@ -457,7 +466,7 @@ static int wall_test_start(FAR struct pnut_module_s *module,
   assert_int_equal(pnut_network_time_advertise(loop, &t->network), 0);
   assert_int_equal(pnut_gnss_time_advertise(loop, &t->gnss), 0);
 #ifdef CONFIG_PNUT_TIME_NTP
-  assert_int_equal(pnut_wifi_info_advertise(loop, &t->wifi), 0);
+  assert_int_equal(pnut_network_info_advertise(loop, &t->links), 0);
   if (t->ntp_sock >= 0)
     {
       assert_int_equal(pnut_loop_watch(loop, t->ntp_sock, EPOLLIN,
@@ -498,7 +507,7 @@ static void wall_test_stop_module(FAR struct pnut_module_s *module,
   pnut_topic_unadvertise(t->gnss);
   pnut_topic_unadvertise(t->network);
 #ifdef CONFIG_PNUT_TIME_NTP
-  pnut_topic_unadvertise(t->wifi);
+  pnut_topic_unadvertise(t->links);
   if (t->ntp_sock >= 0)
     {
       pnut_loop_unwatch(loop, t->ntp_sock);
@@ -600,7 +609,7 @@ static void wall_test_free(FAR struct wall_test_s *t)
 {
   static FAR const char * const topics[] =
   {
-    "time", "network_time", "gnss_time", "settings", "wifi"
+    "time", "network_time", "gnss_time", "settings", "network"
   };
 
   char path[160];
@@ -1439,7 +1448,7 @@ static void rate_test_run(FAR struct rate_test_s *t, bool clock,
   static FAR const char * const topics[] =
   {
     "sleep_rate", "time", "network_time", "gnss_time", "settings",
-    "airplane_mode", "wifi"
+    "airplane_mode", "network"
   };
 
   snprintf(dir, sizeof(dir), "/tmp/pnut-rate-%d", (int)getpid());
@@ -1532,9 +1541,9 @@ static void test_wallclock_sleep_rate(void **state)
 
 #ifdef CONFIG_PNUT_TIME_NTP
 
-/* Wi-Fi joined: Time asks the NTP server, and the clock takes its time;
- * joined again within the hour, it does not ask again.  Off at the end:
- * a topic's last message outlives the test on the simulator
+/* A link in use (Wi-Fi): Time asks the NTP server, and the clock takes
+ * its time; the link back within the hour, it does not ask again.  Off
+ * at the end: a topic's last message outlives the test on the simulator
  */
 
 static bool wall_test_ntp_steps(FAR struct wall_test_s *t)
@@ -1548,7 +1557,7 @@ static bool wall_test_ntp_steps(FAR struct wall_test_s *t)
       case 1:
         assert_int_equal(t->status, PNUT_STATUS_OK);
         assert_int_equal(t->asked, 0);
-        wall_test_wifi(t, true);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
         break;
 
       case 2:                     /* Its time, taken */
@@ -1559,11 +1568,11 @@ static bool wall_test_ntp_steps(FAR struct wall_test_s *t)
 
         assert_int_equal(t->asked, 1);
         assert_true(t->clock >= T_NTP && t->clock <= T_NTP + 1);
-        wall_test_wifi(t, false);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
         break;
 
       case 3:
-        wall_test_wifi(t, true);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
         t->ticks = 0;
         break;
 
@@ -1574,7 +1583,7 @@ static bool wall_test_ntp_steps(FAR struct wall_test_s *t)
           }
 
         assert_int_equal(t->asked, 1);
-        wall_test_wifi(t, false);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
         break;
 
       case 5:
@@ -1610,7 +1619,7 @@ static bool wall_test_ntp_retry_steps(FAR struct wall_test_s *t)
         break;
 
       case 1:
-        wall_test_wifi(t, true);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
         break;
 
       case 2:                     /* Two tries, and again after a while */
@@ -1650,7 +1659,7 @@ static bool wall_test_ntp_retry_steps(FAR struct wall_test_s *t)
           }
 
         assert_true(t->asked_at - t->mark >= 500);
-        wall_test_wifi(t, false);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
         break;
 
       case 6:
@@ -1675,7 +1684,7 @@ static bool wall_test_ntp_kod_steps(FAR struct wall_test_s *t)
         break;
 
       case 1:
-        wall_test_wifi(t, true);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
         break;
 
       case 2:                     /* Failed once: a kiss-o'-death next */
@@ -1695,8 +1704,8 @@ static bool wall_test_ntp_kod_steps(FAR struct wall_test_s *t)
           }
 
         t->mark = t->asked;
-        wall_test_wifi(t, false);
-        wall_test_wifi(t, true);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
         break;
 
       case 4:                     /* Not asked for a while */
@@ -1706,7 +1715,7 @@ static bool wall_test_ntp_kod_steps(FAR struct wall_test_s *t)
           }
 
         assert_int_equal(t->asked, (int)t->mark);
-        wall_test_wifi(t, false);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
         break;
 
       case 5:
@@ -1727,6 +1736,87 @@ static void test_wallclock_ntp_kod(void **state)
   t->ntp_wait  = 100;
   wall_test_run(t, wall_test_ntp_kod_steps);
   assert_int_equal(t->step, 6);
+  wall_test_free(t);
+}
+
+/* A question failed over Wi-Fi is asked again at once when the device
+ * has a new address on it, and over mobile data, a new link; not when
+ * Network names the same link and address again
+ */
+
+static bool wall_test_ntp_link_steps(FAR struct wall_test_s *t)
+{
+  switch (t->step)
+    {
+      case 0:
+        t->ntp_mode = NTP_STRAY;
+        wall_test_setting(t, "ntp_server", "127.0.0.1", 0);
+        break;
+
+      case 1:
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
+        break;
+
+      case 2:                     /* Failed: the same link again */
+        if (t->wall.ntp_fails == 0 || t->wall.ntp_working)
+          {
+            return false;
+          }
+
+        t->mark  = t->asked;
+        t->ticks = 0;
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
+        break;
+
+      case 3:                     /* Not asked; then a new address */
+        if (++t->ticks < 6)
+          {
+            return false;
+          }
+
+        assert_int_equal(t->asked, (int)t->mark);
+        wall_test_link_at(t, PNUT_NETWORK_INFO_LINK_WIFI, 0x7f000002);
+        break;
+
+      case 4:                     /* Asked, failed again; mobile data */
+        if (t->asked == (int)t->mark || t->wall.ntp_working)
+          {
+            return false;
+          }
+
+        t->mark     = t->asked;
+        t->ntp_mode = NTP_GOOD;
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_MOBILE);
+        break;
+
+      case 5:                     /* Asked over it, long before a retry */
+        if (t->wall.source != PNUT_TIME_INFO_SOURCE_NTP)
+          {
+            return false;
+          }
+
+        assert_int_equal(t->asked, (int)t->mark + 1);
+        wall_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
+        break;
+
+      case 6:
+        pnut_loop_stop(t->loop, 0);
+        break;
+    }
+
+  return true;
+}
+
+static void test_wallclock_ntp_link(void **state)
+{
+  FAR struct wall_test_s *t = wall_test_new(true);
+
+  ntp_test_server(t);
+  t->ntp_every = 600000;
+  t->ntp_retry = 600000;
+  t->ntp_wait  = 100;
+  wall_test_run(t, wall_test_ntp_link_steps);
+  assert_int_equal(t->step, 7);
   wall_test_free(t);
 }
 
@@ -1766,6 +1856,7 @@ int main(void)
     cmocka_unit_test(test_wallclock_ntp),
     cmocka_unit_test(test_wallclock_ntp_retry),
     cmocka_unit_test(test_wallclock_ntp_kod),
+    cmocka_unit_test(test_wallclock_ntp_link),
 #endif
   };
 

@@ -28,7 +28,7 @@
 #include "pnut/time.topics.h"
 
 #ifdef CONFIG_PNUT_TIME_NTP
-#  include "pnut/wifi.topics.h"
+#  include "pnut/network.topics.h"
 #  include "ntp.h"
 #endif
 
@@ -64,11 +64,12 @@ typedef CODE int (*wallclock_who_t)(FAR void *arg, pid_t pid,
  * rate is the device's description's, announced on the sleep_rate topic
  * for Power; learning the unit's own rate from the readings comes later.
  *
- * NTP: Time asks its server itself (ntp_server) while Wi-Fi is joined to
- * a network (the wifi topic, until the Network service announces links,
- * RFC 0031), at once and then hourly at most, a failure tried again a
- * minute later, the wait doubling up to the hour.  The question runs on
- * a worker: the name's lookup and the answer's wait block.
+ * NTP: Time asks its server itself (ntp_server) over the link Network
+ * says is in use (the network topic, RFC 0015): Wi-Fi or mobile data, at
+ * once and then hourly at most, a failure tried again a minute later, the
+ * wait doubling up to the hour; a new link, or a new address on it, asks
+ * a failed question again at once.  The question runs on a worker: the
+ * name's lookup and the answer's wait block.
  */
 
 struct wallclock_config_s
@@ -205,11 +206,13 @@ struct wallclock_s
   bool save_again;
 
 #ifdef CONFIG_PNUT_TIME_NTP
-  /* NTP, while Wi-Fi is joined */
+  /* NTP, while a link is in use */
 
-  struct pnut_wifi_info_reader_s wifi;
-  bool wifi_open;
-  bool linked;                    /* Joined, with an address */
+  struct pnut_network_info_reader_s links;
+  bool links_open;
+  bool linked;                    /* A link, with an address */
+  uint8_t link;                   /* Which, while linked */
+  uint32_t address;               /* Its address */
   bool ntp_working;
   bool ntp_asap;                  /* Asked for at once while one ran */
   uint8_t ntp_fails;
