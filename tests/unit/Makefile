@@ -19,6 +19,7 @@ SYSTEM := $(ROOT)/src/system
 TELEPHONY := $(ROOT)/src/telephony
 DATA   := $(ROOT)/src/data
 NETWORK := $(ROOT)/src/network
+MEDIA  := $(ROOT)/src/media
 BUILD  := $(ROOT)/build/unit
 
 # The interfaces' code and nanopb: the top-level Makefile names them
@@ -31,7 +32,7 @@ CMOCKA_CFLAGS ?=
 CMOCKA_LIBS   ?= -lcmocka
 
 CFLAGS  := -std=gnu11 -O1 -g -Wall -Werror -I$(LIB)/include -I$(LIB)
-CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA) -I$(NETWORK)
+CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA) -I$(NETWORK) -I$(MEDIA)
 CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
 
 # Time's NTP, which the host's network can serve the tests
@@ -54,8 +55,14 @@ SRCS    += $(filter-out %/main.c,$(wildcard $(DATA)/*.c))
 # give a fake
 
 SRCS    += $(NETWORK)/network.c $(NETWORK)/wifi.c
+
+# The media program's Haptics; its motor is NuttX's force-feedback driver:
+# the tests give a fake
+
+SRCS    += $(MEDIA)/haptics.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
 HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
+HDRS    += $(wildcard $(MEDIA)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)
 TESTS   := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 

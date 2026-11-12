@@ -1,0 +1,32 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_MEDIA
+	bool "The media program"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB && PNUT_SYSTEM
+	---help---
+		The media program (RFC 0007): so far Haptics (RFC 0033), which
+		plays named effects and callers' own patterns on the vibration
+		motor Board's description names.  Audio comes next.
+
+if PNUT_MEDIA
+
+config PNUT_MEDIA_STACKSIZE
+	int "The program's stack, in bytes"
+	default 6144
+
+config PNUT_HAPTICS_DEVICE
+	string "The motor's device, without Board"
+	default ""
+	---help---
+		Empty: Haptics asks Board for the vibration motor
+		(RFC 0024).  A path (a force-feedback device such as
+		/dev/input_ff0) skips Board, for a target without its
+		description.
+
+endif
