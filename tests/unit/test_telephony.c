@@ -55,6 +55,10 @@
 
 #define T_UTC   1793363696          /* 2026-10-30 12:34:56 UTC */
 
+/* Wi-Fi carrying the traffic before mobile data's standby, in ms */
+
+#define TEL_WIFI_HOLD 400
+
 /* SMS in the modem's memory (the codec's own vectors, test_sms.c) */
 
 #define T_SCTS    "62010321300040"
@@ -175,6 +179,10 @@ struct tel_test_s
   bool data_done;                 /* Both arrived */
   uint64_t done_at;
   int data_at_stop;               /* The data state when the run ended */
+  bool data_wifi;                 /* Wi-Fi carries the traffic, a while */
+  FAR struct pnut_publisher_s *links;
+  uint8_t wifi_step;
+  uint64_t wifi_at;
   char line2[64];                 /* Channel 2's command line */
   size_t l2len;
   uint8_t from_modem[64];         /* What the link read from its end */
@@ -949,6 +957,95 @@ static void tel_test_time(FAR struct pnut_network_time_reader_s *reader,
  * as NxInit does
  */
 
+/* Network's link in use, as its topic says */
+
+static void tel_test_link(FAR struct tel_test_s *t,
+                          pnut_network_info_link_t link)
+{
+  pnut_network_info_t msg;
+
+  memset(&msg, 0, sizeof(msg));
+  msg.link = link;
+  if (link != PNUT_NETWORK_INFO_LINK_NO_LINK)
+    {
+      msg.metered = link == PNUT_NETWORK_INFO_LINK_MOBILE;
+      msg.address = htonl(0xc0a80102);
+    }
+
+  assert_int_equal(pnut_network_info_publish(t->links, &msg), 0);
+  t->wifi_at = pnut_now();
+  t->wifi_step++;
+}
+
+/* Data up; Wi-Fi in use for less than the hold, then gone: the call
+ * kept; Wi-Fi in use again: standby after the hold, the call hung up;
+ * Wi-Fi gone, the hang-up long over: dialled again, up
+ */
+
+static void tel_test_wifi_tick(FAR struct tel_test_s *t,
+                               FAR struct pnut_loop_s *loop)
+{
+  uint64_t since = pnut_now() - t->wifi_at;
+
+  switch (t->wifi_step)
+    {
+      case 0:
+        if (t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_ON)
+          {
+            tel_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
+          }
+        break;
+
+      case 1:
+        if (since >= TEL_WIFI_HOLD / 4)
+          {
+            tel_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
+          }
+        break;
+
+      case 2:
+        if (since >= TEL_WIFI_HOLD * 3 / 2)
+          {
+            assert_int_equal(t->hangups, 0);
+            assert_int_equal(t->dials, 1);
+            assert_int_equal(t->info.data, PNUT_TELEPHONY_INFO_DATA_DATA_ON);
+            tel_test_link(t, PNUT_NETWORK_INFO_LINK_WIFI);
+          }
+        break;
+
+      case 3:
+        if (t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_STANDBY &&
+            t->hung_up && t->link_stops > 0)
+          {
+            assert_true(since >= TEL_WIFI_HOLD);
+            assert_int_equal(t->info.data_address, 0);
+            t->wifi_at = pnut_now();
+            t->wifi_step++;
+          }
+        break;
+
+      case 4:                     /* The hang-up over: standby, idle */
+        if (since >= DATA_DTR_MS + 500)
+          {
+            assert_int_equal(t->info.data,
+                             PNUT_TELEPHONY_INFO_DATA_DATA_STANDBY);
+            assert_int_equal(t->dials, 1);
+            tel_test_link(t, PNUT_NETWORK_INFO_LINK_NO_LINK);
+          }
+        break;
+
+      case 5:
+        if (t->info.data == PNUT_TELEPHONY_INFO_DATA_DATA_ON &&
+            t->stop_at == 0)
+          {
+            t->data_at_stop = t->info.data;
+            t->stop_at      = pnut_now();
+            pnut_loop_stop(loop, 0);
+          }
+        break;
+    }
+}
+
 static void tel_test_tick(FAR struct pnut_loop_s *loop,
                           FAR struct pnut_timer_s *timer, FAR void *arg)
 {
@@ -967,6 +1064,12 @@ static void tel_test_tick(FAR struct pnut_loop_s *loop,
       t->dialing        = false;
       t->data_connected = true;
       tel_test_frame(t, 2, 0xef, "\r\nCONNECT 150000000\r\n", 21);
+    }
+
+  if (t->data_wifi)
+    {
+      tel_test_wifi_tick(t, loop);
+      return;
     }
 
   if (t->data)
@@ -1099,6 +1202,11 @@ static int tel_test_start(FAR struct pnut_module_s *module,
       data_want(&t->tel.data, true, t->apn != NULL ? t->apn : "");
     }
 
+  if (t->data_wifi)
+    {
+      assert_int_equal(pnut_network_info_advertise(loop, &t->links), 0);
+    }
+
   pnut_module_ready(module);
   return 0;
 }
@@ -1115,6 +1223,12 @@ static void tel_test_stop_module(FAR struct pnut_module_s *module,
     {
       pnut_topic_unadvertise(t->airplanes);
       t->airplanes = NULL;
+    }
+
+  if (t->links != NULL)
+    {
+      pnut_topic_unadvertise(t->links);
+      t->links = NULL;
     }
 }
 
@@ -1188,7 +1302,8 @@ static void tel_test_free(FAR struct tel_test_s *t)
 {
   static FAR const char * const topics[] =
   {
-    "telephony", "network_time", "airplane_mode", "settings", "messages"
+    "telephony", "network_time", "airplane_mode", "settings", "messages",
+    "network"
   };
 
   char path[128 + 256];
@@ -1264,6 +1379,11 @@ static int tel_test_run(FAR struct tel_test_s *t)
       t->link.arg   = t;
       t->link_tty   = -1;
       tconfig.link  = &t->link;
+    }
+
+  if (t->data_wifi)
+    {
+      tconfig.data_wifi_hold = TEL_WIFI_HOLD;
     }
 
   if (t->sms)
@@ -1998,6 +2118,32 @@ static void test_telephony_data(void **state)
 }
 
 /****************************************************************************
+ * Name: test_telephony_data_wifi
+ *
+ * Description:
+ *   Mobile data up while Wi-Fi carries the traffic: kept when Wi-Fi goes
+ *   within the hold; after it, standby, the call hung up, the setting
+ *   still on; dialled again once Wi-Fi goes.
+ *
+ ****************************************************************************/
+
+static void test_telephony_data_wifi(void **state)
+{
+  FAR struct tel_test_s *t = tel_test_new();
+
+  t->data      = true;
+  t->data_wifi = true;
+  assert_int_equal(tel_test_run(t), 0);
+  assert_int_equal(t->wifi_step, 5);
+  assert_int_equal(t->dials, 2);
+  assert_int_equal(t->link_starts, 2);
+  assert_true(t->hangups >= 1);
+  assert_true(t->tel.data.want);
+  assert_int_equal(t->data_at_stop, PNUT_TELEPHONY_INFO_DATA_DATA_ON);
+  tel_test_free(t);
+}
+
+/****************************************************************************
  * Name: test_telephony_data_escape
  *
  * Description:
@@ -2157,6 +2303,7 @@ int main(void)
     cmocka_unit_test(test_telephony_sms_send),
     cmocka_unit_test(test_telephony_sms_send_fail),
     cmocka_unit_test(test_telephony_data),
+    cmocka_unit_test(test_telephony_data_wifi),
     cmocka_unit_test(test_telephony_data_escape),
     cmocka_unit_test(test_telephony_data_apn),
     cmocka_unit_test(test_telephony_data_fail),

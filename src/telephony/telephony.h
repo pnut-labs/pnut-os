@@ -24,6 +24,7 @@
 
 #include "pnut/board.pnut.h"
 #include "pnut/board.topics.h"
+#include "pnut/network.topics.h"
 #include "pnut/services.pnut.h"
 #include "pnut/telephony.pnut.h"
 #include "pnut/telephony.settings.h"
@@ -96,6 +97,12 @@ struct telephony_config_s
    */
 
   FAR const struct data_link_ops_s *link;
+
+  /* How long Wi-Fi carries the traffic before mobile data's standby, in
+   * ms; 0 for none
+   */
+
+  uint32_t data_wifi_hold;
 };
 
 /* A request kept while Service states says who sent it */
@@ -152,6 +159,8 @@ struct telephony_s
   struct pnut_airplane_mode_reader_s airplanes;
   bool airplanes_open;
   bool airplane;
+  struct pnut_network_info_reader_s network;  /* Network's link in use */
+  bool network_open;
   bool air_set;                   /* As the modem was last told */
   bool air_keeping;               /* AT+CFUN=4 given again, unanswered */
   uint64_t air_checked;           /* The backstop's last CFUN=4, ms */

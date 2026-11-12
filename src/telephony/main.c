@@ -149,6 +149,7 @@ int main(int argc, FAR char *argv[])
   tconfig.get_line  = telephony_get_line;
 #ifdef CONFIG_NETUTILS_PPPD
   tconfig.link      = &g_data_ppp;
+  tconfig.data_wifi_hold = CONFIG_PNUT_TELEPHONY_DATA_WIFI * 1000;
 #endif
   telephony_init(tel, &tconfig);
 
