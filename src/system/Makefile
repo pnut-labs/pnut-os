@@ -25,6 +25,12 @@ ifeq ($(CONFIG_PNUT_TIME_NTP),y)
 CSRCS    += ntp.c
 endif
 
+# /usr's image, made by tools/stage-usr.sh before the build
+
+ifeq ($(CONFIG_PNUT_USR),y)
+CSRCS    += $(realpath $(APPDIR)/external)/../build/usr/usr_romfs.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen

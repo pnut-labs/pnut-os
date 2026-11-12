@@ -29,4 +29,39 @@ config PNUT_HAPTICS_DEVICE
 		/dev/input_ff0) skips Board, for a target without its
 		description.
 
+config PNUT_AUDIO
+	bool "Audio: the speaker (RFC 0032)"
+	default y
+	depends on AUDIO
+	---help---
+		The built-in sounds, mixed and played on the speaker
+		Board's description names, by the uses' rules.
+
+if PNUT_AUDIO
+
+config PNUT_AUDIO_DEVICE
+	string "The speaker's device, without Board"
+	default ""
+	---help---
+		Empty: Audio asks Board for the speaker (RFC 0024).  A
+		path (an audio device such as /dev/audio/pcm0) skips
+		Board, for a target without its description.
+
+config PNUT_AUDIO_SOUNDS
+	string "The built-in sounds' directory"
+	default "/usr/share/sounds"
+	---help---
+		Each <name>.wav in it is a built-in sound, read whole at
+		start (RFC 0010; the system program mounts /usr).
+
+config PNUT_AUDIO_HIGHPASS
+	int "The speaker's high-pass, Hz (0: none)"
+	default 300
+	range 0 2000
+	---help---
+		What the speaker cannot play only shakes it, and is heard
+		as distortion: taken out of everything played.
+
+endif
+
 endif

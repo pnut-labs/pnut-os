@@ -16,6 +16,10 @@ MODULE    = $(CONFIG_PNUT_MEDIA)
 MAINSRC   = main.c
 CSRCS     = haptics.c motor.c
 
+ifeq ($(CONFIG_PNUT_AUDIO),y)
+CSRCS    += audio.c mixer.c output.c wav.c
+endif
+
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
 CFLAGS   += ${INCDIR_PREFIX}$(GENDIR)
 CFLAGS   += ${INCDIR_PREFIX}$(APPDIR)/netutils/nanopb/nanopb

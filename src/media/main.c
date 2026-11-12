@@ -24,12 +24,15 @@
 #include <pnut/module.h>
 
 #include "haptics.h"
+#ifdef CONFIG_PNUT_AUDIO
+#  include "audio.h"
+#endif
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Board's service, in the system program: the motor */
+/* Board's service, in the system program: the motor, the speaker */
 
 #define MEDIA_BOARD  "board"
 
@@ -43,6 +46,10 @@ int main(int argc, FAR char *argv[])
   struct haptics_config_s hconfig;
   FAR struct pnut_loop_s *loop;
   static struct haptics_s haptics;
+#ifdef CONFIG_PNUT_AUDIO
+  struct audio_config_s aconfig;
+  static struct audio_s audio;
+#endif
   int ret;
 
   pnut_loop_defaults(&config);
@@ -69,6 +76,25 @@ int main(int argc, FAR char *argv[])
   haptics_init(&haptics, &hconfig);
 
   ret = pnut_module_add(loop, &haptics.module);
+
+#ifdef CONFIG_PNUT_AUDIO
+  if (ret >= 0)
+    {
+      memset(&aconfig, 0, sizeof(aconfig));
+      aconfig.ops      = &g_audio_output;
+      aconfig.board    = MEDIA_BOARD;
+      aconfig.sounds   = CONFIG_PNUT_AUDIO_SOUNDS;
+      aconfig.highpass = CONFIG_PNUT_AUDIO_HIGHPASS;
+      if (CONFIG_PNUT_AUDIO_DEVICE[0] != '\0')
+        {
+          aconfig.device = CONFIG_PNUT_AUDIO_DEVICE;
+        }
+
+      audio_init(&audio, &aconfig);
+      ret = pnut_module_add(loop, &audio.module);
+    }
+#endif
+
   if (ret >= 0)
     {
       ret = pnut_loop_run(loop);

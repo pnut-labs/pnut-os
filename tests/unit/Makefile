@@ -56,10 +56,12 @@ SRCS    += $(filter-out %/main.c,$(wildcard $(DATA)/*.c))
 
 SRCS    += $(NETWORK)/network.c $(NETWORK)/wifi.c
 
-# The media program's Haptics; its motor is NuttX's force-feedback driver:
-# the tests give a fake
+# The media program's Haptics and Audio; the motor is NuttX's
+# force-feedback driver and the speaker its audio driver: the tests give
+# fakes
 
-SRCS    += $(MEDIA)/haptics.c
+SRCS    += $(MEDIA)/haptics.c $(MEDIA)/audio.c $(MEDIA)/mixer.c
+SRCS    += $(MEDIA)/wav.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
 HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
 HDRS    += $(wildcard $(MEDIA)/*.h)
