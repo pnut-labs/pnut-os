@@ -251,7 +251,8 @@ config PNUT_TIME_NTP
 	depends on NET_UDP && LIBC_NETDB
 	---help---
 		Time reads the time from an NTP server (its setting ntp_server)
-		while Wi-Fi is joined to a network (RFC 0028, RFC 0031).
+		over the link in use, Wi-Fi or mobile data, as Network says
+		(RFC 0028, RFC 0015).
 
 config PNUT_TIME_STATE
 	string "Time's state file"

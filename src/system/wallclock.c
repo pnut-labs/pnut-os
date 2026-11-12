@@ -1034,7 +1034,7 @@ static void wallclock_gnss(FAR struct pnut_gnss_time_reader_s *reader,
  * Name: wallclock_ntp_*
  *
  * Description:
- *   NTP while Wi-Fi is joined: a question on a worker when one is due,
+ *   NTP while a link is in use: a question on a worker when one is due,
  *   its answer a reading like a source's.
  *
  ****************************************************************************/
@@ -1221,29 +1221,36 @@ static void wallclock_ntp_next(FAR struct wallclock_s *wall)
   wall->ntp_working = true;
 }
 
-/* Wi-Fi joined, with an address, or not any more */
+/* The link in use, Wi-Fi or mobile data, with an address, or none any
+ * more
+ */
 
-static void wallclock_wifi(FAR struct pnut_wifi_info_reader_s *reader,
-                           FAR const pnut_wifi_info_t *msg, FAR void *arg)
+static void wallclock_link(FAR struct pnut_network_info_reader_s *reader,
+                           FAR const pnut_network_info_t *msg,
+                           FAR void *arg)
 {
   FAR struct wallclock_s *wall = arg;
-  bool linked = msg->state == PNUT_WIFI_INFO_STATE_JOINED &&
+  bool linked = msg->link != PNUT_NETWORK_INFO_LINK_NO_LINK &&
                 msg->address != 0;
 
-  if (linked == wall->linked)
+  if (linked == wall->linked &&
+      (!linked || (msg->link == wall->link &&
+                   msg->address == wall->address)))
     {
       return;
     }
 
-  wall->linked = linked;
+  wall->linked  = linked;
+  wall->link    = (uint8_t)msg->link;
+  wall->address = msg->address;
   if (!linked)
     {
       wallclock_ntp_cancel(wall);
       return;
     }
 
-  /* A new link: a question failed on the last one is asked again now,
-   * one answered within the hour is not
+  /* A new link, or a new address on it: a question failed on the last
+   * one is asked again now, one answered within the hour is not
    */
 
   if (wall->ntp_fails > 0)
@@ -1550,14 +1557,16 @@ static int wallclock_start(FAR struct pnut_module_s *module,
     }
 
 #ifdef CONFIG_PNUT_TIME_NTP
-  ret = pnut_wifi_info_subscribe(loop, wallclock_wifi, wall, &wall->wifi);
+  ret = pnut_network_info_subscribe(loop, wallclock_link, wall,
+                                    &wall->links);
   if (ret < 0)
     {
-      pnut_log(module, PNUT_LOG_WARNING, "No wifi topic: %d; no NTP", ret);
+      pnut_log(module, PNUT_LOG_WARNING, "No network topic: %d; no NTP",
+               ret);
     }
   else
     {
-      wall->wifi_open = true;
+      wall->links_open = true;
     }
 #endif
 
@@ -1629,10 +1638,10 @@ static void wallclock_stop(FAR struct pnut_module_s *module,
    * its answer dropped
    */
 
-  if (wall->wifi_open)
+  if (wall->links_open)
     {
-      pnut_wifi_info_unsubscribe(&wall->wifi);
-      wall->wifi_open = false;
+      pnut_network_info_unsubscribe(&wall->links);
+      wall->links_open = false;
     }
 
   wall->linked = false;
