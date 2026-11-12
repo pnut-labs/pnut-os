@@ -155,7 +155,7 @@ struct states_s
   FAR struct pnut_timer_s *timer; /* Kept: the next try */
   uint32_t backoff;
   bool version;                   /* NxInit's version line has come */
-  bool listed;                    /* A whole list has come */
+  bool listed;                    /* The first whole list ever has come */
   bool current;                   /* A whole list has come on this watch */
   bool warned;                    /* A lost watch was logged */
   bool all_ready;                 /* config.ready was told, and done */
