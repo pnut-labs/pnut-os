@@ -514,6 +514,14 @@ static void haptics_on_stop(FAR struct pnut_haptics_server_s *server,
   FAR struct haptics_s *haptics = arg;
   pnut_haptics_reply_t reply;
 
+  if (in->use < PNUT_HAPTICS_USE_HAPTICS_USE_APP ||
+      in->use > PNUT_HAPTICS_USE_HAPTICS_USE_ALARM)
+    {
+      pnut_haptics_fail(server, req, PNUT_STATUS_INVALID,
+                        PNUT_HAPTICS_ERROR_CODE_NONE, "no such use");
+      return;
+    }
+
   if (haptics->playing && haptics->use == in->use)
     {
       haptics_end(haptics);

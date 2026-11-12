@@ -414,7 +414,7 @@ static bool hapt_uses(FAR struct hapt_s *t)
         hapt_stop(t, PNUT_HAPTICS_USE_HAPTICS_USE_ALARM);
         break;
 
-      case 5:                     /* Still */
+      case 5:                     /* Still; a use that does not exist */
         assert_int_equal(t->status, PNUT_STATUS_OK);
         if (t->state.playing)
           {
@@ -422,6 +422,11 @@ static bool hapt_uses(FAR struct hapt_s *t)
           }
 
         assert_int_equal(t->calls[t->ncalls - 1].kind, CALL_STOP);
+        hapt_stop(t, PNUT_HAPTICS_USE_HAPTICS_USE_ALARM + 1);
+        break;
+
+      case 6:                     /* Refused */
+        assert_int_equal(t->status, PNUT_STATUS_INVALID);
         break;
     }
 
@@ -784,7 +789,7 @@ static void test_haptics_effects(void **state)
 
 static void test_haptics_uses(void **state)
 {
-  hapt_run(hapt_uses, 5, false);
+  hapt_run(hapt_uses, 6, false);
 }
 
 static void test_haptics_patterns(void **state)
