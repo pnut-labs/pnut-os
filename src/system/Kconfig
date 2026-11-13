@@ -35,8 +35,9 @@ config PNUT_USR_DEVNO
 	default 3
 	depends on PNUT_USR
 	---help---
-		One the board's /etc (CONFIG_ETC_ROMFSDEVNO) and /tmp
-		(CONFIG_ETC_FATDEVNO) do not use.
+		A RAM disk number that neither the board's /etc
+		(CONFIG_ETC_ROMFSDEVNO) nor its /tmp (CONFIG_ETC_FATDEVNO)
+		uses.
 
 config PNUT_SYSTEM_STACKSIZE
 	int "Its stack, in bytes"

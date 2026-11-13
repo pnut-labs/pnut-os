@@ -82,10 +82,13 @@ struct output_s
 
   /* A wake waits in the queue: one at most, so that the queue always
    * has room for the driver, which waits for it (and would, inside a
-   * stop, for ever)
+   * stop, for ever).  Set by the loop alone, cleared by the thread alone,
+   * as it takes the wake and before it acts on it: so a wake skipped
+   * because one waits finds its sound mixed all the same.  Atomic loads
+   * and stores.
    */
 
-  volatile bool woken;
+  bool woken;
 
   /* The thread's: a stop asked meanwhile for a start or the end; the
    * driver kept buffers past a stop, so none can be queued again
@@ -353,7 +356,7 @@ static void output_end(FAR struct output_s *o)
         }
       else if (msg.msg_id == OUTPUT_MSG_WAKE)
         {
-          o->woken  = false;
+          __atomic_store_n(&o->woken, false, __ATOMIC_RELEASE);
           o->rewake = true;
         }
       else if (msg.msg_id == OUTPUT_MSG_QUIT)
@@ -408,7 +411,7 @@ static FAR void *output_thread(FAR void *arg)
       switch (msg.msg_id)
         {
           case OUTPUT_MSG_WAKE:
-            o->woken = false;
+            __atomic_store_n(&o->woken, false, __ATOMIC_RELEASE);
             if (!playing)
               {
                 ret = output_begin(o);
@@ -550,6 +553,8 @@ static int output_open(FAR void *arg, FAR const char *path,
 
   pthread_attr_init(&tattr);
   param.sched_priority = sched_get_priority_max(SCHED_FIFO) - 9;
+  pthread_attr_setinheritsched(&tattr, PTHREAD_EXPLICIT_SCHED);
+  pthread_attr_setschedpolicy(&tattr, SCHED_FIFO);
   pthread_attr_setschedparam(&tattr, &param);
   pthread_attr_setstacksize(&tattr, OUTPUT_STACK);
   ret = -pthread_create(&o->thread, &tattr, output_thread, o);
@@ -636,16 +641,16 @@ static void output_wake(FAR void *arg)
   FAR struct output_s *o = &g_output;
   struct audio_msg_s msg;
 
-  if (o->wake == (mqd_t)-1 || o->woken)
+  if (o->wake == (mqd_t)-1 || __atomic_load_n(&o->woken, __ATOMIC_ACQUIRE))
     {
       return;
     }
 
-  o->woken = true;
+  __atomic_store_n(&o->woken, true, __ATOMIC_RELEASE);
   memset(&msg, 0, sizeof(msg));
   msg.msg_id = OUTPUT_MSG_WAKE;
   if (mq_send(o->wake, (FAR const char *)&msg, sizeof(msg), 0) < 0)
     {
-      o->woken = false;
+      __atomic_store_n(&o->woken, false, __ATOMIC_RELEASE);
     }
 }
