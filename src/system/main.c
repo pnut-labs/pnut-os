@@ -30,8 +30,10 @@
 #include <unistd.h>
 #include <sys/boardctl.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>
 #include <sys/statfs.h>
 
+#include <nuttx/macro.h>
 #include <nuttx/power/battery_ioctl.h>
 
 #include <pnut/loop.h>
@@ -48,6 +50,51 @@
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+#ifdef CONFIG_PNUT_USR
+/* /usr's image (tools/stage-usr.sh): ROMFS, in sectors of 64 bytes */
+
+#  define USR_SECTOR  64
+#  define USR_DEVICE  "/dev/ram" STRINGIFY(CONFIG_PNUT_USR_DEVNO)
+
+extern const unsigned char g_pnut_usr_romfs[];
+extern const unsigned int g_pnut_usr_romfs_len;
+
+/* /usr mounted, the firmware's read-only files (RFC 0010), before any
+ * other program starts: they wait for this one to be ready
+ */
+
+static void system_usr(void)
+{
+  struct boardioc_romdisk_s desc;
+  struct statfs st;
+  int ret;
+
+  /* Mounted already: by this program, before a restart */
+
+  if (statfs("/usr", &st) == 0 && st.f_type == ROMFS_MAGIC)
+    {
+      return;
+    }
+
+  memset(&desc, 0, sizeof(desc));
+  desc.minor    = CONFIG_PNUT_USR_DEVNO;
+  desc.nsectors = (g_pnut_usr_romfs_len + USR_SECTOR - 1) / USR_SECTOR;
+  desc.sectsize = USR_SECTOR;
+  desc.image    = g_pnut_usr_romfs;
+
+  ret = boardctl(BOARDIOC_ROMDISK, (uintptr_t)&desc);
+  if (ret >= 0)
+    {
+      ret = mount(USR_DEVICE, "/usr", "romfs", MS_RDONLY, NULL);
+    }
+
+  if (ret < 0)
+    {
+      syslog(LOG_ERR, "pnut_system: /usr not mounted: %d\n", -errno);
+    }
+}
+#endif
 
 /* Settings asks Service states who calls (RFC 0006) */
 
@@ -190,6 +237,10 @@ int main(int argc, FAR char *argv[])
   FAR struct pnut_loop_s *loop;
   bool off;
   int ret;
+
+#ifdef CONFIG_PNUT_USR
+  system_usr();
+#endif
 
   settings = calloc(1, sizeof(*settings));
   board    = calloc(1, sizeof(*board));

@@ -18,6 +18,27 @@ config PNUT_SYSTEM
 
 if PNUT_SYSTEM
 
+config PNUT_USR
+	bool "/usr, the firmware's read-only files (RFC 0010)"
+	default y
+	depends on FS_ROMFS && !DISABLE_MOUNTPOINT
+	select BOARDCTL
+	select BOARDCTL_ROMDISK
+	---help---
+		The system program mounts them at start, before it says it
+		is ready: a ROMFS image the build makes of build/usr/tree
+		(tools/stage-usr.sh), with share/sounds, the built-in
+		sounds, on a target with a speaker (RFC 0032).
+
+config PNUT_USR_DEVNO
+	int "The RAM disk /usr is mounted from: /dev/ramN"
+	default 3
+	depends on PNUT_USR
+	---help---
+		A RAM disk number that neither the board's /etc
+		(CONFIG_ETC_ROMFSDEVNO) nor its /tmp (CONFIG_ETC_FATDEVNO)
+		uses.
+
 config PNUT_SYSTEM_STACKSIZE
 	int "Its stack, in bytes"
 	default 8192

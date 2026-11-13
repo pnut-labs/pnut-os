@@ -50,6 +50,10 @@ PROTOS         := $(shell find proto tests/proto -name '*.proto' 2> /dev/null)
 ETC                := $(BUILD)/etc
 export ETC_OVERLAY := $(ETC)
 
+# pnut-os's /usr (RFC 0010): a ROMFS image of build/usr/tree, staged
+# before each build too, as build/usr/usr_romfs.c, which the system
+# program compiles and mounts (CONFIG_PNUT_USR)
+
 # NuttX builds with -j$(JOBS), unless make was given its own -j; decided
 # in the recipe, since make 4.3 sets MAKEFLAGS only after parsing
 
@@ -126,6 +130,7 @@ BOARD_DEFCONFIG := $(wildcard $(NUTTX)/boards/*/*/$(firstword \
 $(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
 	$(nanopb_link)
 	$(ROOT)/tools/stage-etc.sh $(ROOT) $(ETC) $(TARGET) $(PYTHON) $(GEN)
+	$(ROOT)/tools/stage-usr.sh $(ROOT) $(BUILD)/usr $(TARGET) $(PYTHON)
 	$(MAKE) -C $(NUTTX) $(NUTTXJOBS)
 	$(AFTER_BUILD)
 

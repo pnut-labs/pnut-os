@@ -10,12 +10,12 @@ include $(APPDIR)/Make.defs
 
 # The shell's commands (RFC 0012)
 
-PROGNAME  = settings telephony messages logs wifi haptics
+PROGNAME  = settings telephony messages logs wifi haptics audio
 PRIORITY  = SCHED_PRIORITY_DEFAULT
 STACKSIZE = $(CONFIG_PNUT_COMMANDS_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_COMMANDS)
 
-MAINSRC   = settings.c telephony.c messages.c logs.c wifi.c haptics.c
+MAINSRC   = settings.c telephony.c messages.c logs.c wifi.c haptics.c audio.c
 
 # The computers adb lets in, while adbd keeps the keys offered (RFC 0012)
 

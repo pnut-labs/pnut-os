@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+############################################################################
+# pnut-os/tools/gen-sounds
+#
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mateusz Pianka
+#
+############################################################################
+"""The built-in sounds (RFC 0032), synthesized: WAV files, 16 kHz, mono,
+16 bits, the same bytes on every run.  Every tone is 700 Hz or higher:
+the phone's speaker is small, and lower tones only shake it.
+
+    tools/gen-sounds <directory>
+"""
+
+import math
+import os
+import struct
+import sys
+import wave
+
+RATE = 16000
+PEAK = 0.7          # Of full scale: room for the mixer's interpolation
+FADE = 0.003        # Seconds of fade in and out, so that nothing clicks
+
+
+def bell(freq, seconds, decay):
+    """A struck tone: the fundamental and two quieter harmonics, dying
+    away exponentially."""
+    n = int(seconds * RATE)
+    out = []
+    for i in range(n):
+        t = i / RATE
+        env = math.exp(-t / decay)
+        out.append(env * (math.sin(2 * math.pi * freq * t) +
+                          0.3 * math.sin(4 * math.pi * freq * t) +
+                          0.1 * math.sin(6 * math.pi * freq * t)) / 1.4)
+    return out
+
+
+def beep(freq, seconds):
+    """A steady tone."""
+    n = int(seconds * RATE)
+    return [math.sin(2 * math.pi * freq * i / RATE) for i in range(n)]
+
+
+def silence(seconds):
+    return [0.0] * int(seconds * RATE)
+
+
+def faded(samples):
+    """Fade in and out over FADE."""
+    k = min(int(FADE * RATE), len(samples) // 2)
+    out = list(samples)
+    for i in range(k):
+        g = i / k
+        out[i] *= g
+        out[-1 - i] *= g
+    return out
+
+
+def tones(*parts):
+    out = []
+    for p in parts:
+        out.extend(faded(p))
+    return out
+
+
+# C6, E6, G6, A6, B5, F#5, A5, D6, C7
+C6, E6, G6, A6 = 1046.5, 1318.5, 1568.0, 1760.0
+B5, FS5, A5, D6, C7 = 987.8, 740.0, 880.0, 1174.7, 2093.0
+
+SOUNDS = {
+    # A key click: a short, high tick
+    "click": tones(bell(1800.0, 0.025, 0.006)),
+
+    # A notification: two rising chimes
+    "notification": tones(bell(E6, 0.18, 0.08), bell(A6, 0.32, 0.12)),
+
+    # The ringtone, looped: a rising arpeggio, twice, then a pause
+    "ring": tones(bell(C6, 0.15, 0.1), bell(E6, 0.15, 0.1),
+                  bell(G6, 0.15, 0.1), bell(C7, 0.25, 0.15),
+                  silence(0.2),
+                  bell(C6, 0.15, 0.1), bell(E6, 0.15, 0.1),
+                  bell(G6, 0.15, 0.1), bell(C7, 0.25, 0.15),
+                  silence(0.6)),
+
+    # An alarm, looped: four quick beeps, two pitches, then a pause
+    "alarm": tones(beep(A5, 0.1), silence(0.05), beep(D6, 0.1),
+                   silence(0.05), beep(A5, 0.1), silence(0.05),
+                   beep(D6, 0.1), silence(0.45)),
+
+    # An error: two falling tones
+    "error": tones(bell(B5, 0.16, 0.1), bell(FS5, 0.24, 0.12)),
+}
+
+
+def write(path, samples):
+    peak = max(abs(s) for s in samples) or 1.0
+    data = b"".join(struct.pack("<h", int(round(s / peak * PEAK * 32767)))
+                    for s in samples)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(data)
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.stderr.write(__doc__)
+        return 2
+    os.makedirs(sys.argv[1], exist_ok=True)
+    for name, samples in sorted(SOUNDS.items()):
+        write(os.path.join(sys.argv[1], name + ".wav"), samples)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
