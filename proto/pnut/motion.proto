@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Motion (RFC 0036), a module of the sensors program: it sets the motion
+// sensor hub up and tells what its sensors mean.  Whether the device is
+// still or moving and which way it faces, on the motion topic; today's
+// steps and what the owner is doing, for those allowed; the gestures that
+// wake the screen, for the system UI.  The hub works it out while the
+// processor sleeps; what the hub cannot tell, Motion says it lacks
+// (Abilities) rather than guess.
+
+syntax = "proto3";
+
+package pnut;
+
+import "pnut/options.proto";
+
+service Motion {
+  option (pnut.iface) = 13;
+
+  // Today's steps: since local midnight, kept across restarts
+  rpc Steps (MotionStepsRequest) returns (MotionSteps) {
+    option (pnut.method) = 1;
+    option (pnut.permission) = "motion.activity";
+  }
+
+  // Today's steps at once, then as they change, until the caller ends the
+  // stream
+  rpc FollowSteps (MotionStepsRequest) returns (stream MotionSteps) {
+    option (pnut.method) = 2;
+    option (pnut.permission) = "motion.activity";
+  }
+
+  // What the owner is doing
+  rpc Activity (MotionActivityRequest) returns (MotionActivity) {
+    option (pnut.method) = 3;
+    option (pnut.permission) = "motion.activity";
+  }
+
+  // What the owner is doing at once, then as it changes, until the caller
+  // ends the stream
+  rpc FollowActivity (MotionActivityRequest)
+      returns (stream MotionActivity) {
+    option (pnut.method) = 4;
+    option (pnut.permission) = "motion.activity";
+  }
+
+  // What Motion can tell on this device
+  rpc Abilities (MotionAbilitiesRequest) returns (MotionAbilities) {
+    option (pnut.method) = 5;
+  }
+}
+
+message MotionError {
+  enum Code {
+    NONE = 0;
+    NOT_ABLE = 1;                 // The device cannot tell it
+    OFF = 2;                      // Turned off (the motion.steps setting)
+    BUSY = 3;                     // Too many following
+  }
+}
+
+message MotionStepsRequest {
+}
+
+message MotionSteps {
+  uint32 count = 1;
+  int64 changed = 2;              // When it last changed: seconds since
+                                  // 1970; 0 when it has not today
+}
+
+enum MotionActivityKind {
+  MOTION_ACTIVITY_UNKNOWN = 0;
+  MOTION_ACTIVITY_STILL = 1;
+  MOTION_ACTIVITY_WALKING = 2;
+  MOTION_ACTIVITY_RUNNING = 3;
+  MOTION_ACTIVITY_BICYCLE = 4;
+  MOTION_ACTIVITY_VEHICLE = 5;
+}
+
+message MotionActivityRequest {
+}
+
+message MotionActivity {
+  MotionActivityKind kind = 1;
+  int64 since = 2;                // Seconds since 1970; 0 when unknown
+}
+
+message MotionAbilitiesRequest {
+}
+
+// Which motion fields Motion fills, and what else it tells
+message MotionAbilities {
+  bool still = 1;                 // motion's movement
+  bool facing = 2;                // motion's facing
+  bool steps = 3;
+  bool activity = 4;
+  bool picked_up = 5;             // gestures'
+  bool glance = 6;
+}
+
+enum MotionMovement {
+  MOTION_MOVEMENT_UNKNOWN = 0;
+  MOTION_MOVEMENT_STILL = 1;
+  MOTION_MOVEMENT_MOVING = 2;
+}
+
+// Which way the screen faces
+enum MotionFacing {
+  MOTION_FACING_UNKNOWN = 0;
+  MOTION_FACING_UP = 1;           // Lying on its back
+  MOTION_FACING_DOWN = 2;         // Lying on its screen
+  MOTION_FACING_UPRIGHT = 3;      // Standing, or held to be looked at
+  MOTION_FACING_SIDE = 4;         // On one of its sides
+}
+
+// Still or moving, and facing: for the app on screen, or one allowed to
+// stay in the background (not checked yet)
+message MotionInfo {
+  option (pnut.topic) = "motion";
+
+  MotionMovement movement = 1;
+  MotionFacing facing = 2;
+}
+
+// A gesture: for the system UI alone (not checked yet), which wakes the
+// screen as the motion.wake setting says
+message MotionGesture {
+  option (pnut.topic) = "gestures";
+
+  enum Kind {
+    PICKED_UP = 0;
+    GLANCE = 1;                   // Lifted to be looked at
+  }
+
+  Kind kind = 1;
+  uint64 taken_ms = 2;            // CLOCK_MONOTONIC
+}
+
+message MotionSettings {
+  option (pnut.settings) = "motion";
+
+  // Count steps, and tell the activity
+  bool steps = 1 [(pnut.setting) = { default: "true",
+                                     label: "motion.steps",
+                                     public: true }];
+
+  // The gestures that wake the screen
+  bool wake = 2 [(pnut.setting) = { default: "true",
+                                    label: "motion.wake",
+                                    public: true }];
+
+  // Turning the device face down silences a ring: the system UI's, from
+  // the motion topic
+  bool face_down = 3 [(pnut.setting) = { default: "true",
+                                         label: "motion.face_down",
+                                         public: true }];
+}

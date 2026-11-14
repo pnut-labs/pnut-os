@@ -12,8 +12,8 @@ config PNUT_SENSORS
 	---help---
 		The sensors program (RFC 0007): so far Location (RFC 0035),
 		which answers where the device is from the GNSS receiver
-		Board's description names, switched on only while asked.
-		Motion and Sensors come later.
+		Board's description names, switched on only while asked, and
+		Motion (RFC 0036).  Sensors comes later.
 
 if PNUT_SENSORS
 
@@ -25,7 +25,9 @@ config PNUT_SENSORS_WORKER_STACKSIZE
 	int "A worker's stack, in bytes"
 	default 4096
 	---help---
-		The worker reads and writes Location's saved state.
+		The worker reads and writes Location's saved state and
+		Motion's steps, and opens the motion sensors (the first
+		uploads the hub's firmware).
 
 config PNUT_LOCATION_DIR
 	string "Location's saved state"
@@ -37,5 +39,29 @@ config PNUT_LOCATION_DIR
 config PNUT_LOCATION_LINGER
 	int "The receiver kept on after the last caller, ms"
 	default 5000
+
+config PNUT_MOTION
+	bool "Motion"
+	default y
+	depends on SENSORS_BHI260AP
+	---help---
+		Motion (RFC 0036): still or moving, facing, today's steps,
+		activity and the wake gestures, from the BHI260AP sensor hub's
+		virtual sensors.
+
+if PNUT_MOTION
+
+config PNUT_MOTION_DIR
+	string "Today's steps, kept"
+	default "/var/lib/motion"
+
+config PNUT_MOTION_SAVE
+	int "Between saves of a changed step count, ms"
+	default 600000
+	---help---
+		A restart loses no steps (they are saved as Motion stops); a
+		power loss loses those since the last save.
+
+endif
 
 endif

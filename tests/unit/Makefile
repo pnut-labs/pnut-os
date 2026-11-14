@@ -69,10 +69,11 @@ SRCS    += $(MEDIA)/haptics.c
 
 SRCS    += $(RADIOS)/packetradio.c $(RADIOS)/rules.c
 
-# The sensors program's Location; its receiver speaks UBX through NuttX's
-# GNSS driver: the tests give a fake
+# The sensors program's Location, whose receiver speaks UBX through
+# NuttX's GNSS driver, and Motion, whose hub is NuttX's BHI260AP driver:
+# the tests give fakes
 
-SRCS    += $(SENSORS)/location.c $(SENSORS)/ubx.c
+SRCS    += $(SENSORS)/location.c $(SENSORS)/ubx.c $(SENSORS)/motion.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
 HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
 HDRS    += $(wildcard $(MEDIA)/*.h $(RADIOS)/*.h $(SENSORS)/*.h)
