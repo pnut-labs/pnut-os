@@ -20,6 +20,7 @@ TELEPHONY := $(ROOT)/src/telephony
 DATA   := $(ROOT)/src/data
 NETWORK := $(ROOT)/src/network
 MEDIA  := $(ROOT)/src/media
+RADIOS := $(ROOT)/src/radios
 SENSORS := $(ROOT)/src/sensors
 BUILD  := $(ROOT)/build/unit
 
@@ -34,7 +35,7 @@ CMOCKA_LIBS   ?= -lcmocka
 
 CFLAGS  := -std=gnu11 -O1 -g -Wall -Werror -I$(LIB)/include -I$(LIB)
 CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA) -I$(NETWORK) -I$(MEDIA)
-CFLAGS  += -I$(SENSORS)
+CFLAGS  += -I$(RADIOS) -I$(SENSORS)
 CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
 
 # Time's NTP, which the host's network can serve the tests
@@ -63,13 +64,18 @@ SRCS    += $(NETWORK)/network.c $(NETWORK)/wifi.c
 
 SRCS    += $(MEDIA)/haptics.c
 
+# The radios program's Radio; its LoRa radio is NuttX's SX126x driver:
+# the tests give a fake
+
+SRCS    += $(RADIOS)/packetradio.c $(RADIOS)/rules.c
+
 # The sensors program's Location; its receiver speaks UBX through NuttX's
 # GNSS driver: the tests give a fake
 
 SRCS    += $(SENSORS)/location.c $(SENSORS)/ubx.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
 HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
-HDRS    += $(wildcard $(MEDIA)/*.h $(SENSORS)/*.h)
+HDRS    += $(wildcard $(MEDIA)/*.h $(RADIOS)/*.h $(SENSORS)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)
 TESTS   := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 

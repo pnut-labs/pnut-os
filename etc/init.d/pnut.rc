@@ -74,6 +74,22 @@ on property:svc.system.state=ready
    start network
 #endif
 
+#ifdef CONFIG_PNUT_RADIOS
+
+/* The radios program (RFC 0007): Radio (RFC 0034), once the system
+ * program is ready: it asks Board for the LoRa radio.
+ */
+
+service radios pnut_radios
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on property:svc.system.state=ready
+   start radios
+#endif
+
 #ifdef CONFIG_PNUT_SENSORS
 
 /* The sensors program (RFC 0007): Location (RFC 0035), once the system

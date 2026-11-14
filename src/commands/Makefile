@@ -24,6 +24,13 @@ PROGNAME += adbkeys
 MAINSRC  += adbkeys.c
 endif
 
+# The LoRa radio, with the radios program (RFC 0034)
+
+ifneq ($(CONFIG_PNUT_RADIOS),)
+PROGNAME += radio
+MAINSRC  += radio.c
+endif
+
 # Where the device is, with the sensors program (RFC 0035)
 
 ifneq ($(CONFIG_PNUT_SENSORS),)
