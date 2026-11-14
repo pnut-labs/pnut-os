@@ -68,12 +68,15 @@ sims = 1
 voice = true
 sms = true
 
+# Its antennas' gains are not measured: the internal one's taken as 0 dBi,
+# an external one's as a usual whip's 3 dBi, so that Radio keeps under
+# the power limits with either (RFC 0034)
 [[parts]]
 kind = "lora"
 name = "lora"
 chip = "SX1262"
 device = "/dev/lora0"
-radio = { min_khz = 863000, max_khz = 870000, min_dbm = -9, max_dbm = 22 }
+radio = { min_khz = 863000, max_khz = 870000, min_dbm = -9, max_dbm = 22, internal_gain_cdbi = 0, external_gain_cdbi = 300 }
 
 [[parts]]
 kind = "gnss"
@@ -176,3 +179,12 @@ kind = "modem"
 part = "modem"
 role = "dtr"
 device = "/dev/modem_dtr"
+
+# LoRa's antenna switch (RFC 0034): high, its default, chooses the internal
+# antenna; an external one fitted but not chosen detunes it by about 15 dB
+
+[[lines]]
+kind = "lora"
+part = "lora"
+role = "antenna"
+device = "/dev/lora_ant"

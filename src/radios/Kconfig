@@ -1,0 +1,31 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_RADIOS
+	bool "The radios program"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB && PNUT_SYSTEM && LPWAN_SX126X
+	---help---
+		The radios program (RFC 0007): so far Radio (RFC 0034), which
+		gives one caller at a time the LoRa radio Board's description
+		names, set up as it asks, and checks every send against the
+		region's band plan.  Bluetooth and NFC come later.
+
+if PNUT_RADIOS
+
+config PNUT_RADIOS_STACKSIZE
+	int "The program's stack, in bytes"
+	default 6144
+
+config PNUT_RADIOS_WORKER_STACKSIZE
+	int "A worker's stack, in bytes"
+	default 4096
+	---help---
+		The worker sends Radio's packets: a write() to the driver,
+		which waits until the packet is on the air.
+
+endif
