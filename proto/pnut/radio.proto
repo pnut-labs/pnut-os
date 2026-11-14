@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Radio (RFC 0034), a module of the radios program: it owns the low-power
+// packet radios, so far LoRa.  One caller at a time opens a radio with a
+// configuration and a way of listening, sends packets on it and receives
+// the packets heard, as a stream; Radio checks every send against the
+// region's band plan (the band, the power at the antenna, the air time of
+// each sub-band over the last hour).  Radio never lends the device.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Radio {
+  option (pnut.iface) = 11;
+
+  // Take a radio, set up as asked: the packets heard come on the stream.
+  // The caller gives the radio back (RFC 0034's Close) by ending the
+  // stream, or by going.
+  rpc Open (RadioOpenRequest) returns (stream RadioPacket) {
+    option (pnut.method) = 1;
+  }
+
+  // A packet, on the open radio: answered once it is on the air
+  rpc Send (RadioSendRequest) returns (RadioSendReply) {
+    option (pnut.method) = 2;
+  }
+
+  // A new configuration or way of listening, between packets
+  rpc Configure (RadioConfigureRequest) returns (RadioReply) {
+    option (pnut.method) = 3;
+  }
+}
+
+message RadioError {
+  enum Code {
+    NONE = 0;
+    NO_RADIO = 1;                 // The device has no radio of that name
+    BUSY = 2;                     // Another caller has it
+    NOT_OPEN = 3;                 // The caller has not opened it
+    BAND = 4;                     // Not wholly inside a sub-band of the
+                                  // region's plan and the radio's band
+    POWER = 5;                    // Over the sub-band's power at the
+                                  // antenna, or outside the radio's
+    AIR_TIME = 6;                 // The sub-band's air time for the hour
+                                  // used up; the text says when it fits
+    AIRPLANE = 7;                 // Airplane mode: off the air
+    NO_PLAN = 8;                  // No band plan for the region: nothing
+                                  // is sent
+    SENDING = 9;                  // The send before not finished
+    CONFIG = 10;                  // A configuration the radio cannot take
+    FAILED = 11;                  // The radio failed
+  }
+}
+
+// A LoRa radio's configuration
+message RadioLora {
+  uint32 frequency_hz = 1;        // The channel's centre
+  uint32 bandwidth_hz = 2;        // 7810, 10420, 15630, 20830, 31250,
+                                  // 41670, 62500, 125000, 250000, 500000
+  uint32 spreading_factor = 3;    // 5 to 12
+  uint32 coding_rate = 4;         // 5 to 8: 4/5 to 4/8
+  uint32 sync_word = 5;           // One byte, as most LoRa chips take it:
+                                  // 0x12 private, 0x34 LoRaWAN
+  uint32 preamble = 6;            // Symbols, 6 to 65535
+  sint32 power_dbm = 7;           // At the chip
+  bool crc = 8;
+  bool invert_iq = 9;
+}
+
+// How a radio listens while it is open
+enum RadioListen {
+  RADIO_LISTEN_ALWAYS = 0;        // Receiving all the time
+  RADIO_LISTEN_DUTY_CYCLE = 1;    // Receiving for listen_us, asleep for
+                                  // sleep_us, in turn: it hears senders
+                                  // whose preamble lasts longer than a
+                                  // sleep and a listen
+}
+
+message RadioOpenRequest {
+  string radio = 1 [(nanopb).max_size = 16];  // As Board names it
+  RadioLora lora = 2;
+  RadioListen listen = 3;
+  uint32 listen_us = 4;           // A duty cycle's
+  uint32 sleep_us = 5;
+}
+
+// A packet heard
+message RadioPacket {
+  bytes data = 1 [(nanopb).max_size = 255];
+  sint32 rssi_dbm = 2;
+  sint32 snr_cdb = 3;             // Signal to noise, hundredths of a dB
+  bool crc_error = 4;             // Received, its CRC wrong
+  uint64 ended_ms = 5;            // When it was taken from the radio, by
+                                  // the monotonic clock
+}
+
+message RadioSendRequest {
+  string radio = 1 [(nanopb).max_size = 16];
+  bytes data = 2 [(nanopb).max_size = 255];
+}
+
+message RadioSendReply {
+  uint32 air_us = 1;              // Its time on the air, as counted
+}
+
+message RadioConfigureRequest {
+  string radio = 1 [(nanopb).max_size = 16];
+  RadioLora lora = 2;
+  RadioListen listen = 3;
+  uint32 listen_us = 4;
+  uint32 sleep_us = 5;
+}
+
+message RadioReply {
+}
+
+// A radio's state, on the radio topic
+message RadioStatus {
+  string name = 1 [(nanopb).max_size = 16];
+  bool open = 2;
+  uint32 pid = 3;                 // Its caller's, while open
+  uint32 app = 4;                 // And its app's, 0 for a native program
+  RadioListen listen = 5;
+  uint32 air_ms = 6;              // Sent over the last hour, every
+                                  // sub-band
+}
+
+// The radios, for the status bar and the settings
+message RadioInfo {
+  option (pnut.topic) = "radio";
+
+  repeated RadioStatus radios = 1 [(nanopb).max_count = 2];
+  string region = 2 [(nanopb).max_size = 8];   // The plan in use, empty
+                                               // for none
+  bool airplane = 3;              // Off the air
+}
+
+message RadioSettings {
+  option (pnut.settings) = "radio";
+
+  // The band plan: auto takes the one that matches the radio's band
+  string region = 1 [(nanopb).max_size = 8,
+                     (pnut.setting) = { default: "auto",
+                                        label: "radio.region",
+                                        public: true,
+                                        choices: ["auto", "EU868"] }];
+
+  // The LoRa radio's antenna, where the device has a switch: an external
+  // one fitted but not chosen detunes the internal one
+  string lora_antenna = 2 [(nanopb).max_size = 10,
+                           (pnut.setting) = { key: "lora.antenna",
+                                              default: "internal",
+                                              label: "radio.lora.antenna",
+                                              public: true,
+                                              choices: ["internal",
+                                                        "external"] }];
+}

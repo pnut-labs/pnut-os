@@ -98,6 +98,12 @@ message BoardRadio {
   uint32 max_khz = 2;
   sint32 min_dbm = 3;
   sint32 max_dbm = 4;
+
+  // Its antennas' gain, hundredths of a dBi, for the power at the antenna
+  // (RFC 0034): the internal one's, and an external one's where a line
+  // switches to it
+  sint32 internal_gain_cdbi = 5;
+  sint32 external_gain_cdbi = 6;
 }
 
 // A mobile network's modem
@@ -227,6 +233,8 @@ message BoardLine {
     RING = 3;                     // The part's ring indicator: an input
                                   // that wakes the processor
     DTR = 4;                      // Data terminal ready: an output
+    ANTENNA = 5;                  // Chooses the part's antenna: an output,
+                                  // on for the internal one (RFC 0034)
   }
 
   // The part's: its kind and name, which name it alone

@@ -24,6 +24,13 @@ PROGNAME += adbkeys
 MAINSRC  += adbkeys.c
 endif
 
+# The LoRa radio, with the radios program (RFC 0034)
+
+ifneq ($(CONFIG_PNUT_RADIOS),)
+PROGNAME += radio
+MAINSRC  += radio.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
