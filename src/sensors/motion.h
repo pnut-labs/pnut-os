@@ -61,7 +61,7 @@ enum motion_sensor_e
   MOTION_SENSOR_STILL,            /* Became still */
   MOTION_SENSOR_MOVING,           /* Started moving */
   MOTION_SENSOR_TILT,             /* Its angle changed */
-  MOTION_SENSOR_ACCEL,            /* x, y, z: m/s^2, the screen's frame */
+  MOTION_SENSOR_ACCEL,            /* x, y, z: m/s^2; +z out of the screen */
   MOTION_NSENSORS
 };
 
@@ -70,8 +70,9 @@ enum motion_sensor_e
 struct motion_event_s
 {
   uint32_t value;
-  float x;                        /* +x right, +y up the screen, +z out of
-                                   * it */
+  float x;                        /* +z out of the screen; x and y as the
+                                   * hub reads them: only their size is
+                                   * relied on */
   float y;
   float z;
 };

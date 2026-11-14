@@ -177,11 +177,16 @@ static int hub_read(FAR void *arg, int sensor, int fd,
 
       case MOTION_SENSOR_ACCEL:
 
-        /* The BHI260AP's axes on the T-Deck Max are the screen's */
+        /* The BHI260AP's z axis on the T-Deck Max points out of the back:
+         * lying screen up, it reads about -1 g (seen on the phone).  Of the
+         * three signs only z's matters to the facing; x and y are as the
+         * chip reads them, so one of them is mirrored against motion.h's
+         * frame (which one is not known).
+         */
 
         ev->x = u.accel.x;
         ev->y = u.accel.y;
-        ev->z = u.accel.z;
+        ev->z = -u.accel.z;
         break;
     }
 
