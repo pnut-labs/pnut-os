@@ -113,6 +113,16 @@ ifneq ($(shell cat $(BUILD)/target 2> /dev/null),$(TARGET))
   RECONFIGURE := force
 endif
 
+# The nuttx submodule's commit at the last configuring: a move can bring
+# options an old .config lacks (13.1.1's TASK_ARG_MAX, which limits.h
+# needs), and NuttX's make does not configure again, so this does
+
+NUTTX_COMMIT := $(shell git -C $(NUTTX) rev-parse HEAD 2> /dev/null)
+
+ifneq ($(shell cat $(BUILD)/nuttx 2> /dev/null),$(NUTTX_COMMIT))
+  RECONFIGURE := force
+endif
+
 # The board's own configuration, <board>:<config>, which a move of the
 # nuttx submodule may change: configured afresh then too
 
@@ -132,12 +142,13 @@ $(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
 .PRECIOUS: $(NUTTX)/.config
 
 $(NUTTX)/.config: configs/$(TARGET)/target.mk configs/$(TARGET)/fragment.config $(BOARD_DEFCONFIG) $(RECONFIGURE) | submodules external nanopb
-	rm -f $(BUILD)/target
+	rm -f $(BUILD)/target $(BUILD)/nuttx
 	mkdir -p $(ETC)
 	PYTHON=$(PYTHON) $(ROOT)/tools/configure-target.sh \
 	  $(NUTTX) $(BOARD_CONFIG) $(ROOT)/configs/$(TARGET)/fragment.config
 	mkdir -p $(BUILD)
 	echo $(TARGET) > $(BUILD)/target
+	git -C $(NUTTX) rev-parse HEAD > $(BUILD)/nuttx
 
 run: $(TARGET)
 	$(RUN)

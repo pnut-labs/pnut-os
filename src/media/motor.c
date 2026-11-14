@@ -92,8 +92,9 @@ static int motor_open(FAR void *arg, FAR const char *path)
   return m->fd < 0 ? -errno : OK;
 }
 
-/* The effects removed before the device is closed: the driver keeps an
- * effect a file uploaded after it is closed, and has few
+/* The effects removed before the device is closed.  The driver's close
+ * erases a file's own too (ff_upper), but not if the closing thread is
+ * cancelled, and the device has few
  */
 
 static void motor_close(FAR void *arg)
