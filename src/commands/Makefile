@@ -38,6 +38,13 @@ PROGNAME += location
 MAINSRC  += location.c
 endif
 
+# What the motion sensors tell (RFC 0036)
+
+ifneq ($(CONFIG_PNUT_MOTION),)
+PROGNAME += motion
+MAINSRC  += motion.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
