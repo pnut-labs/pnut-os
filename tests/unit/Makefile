@@ -21,6 +21,7 @@ DATA   := $(ROOT)/src/data
 NETWORK := $(ROOT)/src/network
 MEDIA  := $(ROOT)/src/media
 RADIOS := $(ROOT)/src/radios
+SENSORS := $(ROOT)/src/sensors
 BUILD  := $(ROOT)/build/unit
 
 # The interfaces' code and nanopb: the top-level Makefile names them
@@ -34,7 +35,7 @@ CMOCKA_LIBS   ?= -lcmocka
 
 CFLAGS  := -std=gnu11 -O1 -g -Wall -Werror -I$(LIB)/include -I$(LIB)
 CFLAGS  += -I$(SYSTEM) -I$(TELEPHONY) -I$(DATA) -I$(NETWORK) -I$(MEDIA)
-CFLAGS  += -I$(RADIOS)
+CFLAGS  += -I$(RADIOS) -I$(SENSORS)
 CFLAGS  += -I$(GEN) -I$(NANOPB) $(CMOCKA_CFLAGS)
 
 # Time's NTP, which the host's network can serve the tests
@@ -67,9 +68,14 @@ SRCS    += $(MEDIA)/haptics.c
 # the tests give a fake
 
 SRCS    += $(RADIOS)/packetradio.c $(RADIOS)/rules.c
+
+# The sensors program's Location; its receiver speaks UBX through NuttX's
+# GNSS driver: the tests give a fake
+
+SRCS    += $(SENSORS)/location.c $(SENSORS)/ubx.c
 HDRS    := $(wildcard $(LIB)/*.h $(LIB)/include/pnut/*.h $(SYSTEM)/*.h)
 HDRS    += $(wildcard $(TELEPHONY)/*.h $(DATA)/*.h $(NETWORK)/*.h)
-HDRS    += $(wildcard $(MEDIA)/*.h $(RADIOS)/*.h)
+HDRS    += $(wildcard $(MEDIA)/*.h $(RADIOS)/*.h $(SENSORS)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)
 TESTS   := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 

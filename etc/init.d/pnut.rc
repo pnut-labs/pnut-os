@@ -90,6 +90,22 @@ on property:svc.system.state=ready
    start radios
 #endif
 
+#ifdef CONFIG_PNUT_SENSORS
+
+/* The sensors program (RFC 0007): Location (RFC 0035), once the system
+ * program is ready: it asks Board for the GNSS receiver.
+ */
+
+service sensors pnut_sensors
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on property:svc.system.state=ready
+   start sensors
+#endif
+
 #ifdef CONFIG_PNUT_MEDIA
 
 /* The media program (RFC 0007): Haptics (RFC 0033), once the system

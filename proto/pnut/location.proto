@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Location (RFC 0035), a module of the sensors program: it owns the
+// satellite positioning (GNSS) receiver.  It answers where the device is,
+// once or as it moves, and keeps the receiver off while nobody asks.
+// Fixes come faster with the receiver given the time, the last position
+// and the orbit data it kept before it was switched off; nothing is
+// fetched from a network.
+
+syntax = "proto3";
+
+package pnut;
+
+import "pnut/options.proto";
+
+service Location {
+  option (pnut.iface) = 12;
+
+  // Where the device is: a position no older than max_age_s and at least
+  // as accurate as accuracy_m, within timeout_s; answered with it, or,
+  // when the time runs out, with the best one known (fresh false)
+  rpc Current (LocationCurrentRequest) returns (LocationCurrentReply) {
+    option (pnut.method) = 1;
+  }
+
+  // Positions at an interval, until the caller ends the stream
+  rpc Follow (LocationFollowRequest) returns (stream LocationPosition) {
+    option (pnut.method) = 2;
+  }
+}
+
+message LocationError {
+  enum Code {
+    NONE = 0;
+    NO_RECEIVER = 1;              // The device has none, or it failed
+    NO_POSITION = 2;              // None in time, and none known before
+    BUSY = 3;                     // Too many callers waiting
+  }
+}
+
+// A position.  Approximate ones are rounded to a grid of 0.05 degrees,
+// their accuracy the grid's, and have no altitude, speed or heading.
+message LocationPosition {
+  sint32 lat = 1;                 // 1e-7 degrees, WGS84
+  sint32 lon = 2;
+  sint32 alt_mm = 3;              // Above mean sea level
+  uint32 accuracy_mm = 4;         // Horizontal, as the receiver estimates
+  uint32 vaccuracy_mm = 5;        // Vertical
+  uint32 speed_mms = 6;           // Over the ground
+  uint32 heading_e5 = 7;          // Of motion, 1e-5 degrees
+  uint32 satellites = 8;
+  int64 utc = 9;                  // When it was taken: seconds since 1970
+  uint64 taken_ms = 10;           // And by CLOCK_MONOTONIC
+  bool approximate = 11;
+}
+
+message LocationCurrentRequest {
+  uint32 max_age_s = 1;           // 0: a new one
+  uint32 accuracy_m = 2;          // 0: any
+  uint32 timeout_s = 3;           // 0: 60
+  bool precise = 4;               // Not rounded (the precise permission,
+                                  // once the runtime checks it)
+}
+
+message LocationCurrentReply {
+  bool fresh = 1;                 // As asked; false: the best known
+  LocationPosition position = 2;
+}
+
+message LocationFollowRequest {
+  uint32 interval_s = 1;          // 1 at least
+  uint32 accuracy_m = 2;          // Positions less accurate are skipped
+  bool precise = 3;
+}
+
+// The receiver's state, for the status bar; never a position
+message LocationInfo {
+  option (pnut.topic) = "location";
+
+  bool on = 1;
+  bool fix = 2;
+  uint32 satellites = 3;
+}
