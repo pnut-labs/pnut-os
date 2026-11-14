@@ -24,6 +24,13 @@ PROGNAME += adbkeys
 MAINSRC  += adbkeys.c
 endif
 
+# Where the device is, with the sensors program (RFC 0035)
+
+ifneq ($(CONFIG_PNUT_SENSORS),)
+PROGNAME += location
+MAINSRC  += location.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen
