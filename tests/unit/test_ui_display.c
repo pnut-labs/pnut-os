@@ -569,6 +569,35 @@ static void test_display_one_try_a_draw(void **state)
   run("a", steps, 5);
 }
 
+/* test_display_draw_now: what is pending is drawn at once when asked
+ * (before reading the screen back)
+ */
+
+static void now_key(void)
+{
+  assert_int_equal(g_nupdates, 1);
+  display_input(&g_display);
+  lv_label_set_text(g_label, "now");
+  display_draw_now(&g_display);
+  assert_int_equal(g_nupdates, 2);
+
+  /* Nothing pending: nothing drawn */
+
+  display_draw_now(&g_display);
+  assert_int_equal(g_nupdates, 2);
+}
+
+static void test_display_draw_now(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 200, now_key },
+    { 800, NULL },
+  };
+
+  run("a", steps, 2);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -586,6 +615,7 @@ int main(void)
     cmocka_unit_test(test_display_failed_retried),
     cmocka_unit_test(test_display_glue_pool_full),
     cmocka_unit_test(test_display_one_try_a_draw),
+    cmocka_unit_test(test_display_draw_now),
   };
 
   return cmocka_run_group_tests_name("ui_display", tests, NULL, NULL);

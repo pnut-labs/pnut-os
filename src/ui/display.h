@@ -100,4 +100,10 @@ void display_screen(FAR struct display_s *d);
 
 void display_typing(FAR struct display_s *d, bool typing);
 
+/* Draw what is pending now, not when the rule says: before the frame is
+ * read back (the screen command, tests)
+ */
+
+void display_draw_now(FAR struct display_s *d);
+
 #endif /* __PNUT_OS_UI_DISPLAY_H */

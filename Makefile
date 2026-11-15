@@ -14,6 +14,8 @@
 #   make test             run the unit tests, on the computer
 #   make gen              generate the interfaces' code from proto/
 #   make <target> test    build, then run the tests inside it (sim)
+#   make screens          keep the system UI's screens as its tests draw
+#                         them (tests/screens), after looking at them
 #   make style            check pnut-os's C code with NuttX's nxstyle
 #   make clean            remove the build
 #
@@ -319,7 +321,16 @@ $(GEN)/.stamp: $(PROTOS) $(BUILD)/protos tools/protoc-gen-pnut tools/generate.sh
 ifneq ($(TARGETTEST),y)
 test: $(GEN)/.stamp $(LVGL)/lvgl.h $(UIGEN)/.stamp
 	$(MAKE) -C tests/unit GEN=$(GEN) NANOPB=$(NANOPB) LVGL=$(LVGL)
+	$(PYTHON) tools/screens.py check $(BUILD)/unit/screens tests/screens
 endif
+
+# The system UI's screens as its tests draw them, kept as the images in
+# tests/screens that `make test` compares them with: after looking at them
+
+.PHONY: screens
+screens: $(GEN)/.stamp $(LVGL)/lvgl.h $(UIGEN)/.stamp
+	$(MAKE) -C tests/unit GEN=$(GEN) NANOPB=$(NANOPB) LVGL=$(LVGL) screens
+	$(PYTHON) tools/screens.py update $(BUILD)/unit/screens tests/screens
 
 # Style: NuttX's nxstyle on every C file of pnut-os, submodules apart
 

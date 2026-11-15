@@ -14,8 +14,9 @@ STACKSIZE = $(CONFIG_PNUT_UI_STACKSIZE)
 MODULE    = $(CONFIG_PNUT_UI)
 
 MAINSRC   = main.c
-CSRCS     = display.c fb.c glue.c input.c input_dev.c keymap.c redraw.c
-CSRCS    += ui.c
+CSRCS     = apps.c blocks.c describe.c display.c fb.c glue.c input.c
+CSRCS    += input_dev.c keymap.c page.c redraw.c status.c theme.c ui.c
+CSRCS    += scr_home.c scr_menu.c scr_unavailable.c
 
 # The interfaces' code, and the fonts and icons, which the top-level
 # Makefile makes in build/gen and build/ui
