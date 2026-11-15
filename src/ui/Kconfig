@@ -1,0 +1,27 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+config PNUT_UI
+	bool "The system UI"
+	default n
+	depends on PNUT_LIB && NETUTILS_NANOPB && GRAPHICS_LVGL && PNUT_SYSTEM
+	depends on LV_COLOR_DEPTH_1
+	---help---
+		The ui program (RFC 0007): the system UI (RFC 0019) on LVGL,
+		1 bit, on the screen Board's description names, and Input
+		(RFC 0027), which reads the input devices it names.  Its fonts
+		and icons are made at build time (tools/mkfont.py,
+		tools/mkicons.py), with the Python packages of
+		tools/requirements.txt.
+
+if PNUT_UI
+
+config PNUT_UI_STACKSIZE
+	int "The program's stack, in bytes"
+	default 16384
+
+endif

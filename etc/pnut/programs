@@ -13,5 +13,5 @@ sensors       location motion sensors health
 data          messages contacts packages storage
 media         audio camera haptics
 security      security
-ui            ui
+ui            ui input
 runtime       runtime

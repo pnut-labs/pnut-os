@@ -45,6 +45,13 @@ PROGNAME += motion
 MAINSRC  += motion.c
 endif
 
+# Keys pressed and the screen read back, with the system UI (RFC 0027)
+
+ifneq ($(CONFIG_PNUT_UI),)
+PROGNAME += keys screen
+MAINSRC  += keys.c screen.c
+endif
+
 # The interfaces' code, which libpnut compiles
 
 GENDIR    = $(realpath $(APPDIR)/external)/../build/gen

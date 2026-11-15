@@ -53,12 +53,12 @@ jobs:
           sudo apt-get install -y kconfig-frontends python3-kconfiglib \
             genromfs xxd zlib1g-dev protobuf-compiler python3-protobuf
 
-      - name: Install Espressif's toolchain, esptool and imgtool
+      - name: Install Espressif's toolchain, esptool, imgtool, the UI's packages
         if: ${{ matrix.target != 'sim' }}
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install "esptool==$ESPTOOL" \
-            "imgtool==$IMGTOOL"
+            "imgtool==$IMGTOOL" -r tools/requirements.txt
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
           version=${XTENSA_GCC#esp-}
           curl -fsSL -o "$RUNNER_TEMP/xtensa.tar.xz" \
@@ -68,12 +68,15 @@ jobs:
           echo "$RUNNER_TEMP/xtensa-esp-elf/bin" >> "$GITHUB_PATH"
 
       # esptool's venv comes first on the PATH and has no kconfiglib, so
-      # name the system's Python, which has it
+      # name the system's Python, which has it; the venv has the system
+      # UI's packages (its fonts and icons, tools/requirements.txt)
 
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
-        run: make "$TARGET" PYTHON=/usr/bin/python3
+        run: |
+          make "$TARGET" PYTHON=/usr/bin/python3 \
+            UI_PYTHON="$RUNNER_TEMP/venv/bin/python3"
 
       - name: Test in the simulator
         if: ${{ matrix.target == 'sim' }}
@@ -98,7 +101,7 @@ jobs:
   unit:
     name: unit
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,8 +113,15 @@ jobs:
           sudo apt-get install -y libcmocka-dev libsodium-dev \
             protobuf-compiler python3-protobuf
 
+      # The system UI's fonts and icons are made with these (pinned)
+
+      - name: Install the UI's Python packages
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ui"
+          "$RUNNER_TEMP/ui/bin/pip" install -r tools/requirements.txt
+
       - name: Run the unit tests
-        run: make test
+        run: make test -j"$(nproc)" UI_PYTHON="$RUNNER_TEMP/ui/bin/python3"
 
   style:
     name: style

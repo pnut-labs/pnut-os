@@ -137,3 +137,19 @@ service data pnut_data
 on property:svc.system.state=ready
    start data
 #endif
+
+#ifdef CONFIG_PNUT_UI
+
+/* The ui program (RFC 0007): the system UI and Input, once the system
+ * program is ready: it asks Board for the screen and the input devices.
+ */
+
+service ui pnut_ui
+#ifdef CONFIG_SYSTEM_NXINIT_CONTROL
+   notify
+#endif
+   gentle_kill
+
+on property:svc.system.state=ready
+   start ui
+#endif

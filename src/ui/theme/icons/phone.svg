@@ -1,0 +1,4 @@
+<!-- The "E-ink Softkey Phone" canvas's phone icon -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter">
+  <path d="M6 3h4l1.5 5-2.5 1.5a11 11 0 0 0 5.5 5.5l1.5-2.5 5 1.5v4a2 2 0 0 1-2 2A16 16 0 0 1 4 5a2 2 0 0 1 2-2z"/>
+</svg>

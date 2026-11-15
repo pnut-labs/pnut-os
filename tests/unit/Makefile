@@ -80,11 +80,53 @@ HDRS    += $(wildcard $(MEDIA)/*.h $(RADIOS)/*.h $(SENSORS)/*.h)
 HDRS    += $(shell find $(GEN) -name '*.h' 2> /dev/null)
 TESTS   := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 
+# The system UI's tests (test_ui_*): its files but those of the device
+# alone, the fonts and icons made for it (build/ui), and LVGL, built once
+# into a library from lv_conf.h here, which follows the LVGL options of
+# configs/tdeck-max/fragment.config.  The top-level Makefile names LVGL
+# (make test).
+
+LVGL    ?= $(firstword $(wildcard $(ROOT)/build/lvgl-*))
+UI      := $(ROOT)/src/ui
+UIGEN   := $(ROOT)/build/ui
+UI_SRCS := $(filter-out %/main.c %/fb.c %/input_dev.c,$(wildcard $(UI)/*.c))
+UI_SRCS += $(wildcard $(UIGEN)/*.c)
+UI_HDRS := $(wildcard $(UI)/*.h $(UIGEN)/*.h) lv_conf.h
+
+LVGL_CFLAGS := -std=gnu11 -O1 -g -DLV_CONF_INCLUDE_SIMPLE -I$(CURDIR)
+LVGL_CFLAGS += -I$(LVGL) -I$(BUILD)/inc
+LVGL_NAME   := $(notdir $(LVGL))
+LVGL_SRCS   := $(shell find $(LVGL)/src -name '*.c' 2> /dev/null)
+LVGL_OBJS   := $(patsubst $(LVGL)/%.c,$(BUILD)/$(LVGL_NAME)/%.o,$(LVGL_SRCS))
+LVGL_LIB    := $(BUILD)/lib$(LVGL_NAME).a
+
 .PHONY: run
 
 run: $(TESTS)
 	@failed=0; for t in $(TESTS); do $$t || failed=1; done; exit $$failed
 
+$(BUILD)/test_ui_%: test_ui_%.c $(SRCS) $(HDRS) $(UI_SRCS) $(UI_HDRS) \
+                    $(LVGL_LIB) | $(BUILD)/inc/lvgl
+	$(CC) $(CFLAGS) $(LVGL_CFLAGS) -I$(UI) -I$(UIGEN) -o $@ $< $(SRCS) \
+	  $(UI_SRCS) $(LVGL_LIB) $(LDLIBS)
+
 $(BUILD)/%: %.c $(SRCS) $(HDRS)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $< $(SRCS) $(LDLIBS)
+
+# Named for LVGL's version, so that another version is built afresh.  The
+# link makes it <lvgl/lvgl.h>, as nuttx-apps gives it on the device.
+
+$(LVGL_LIB): $(LVGL_OBJS)
+	@rm -f $@
+	@$(AR) rcs $@ $^
+	@mkdir -p $(BUILD)/inc
+	@ln -sfn $(LVGL) $(BUILD)/inc/lvgl
+
+$(BUILD)/inc/lvgl:
+	@mkdir -p $(BUILD)/inc
+	@ln -sfn $(LVGL) $@
+
+$(BUILD)/$(LVGL_NAME)/%.o: $(LVGL)/%.c lv_conf.h
+	@mkdir -p $(dir $@)
+	@$(CC) $(LVGL_CFLAGS) -c -o $@ $<
