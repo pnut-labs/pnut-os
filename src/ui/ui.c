@@ -13,8 +13,11 @@
  * answers (a program never ready would keep a firmware update on trial
  * from being confirmed, RFC 0013).
  *
- * So far it shows a check screen for the developer: each key's action and
- * each tap, to try the screen and Input on the device.
+ * It keeps the stack of screens, Home at its foot: each a screen of
+ * LVGL's, built by its class (scr_*.c), the only object with the keys'
+ * focus while on top.  Keys reach the top screen as the UI's actions,
+ * taps on its blocks as their ids; Back pops it unless it says otherwise.
+ * The header of the screen on top follows the device's state (status.c).
  */
 
 /****************************************************************************
@@ -31,6 +34,7 @@
 
 #include "glue.h"
 #include "keymap.h"
+#include "blocks.h"
 #include "theme.h"
 #include "ui.h"
 
@@ -43,76 +47,99 @@
 #define UI_RETRY_MS  1000
 
 /****************************************************************************
- * Private Data
- ****************************************************************************/
-
-/* The actions' names, for the check screen */
-
-static FAR const char * const g_ui_actions[] =
-{
-  "NONE", "UP", "DOWN", "LEFT", "RIGHT", "BACK", "OPEN", "OPTIONS",
-  "PAGE_NEXT", "PAGE_PREV", "SOFT_LEFT", "SOFT_MIDDLE", "SOFT_RIGHT",
-  "CHAR", "DELETE", "CONFIRM", "LEAVE_FIELD"
-};
-
-/****************************************************************************
  * Private Functions
  ****************************************************************************/
 
-static void ui_check_key(FAR lv_event_t *e)
-{
-  FAR struct ui_s *ui = lv_event_get_user_data(e);
-  uint32_t key = lv_event_get_key(e);
-  uint32_t action;
+/* LVGL places objects lazily, at the next draw, which may wait for the
+ * keys' half second: what a handler built is placed at once, so that a tap
+ * meanwhile finds it
+ */
 
-  if (!UI_KEY_IS_ACTION(key))
+static void ui_place(FAR struct ui_s *ui)
+{
+  FAR struct screen_s *s = ui_top(ui);
+
+  if (s != NULL)
     {
-      lv_label_set_text_fmt(ui->check, "CHAR U+%04lx", (unsigned long)key);
+      lv_obj_update_layout(s->root);
+    }
+}
+
+static void ui_header_update(FAR struct ui_s *ui, FAR struct screen_s *s)
+{
+  struct tm tm;
+
+  if (s->header != NULL)
+    {
+      ui_local(ui, &tm);
+      block_header_status(s->header, &ui->status, &tm);
+    }
+}
+
+/* The device's state changed: the top screen's header, and the screen */
+
+static void ui_status_changed(FAR void *arg, uint8_t what)
+{
+  FAR struct ui_s *ui = arg;
+  FAR struct screen_s *s = ui_top(ui);
+
+  if (s == NULL)
+    {
       return;
     }
 
-  action = UI_KEY_ACTION(key);
-  lv_label_set_text(ui->check, action < sizeof(g_ui_actions) /
-                               sizeof(g_ui_actions[0]) ?
-                               g_ui_actions[action] : "?");
+  ui_header_update(ui, s);
+  if (s->cls->status != NULL)
+    {
+      s->cls->status(s, what);
+    }
+
+  ui_place(ui);
 }
 
-static void ui_check_tap(FAR lv_event_t *e)
+static void ui_key_event(FAR lv_event_t *e)
 {
-  FAR struct ui_s *ui = lv_event_get_user_data(e);
-  lv_point_t p;
+  FAR struct screen_s *s = lv_event_get_user_data(e);
+  uint32_t key = lv_event_get_key(e);
+  uint8_t action = UI_KEY_IS_ACTION(key) ? UI_KEY_ACTION(key) : UI_ACT_CHAR;
 
-  lv_indev_get_point(lv_indev_active(), &p);
-  lv_label_set_text_fmt(ui->check, "TAP %d %d", (int)p.x, (int)p.y);
+  if (s != ui_top(s->ui))
+    {
+      return;
+    }
+
+  if ((s->cls->key == NULL ||
+       !s->cls->key(s, action, action == UI_ACT_CHAR ? key : 0)) &&
+      (action == UI_ACT_BACK || action == UI_ACT_SOFT_RIGHT))
+    {
+      ui_pop(s->ui);
+    }
+
+  ui_place(s->ui);
 }
 
-/* The developer's check screen */
-
-static void ui_check(FAR struct ui_s *ui)
+static void ui_block_event(FAR lv_event_t *e)
 {
-  FAR lv_obj_t *scr = lv_screen_active();
-  FAR lv_obj_t *title;
+  FAR struct screen_s *s = lv_event_get_user_data(e);
 
-  lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
-  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+  if (s == ui_top(s->ui) && s->cls->event != NULL)
+    {
+      s->cls->event(s, (uint16_t)(uintptr_t)lv_event_get_param(e));
+      ui_place(s->ui);
+    }
+}
 
-  title = lv_label_create(scr);
-  lv_obj_set_style_text_font(title, &g_ui_sans_bold_16, 0);
-  lv_obj_set_style_text_color(title, lv_color_black(), 0);
-  lv_obj_set_pos(title, 8, 8);
-  lv_label_set_text(title, "pnut-os: input check");
+/* Show a screen of the stack: loaded, with the keys, its header as the
+ * device is
+ */
 
-  ui->check = lv_label_create(scr);
-  lv_obj_set_style_text_font(ui->check, &g_ui_sans_14, 0);
-  lv_obj_set_style_text_color(ui->check, lv_color_black(), 0);
-  lv_obj_set_pos(ui->check, 8, 40);
-  lv_label_set_text(ui->check, "Press a key, or tap");
-
-  lv_obj_add_event_cb(scr, ui_check_key, LV_EVENT_KEY, ui);
-  lv_obj_add_event_cb(scr, ui_check_tap, LV_EVENT_CLICKED, ui);
-  lv_group_add_obj(input_group(ui->config.input), scr);
-  lv_group_focus_obj(scr);
+static void ui_load(FAR struct ui_s *ui, FAR struct screen_s *s)
+{
+  ui_header_update(ui, s);
+  lv_group_focus_obj(s->root);
+  lv_screen_load(s->root);
+  lv_obj_update_layout(s->root);
+  display_screen(&ui->display);
 }
 
 /* Let go of the framebuffer */
@@ -155,8 +182,7 @@ static int ui_show(FAR struct ui_s *ui,
       pnut_log(&ui->module, PNUT_LOG_ERROR, "No input: %d", ret);
     }
 
-  ui_check(ui);
-  return 0;
+  return ui_push(ui, &g_scr_home, NULL);
 }
 
 static FAR const pnut_board_part_t *
@@ -314,6 +340,39 @@ static void ui_board(FAR struct pnut_board_client_s *client,
     }
 }
 
+/* A screen's state lives as long as its LVGL screen */
+
+static void ui_root_deleted(FAR lv_event_t *e)
+{
+  lv_free(lv_event_get_user_data(e));
+}
+
+/* The top screen gone, without loading the one below.  A screen popped by
+ * its own key or tap is still in LVGL's hands: it is deleted once LVGL is
+ * done with it (async), its handlers left in place (LVGL is still going
+ * through them) but no longer the top's.
+ */
+
+static void ui_drop(FAR struct ui_s *ui, bool async)
+{
+  FAR struct screen_s *s = ui->stack[--ui->depth];
+
+  if (s->cls->leave != NULL)
+    {
+      s->cls->leave(s);
+    }
+
+  lv_group_remove_obj(s->root);
+  if (async)
+    {
+      lv_obj_delete_async(s->root);
+    }
+  else
+    {
+      lv_obj_delete(s->root);
+    }
+}
+
 static int ui_start(FAR struct pnut_module_s *module,
                     FAR struct pnut_loop_s *loop)
 {
@@ -324,6 +383,18 @@ static int ui_start(FAR struct pnut_module_s *module,
   if (ret < 0)
     {
       return ret;
+    }
+
+  theme_init();
+  ret = status_start(&ui->status, loop, ui->config.now, ui_status_changed,
+                     ui);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_ERROR, "No device state: %d", ret);
+    }
+  else
+    {
+      ui->status_open = true;
     }
 
   pnut_module_ready(module);
@@ -362,6 +433,17 @@ static void ui_stop(FAR struct pnut_module_s *module,
       ui->board_open = false;
     }
 
+  while (ui->depth > 0)
+    {
+      ui_drop(ui, false);
+    }
+
+  if (ui->status_open)
+    {
+      status_stop(&ui->status);
+      ui->status_open = false;
+    }
+
   if (ui->shown)
     {
       display_close(&ui->display);
@@ -384,4 +466,79 @@ void ui_init(FAR struct ui_s *ui, FAR const struct ui_config_s *config)
   ui->module.name  = "ui";
   ui->module.start = ui_start;
   ui->module.stop  = ui_stop;
+}
+
+int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
+            FAR const void *arg)
+{
+  FAR struct screen_s *s;
+
+  if (ui->depth == UI_DEPTH)
+    {
+      return -ENOSPC;
+    }
+
+  s = lv_malloc_zeroed(sizeof(*s) + cls->size);
+  if (s == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  s->cls   = cls;
+  s->ui    = ui;
+  s->arg   = arg;
+  s->state = s + 1;
+  s->root  = lv_obj_create(NULL);
+  theme_screen(s->root);
+  lv_obj_add_event_cb(s->root, ui_key_event, LV_EVENT_KEY, s);
+  lv_obj_add_event_cb(s->root, ui_block_event, g_ui_event_block, s);
+  lv_obj_add_event_cb(s->root, ui_root_deleted, LV_EVENT_DELETE, s);
+  if (input_group(ui->config.input) != NULL)
+    {
+      lv_group_add_obj(input_group(ui->config.input), s->root);
+    }
+
+  ui->stack[ui->depth++] = s;
+  cls->build(s);
+  ui_load(ui, s);
+  return 0;
+}
+
+void ui_pop(FAR struct ui_s *ui)
+{
+  FAR struct screen_s *below;
+
+  if (ui->depth <= 1)
+    {
+      return;
+    }
+
+  /* The one below on screen first: the top one is deleted after */
+
+  below = ui->stack[ui->depth - 2];
+  ui_load(ui, below);
+  ui_drop(ui, true);
+  if (below->cls->status != NULL)
+    {
+      below->cls->status(below, STATUS_TEL | STATUS_WIFI | STATUS_TIME |
+                                STATUS_BATTERY);
+    }
+}
+
+FAR struct screen_s *ui_top(FAR struct ui_s *ui)
+{
+  return ui->depth > 0 ? ui->stack[ui->depth - 1] : NULL;
+}
+
+FAR lv_obj_t *ui_header(FAR struct screen_s *s, FAR const char *icon,
+                        FAR const char *title)
+{
+  s->header = block_header(s->root, icon, title);
+  ui_header_update(s->ui, s);
+  return s->header;
+}
+
+void ui_local(FAR struct ui_s *ui, FAR struct tm *tm)
+{
+  status_local(&ui->status, status_now(&ui->status), tm);
 }

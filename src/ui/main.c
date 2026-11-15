@@ -36,6 +36,13 @@
 
 #define UI_BOARD  "board"
 
+/* A handler's budget: drawing a screen on the loop takes tens of ms on
+ * the ESP32-S3 (25-60 ms measured), building one as long; over this the
+ * library logs it
+ */
+
+#define UI_BUDGET_MS  250
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -55,6 +62,7 @@ int main(int argc, FAR char *argv[])
   config.levels  = true;
   config.workers = 0;
   config.jobs    = 0;
+  config.budget  = UI_BUDGET_MS;
 
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)

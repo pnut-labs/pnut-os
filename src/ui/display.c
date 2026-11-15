@@ -304,3 +304,20 @@ void display_typing(FAR struct display_s *d, bool typing)
 {
   redraw_typing(&d->redraw, typing);
 }
+
+void display_draw_now(FAR struct display_s *d)
+{
+  if (redraw_next(&d->redraw) == UINT64_MAX)
+    {
+      return;
+    }
+
+  if (d->timer != NULL)
+    {
+      pnut_timer_cancel(d->loop, d->timer);
+      d->timer = NULL;
+    }
+
+  d->redraw.due = 0;
+  display_due(d->loop, NULL, d);
+}
