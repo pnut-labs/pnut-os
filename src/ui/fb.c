@@ -70,7 +70,8 @@ static const struct display_ops_s g_fb_ops =
  * Public Functions
  ****************************************************************************/
 
-int fb_open(FAR const char *path, FAR struct display_config_s *config)
+int fb_open(FAR const char *path, FAR struct display_config_s *config,
+            FAR size_t *len)
 {
   struct fb_videoinfo_s vinfo;
   struct fb_planeinfo_s pinfo;
@@ -110,6 +111,7 @@ int fb_open(FAR const char *path, FAR struct display_config_s *config)
   config->height = vinfo.yres;
   config->ops    = &g_fb_ops;
   config->arg    = (FAR void *)(intptr_t)fd;
+  *len           = pinfo.fblen;
   return fd;
 
 errout:

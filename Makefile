@@ -39,6 +39,7 @@ NANOPB_TARBALL := $(BUILD)/dl/nanopb-$(NANOPB_VERSION).tar.gz
 NANOPB         := $(BUILD)/nanopb-$(NANOPB_VERSION)
 NANOPB_LINK    := $(APPS)/netutils/nanopb/nanopb
 GEN            := $(BUILD)/gen
+UIGEN          := $(BUILD)/ui
 PROTOS         := $(shell find proto tests/proto -name '*.proto' 2> /dev/null)
 
 # pnut-os's files in /etc, laid over the board's (RFC 0010): etc/, with
@@ -133,7 +134,13 @@ BOARD_DEFCONFIG := $(wildcard $(NUTTX)/boards/*/*/$(firstword \
 # Configuring runs nuttx-apps' distclean, which removes the nanopb link:
 # it is made again here, after configuring, before building
 
-$(TARGET): $(NUTTX)/.config $(GEN)/.stamp | external
+# A target with the system UI needs its fonts and icons (UI_PYTHON)
+
+ifneq ($(shell grep -s '^CONFIG_PNUT_UI=y' configs/$(TARGET)/fragment.config),)
+  TARGET_UI := $(UIGEN)/.stamp
+endif
+
+$(TARGET): $(NUTTX)/.config $(GEN)/.stamp $(TARGET_UI) | external
 	$(nanopb_link)
 	$(ROOT)/tools/stage-etc.sh $(ROOT) $(ETC) $(TARGET) $(PYTHON) $(GEN)
 	$(MAKE) -C $(NUTTX) $(NUTTXJOBS)
@@ -250,7 +257,6 @@ $(LVGL)/lvgl.h:
 # tools/requirements.txt.  A font is name:file:size:characters.
 
 UI_PYTHON ?= $(PYTHON)
-UIGEN     := $(BUILD)/ui
 UI_THEME  := $(ROOT)/src/ui/theme
 UI_FONTS  := sans_11:IBMPlexSans-Regular:11:text \
              sans_12:IBMPlexSans-Regular:12:text \
