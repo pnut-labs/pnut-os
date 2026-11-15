@@ -837,11 +837,11 @@ static void test_power_battery_topic(void **state)
   struct pnut_loop_config_s lconfig;
   struct power_config_s config;
   FAR struct pnut_loop_s *loop;
-  char dir[] = "/tmp/pnut-battery-XXXXXX";
-  char cmd[64];
+  char dir[48];
 
   assert_non_null(power);
-  assert_non_null(mkdtemp(dir));
+  snprintf(dir, sizeof(dir), "/tmp/pnut-battery-%d", (int)getpid());
+  assert_int_equal(mkdir(dir, 0700), 0);
   pnut_loop_defaults(&lconfig);
   lconfig.rundir = dir;
   assert_int_equal(pnut_loop_create(&lconfig, &loop), 0);
@@ -873,8 +873,11 @@ static void test_power_battery_topic(void **state)
   pnut_battery_info_unsubscribe(&reader);
   pnut_loop_destroy(loop);
   free(power);
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-  assert_int_equal(system(cmd), 0);
+
+  /* No system() in NuttX's simulator, where this test runs too */
+
+  battery_topic_gone(dir);
+  assert_int_equal(rmdir(dir), 0);
 }
 
 /****************************************************************************
