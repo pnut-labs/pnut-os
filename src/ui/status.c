@@ -117,6 +117,25 @@ static void status_rearm(FAR struct ui_status_s *st)
     }
 }
 
+static void status_battery(FAR struct pnut_battery_info_reader_s *reader,
+                           FAR const pnut_battery_info_t *msg,
+                           FAR void *arg)
+{
+  FAR struct ui_status_s *st = arg;
+  uint8_t level = msg->level > 100 ? 100 : (uint8_t)msg->level;
+
+  if (st->has_battery && st->battery == level &&
+      st->charging == msg->charging)
+    {
+      return;
+    }
+
+  st->battery     = level;
+  st->charging    = msg->charging;
+  st->has_battery = true;
+  st->changed(st->arg, STATUS_BATTERY);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -149,6 +168,13 @@ int status_start(FAR struct ui_status_s *st, FAR struct pnut_loop_s *loop,
       ret = pnut_time_change_subscribe(loop, status_time, st,
                                        &st->time_reader);
       st->time_open = ret >= 0;
+    }
+
+  if (ret >= 0)
+    {
+      ret = pnut_battery_info_subscribe(loop, status_battery, st,
+                                        &st->battery_reader);
+      st->battery_open = ret >= 0;
     }
 
   if (ret < 0)
@@ -185,6 +211,12 @@ void status_stop(FAR struct ui_status_s *st)
     {
       pnut_time_change_unsubscribe(&st->time_reader);
       st->time_open = false;
+    }
+
+  if (st->battery_open)
+    {
+      pnut_battery_info_unsubscribe(&st->battery_reader);
+      st->battery_open = false;
     }
 }
 

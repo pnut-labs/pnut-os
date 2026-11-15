@@ -54,6 +54,17 @@ size_t describe_cell(FAR const pnut_telephony_info_t *t, FAR char *buf,
 
 FAR const char *describe_wifi_failure(int status, uint32_t code);
 
+/* The mobile network as Cellular shows it: "Plus · home network", or what
+ * keeps it from one ("Searching", "SIM locked"); the signal, "3 of 4 ·
+ * -71 dBm" ("—" off the network); the SIM's state, "Ready"
+ */
+
+size_t describe_operator(FAR const pnut_telephony_info_t *t, FAR char *buf,
+                         size_t size);
+size_t describe_signal(FAR const pnut_telephony_info_t *t, FAR char *buf,
+                       size_t size);
+FAR const char *describe_sim_state(FAR const pnut_telephony_info_t *t);
+
 /* A network's strength in a word, from its dBm */
 
 FAR const char *describe_strength(int32_t dbm);

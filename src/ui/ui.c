@@ -47,6 +47,7 @@
 
 #define UI_RETRY_MS  1000
 #define UI_WIFI      "wifi"
+#define UI_TELEPHONY "telephony"
 
 /* The options' frame, over the screen above its softkeys; their rows' ids,
  * and the id of a tap outside them
@@ -92,6 +93,39 @@ static void ui_header_update(FAR struct ui_s *ui, FAR struct screen_s *s)
 
 /* The device's state changed: the top screen's header, and the screen */
 
+/* The SIM asks for its PIN or PUK: the SIM PIN screen over any screen,
+ * unless skipped since it began to ask
+ */
+
+static void ui_pin_check(FAR struct ui_s *ui)
+{
+  FAR const struct ui_status_s *st = &ui->status;
+  int i;
+
+  if (!st->has_tel || st->tel.modem != PNUT_TELEPHONY_INFO_MODEM_ON ||
+      (st->tel.sim != PNUT_TELEPHONY_INFO_SIM_NEEDS_PIN &&
+       st->tel.sim != PNUT_TELEPHONY_INFO_SIM_NEEDS_PUK))
+    {
+      ui->pin_skipped = false;
+      return;
+    }
+
+  if (ui->pin_skipped || ui->depth == 0)
+    {
+      return;
+    }
+
+  for (i = 0; i < ui->depth; i++)
+    {
+      if (ui->stack[i]->cls == &g_scr_pin)
+        {
+          return;
+        }
+    }
+
+  ui_push(ui, &g_scr_pin, NULL);
+}
+
 static void ui_status_changed(FAR void *arg, uint8_t what)
 {
   FAR struct ui_s *ui = arg;
@@ -106,6 +140,11 @@ static void ui_status_changed(FAR void *arg, uint8_t what)
   if (s->cls->status != NULL)
     {
       s->cls->status(s, what);
+    }
+
+  if (what & STATUS_TEL)
+    {
+      ui_pin_check(ui);
     }
 
   ui_place(ui);
@@ -329,7 +368,9 @@ static int ui_show(FAR struct ui_s *ui,
       pnut_log(&ui->module, PNUT_LOG_ERROR, "No input: %d", ret);
     }
 
-  return ui_push(ui, &g_scr_home, NULL);
+  ret = ui_push(ui, &g_scr_home, NULL);
+  ui_pin_check(ui);
+  return ret;
 }
 
 static FAR const pnut_board_part_t *
@@ -591,6 +632,12 @@ static void ui_stop(FAR struct pnut_module_s *module,
       ui->wifi_open = false;
     }
 
+  if (ui->tel_open)
+    {
+      pnut_telephony_disconnect(&ui->tel);
+      ui->tel_open = false;
+    }
+
   if (ui->status_open)
     {
       status_stop(&ui->status);
@@ -673,10 +720,14 @@ void ui_pop(FAR struct ui_s *ui)
   /* The one below on screen first: the top one is deleted after */
 
   ui_options_close(ui);
-  ui_typing_off(ui);
   below = ui->stack[ui->depth - 2];
   ui_load(ui, below);
   ui_drop(ui, true);
+  if (ui->config.input != NULL)
+    {
+      input_typing(ui->config.input, below->typing);
+    }
+
   if (below->cls->status != NULL)
     {
       below->cls->status(below, UI_STATUS_ALL);
@@ -820,8 +871,30 @@ FAR struct pnut_wifi_client_s *ui_wifi(FAR struct ui_s *ui)
 
 void ui_typing(FAR struct screen_s *s, bool typing)
 {
+  s->typing = typing;
   if (s == ui_top(s->ui) && s->ui->config.input != NULL)
     {
       input_typing(s->ui->config.input, typing);
     }
+}
+
+FAR struct pnut_telephony_client_s *ui_telephony(FAR struct ui_s *ui)
+{
+  int ret;
+
+  if (!ui->tel_open)
+    {
+      ret = pnut_telephony_connect(ui->module.loop, UI_TELEPHONY, NULL, NULL,
+                                   &ui->tel);
+      if (ret < 0)
+        {
+          pnut_log(&ui->module, PNUT_LOG_ERROR, "No Telephony client: %d",
+                   ret);
+          return NULL;
+        }
+
+      ui->tel_open = true;
+    }
+
+  return &ui->tel;
 }

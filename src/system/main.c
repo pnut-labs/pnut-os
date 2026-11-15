@@ -81,14 +81,27 @@ static int system_origin(FAR void *arg, pid_t pid,
  */
 
 static int system_measure(FAR void *arg, int gauge, int charger,
-                          FAR int *mv, FAR bool *external)
+                          FAR int *mv, FAR bool *external, FAR int *level,
+                          FAR bool *charging)
 {
+  int capacity;
   int state;
+  int ret;
 
   if (ioctl(gauge, BATIOC_VOLTAGE, (unsigned long)mv) < 0)
     {
       return -errno;
     }
+
+  /* The level and charging, for the battery topic: none if the gauge
+   * cannot tell
+   */
+
+  *level    = ioctl(gauge, BATIOC_CAPACITY, (unsigned long)&capacity) < 0 ?
+              -1 : capacity;
+  ret       = ioctl(gauge, BATIOC_STATE, (unsigned long)&state) < 0 ?
+              -errno : OK;
+  *charging = ret >= 0 && state == BATTERY_CHARGING;
 
   if (charger >= 0)
     {
@@ -99,9 +112,11 @@ static int system_measure(FAR void *arg, int gauge, int charger,
     }
   else
     {
-      if (ioctl(gauge, BATIOC_STATE, (unsigned long)&state) < 0)
+      /* Without a charger the gauge's state tells of external power */
+
+      if (ret < 0)
         {
-          return -errno;
+          return ret;
         }
 
       *external = state == BATTERY_CHARGING || state == BATTERY_FULL;

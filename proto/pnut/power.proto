@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// Power, a module of the system program: the battery as the system UI
+// shows it, on the battery topic, published at Power's first reading and
+// then only when the level or charging changes.
+
+syntax = "proto3";
+
+package pnut;
+
+import "pnut/options.proto";
+
+// The battery, on the battery topic (RFC 0005), for the system UI
+message BatteryInfo {
+  option (pnut.topic) = "battery";
+
+  uint32 level = 1;               // Percent, 0 to 100, the gauge's
+  bool charging = 2;              // The gauge says it charges
+}

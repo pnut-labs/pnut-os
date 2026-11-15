@@ -22,6 +22,7 @@
 #include <pnut/timer.h>
 #include <pnut/tz.h>
 
+#include "pnut/power.topics.h"
 #include "pnut/telephony.topics.h"
 #include "pnut/time.topics.h"
 #include "pnut/wifi.topics.h"
@@ -68,10 +69,12 @@ struct ui_status_s
   struct pnut_telephony_info_reader_s tel_reader;
   struct pnut_wifi_info_reader_s wifi_reader;
   struct pnut_time_change_reader_s time_reader;
+  struct pnut_battery_info_reader_s battery_reader;
   FAR struct pnut_timer_s *minute;
   bool tel_open;
   bool wifi_open;
   bool time_open;
+  bool battery_open;
 };
 
 /****************************************************************************

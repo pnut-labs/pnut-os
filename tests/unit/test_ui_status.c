@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -29,6 +30,7 @@
 #include <pnut/timer.h>
 #include <pnut/topic.h>
 
+#include "pnut/power.topics.h"
 #include "pnut/telephony.topics.h"
 #include "pnut/time.topics.h"
 #include "pnut/wifi.topics.h"
@@ -62,6 +64,7 @@ static struct ui_status_s g_status;
 static FAR struct pnut_publisher_s *g_tel;
 static FAR struct pnut_publisher_s *g_wifi;
 static FAR struct pnut_publisher_s *g_time;
+static FAR struct pnut_publisher_s *g_battery;
 static int g_changes[16];
 
 /****************************************************************************
@@ -118,6 +121,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   struct pnut_loop_config_s config;
   FAR struct pnut_loop_s *loop;
   char dir[] = "/tmp/pnut-status-XXXXXX";
+  char cmd[64];
   int i;
 
   assert_non_null(mkdtemp(dir));
@@ -128,6 +132,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   assert_int_equal(pnut_telephony_info_advertise(loop, &g_tel), 0);
   assert_int_equal(pnut_wifi_info_advertise(loop, &g_wifi), 0);
   assert_int_equal(pnut_time_change_advertise(loop, &g_time), 0);
+  assert_int_equal(pnut_battery_info_advertise(loop, &g_battery), 0);
 
   memset(g_changes, 0, sizeof(g_changes));
   assert_int_equal(status_start(&g_status, loop, fixed_now, changed, NULL),
@@ -144,8 +149,10 @@ static void run(FAR const struct step_s *steps, int nsteps)
   pnut_topic_unadvertise(g_tel);
   pnut_topic_unadvertise(g_wifi);
   pnut_topic_unadvertise(g_time);
+  pnut_topic_unadvertise(g_battery);
   pnut_loop_destroy(loop);
-  rmdir(dir);
+  snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+  assert_int_equal(system(cmd), 0);
 }
 
 /* test_status_topics */
@@ -160,8 +167,14 @@ static void topics_none(void)
 
 static void topics_publish(void)
 {
+  pnut_battery_info_t battery;
   pnut_telephony_info_t tel;
   pnut_wifi_info_t wifi;
+
+  memset(&battery, 0, sizeof(battery));
+  battery.level    = 84;
+  battery.charging = true;
+  assert_int_equal(pnut_battery_info_publish(g_battery, &battery), 0);
 
   memset(&tel, 0, sizeof(tel));
   tel.modem = PNUT_TELEPHONY_INFO_MODEM_ON;
@@ -182,6 +195,10 @@ static void topics_known(void)
   assert_true(g_status.has_wifi);
   assert_string_equal(g_status.wifi.name, "Home");
   assert_int_equal(count(STATUS_WIFI), 1);
+  assert_true(g_status.has_battery);
+  assert_int_equal(g_status.battery, 84);
+  assert_true(g_status.charging);
+  assert_int_equal(count(STATUS_BATTERY), 1);
 
   /* The same again: nothing changed, no one told */
 
@@ -194,6 +211,7 @@ static void topics_same(void)
 
   assert_int_equal(count(STATUS_TEL), 1);
   assert_int_equal(count(STATUS_WIFI), 1);
+  assert_int_equal(count(STATUS_BATTERY), 1);
 
   memset(&tel, 0, sizeof(tel));
   tel.modem = PNUT_TELEPHONY_INFO_MODEM_ON;

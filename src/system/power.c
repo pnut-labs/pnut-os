@@ -65,16 +65,45 @@ static void power_close(FAR struct power_s *power)
  *
  ****************************************************************************/
 
+static void power_publish(FAR struct power_s *power, int level,
+                          bool charging)
+{
+  pnut_battery_info_t info;
+
+  if (power->battery == NULL || level < 0)
+    {
+      return;
+    }
+
+  memset(&info, 0, sizeof(info));
+  info.level    = level > 100 ? 100 : level;
+  info.charging = charging;
+  if (power->published && info.level == power->shown.level &&
+      info.charging == power->shown.charging)
+    {
+      return;
+    }
+
+  if (pnut_battery_info_publish(power->battery, &info) >= 0)
+    {
+      power->shown     = info;
+      power->published = true;
+    }
+}
+
 static void power_read(FAR struct pnut_loop_s *loop,
                        FAR struct pnut_timer_s *timer, FAR void *arg)
 {
   FAR struct power_s *power = arg;
   bool external = false;
+  bool charging = false;
+  int level = -1;
   int mv = 0;
   int ret;
 
   ret = power->config.measure(power->config.arg, power->gauge,
-                              power->charger, &mv, &external);
+                              power->charger, &mv, &external, &level,
+                              &charging);
   if (ret == -ENODEV)
     {
       pnut_log(&power->module, PNUT_LOG_WARNING,
@@ -98,6 +127,7 @@ static void power_read(FAR struct pnut_loop_s *loop,
     }
 
   power->failing = false;
+  power_publish(power, level, charging);
 
   if (external || mv > power->config.cutoff)
     {
@@ -188,8 +218,10 @@ static bool power_watch(FAR struct power_s *power,
                         FAR struct pnut_loop_s *loop,
                         FAR const char *gauge, FAR const char *charger)
 {
-  bool external;
-  int mv;
+  bool external = false;
+  bool charging = false;
+  int level = -1;
+  int mv = 0;
   int ret;
 
   if (power->config.cutoff <= 0)
@@ -225,13 +257,19 @@ static bool power_watch(FAR struct power_s *power,
     }
 
   ret = power->config.measure(power->config.arg, power->gauge,
-                              power->charger, &mv, &external);
+                              power->charger, &mv, &external, &level,
+                              &charging);
   if (ret == -ENODEV)
     {
       pnut_log(&power->module, PNUT_LOG_INFO,
                "No battery: no power-off at a low battery");
       power_close(power);
       return false;
+    }
+
+  if (ret >= 0)
+    {
+      power_publish(power, level, charging);
     }
 
   ret = pnut_timer_start(loop, power->config.interval,
@@ -395,6 +433,14 @@ static int power_start(FAR struct pnut_module_s *module,
 
   pnut_module_ready(module);
 
+  ret = pnut_battery_info_advertise(loop, &power->battery);
+  if (ret < 0)
+    {
+      pnut_log(module, PNUT_LOG_WARNING,
+               "No battery topic: %d; the battery goes unshown", ret);
+      power->battery = NULL;
+    }
+
   if (power->config.sleep_rate != NULL)
     {
       ret = pnut_sleep_rate_subscribe(loop, power_rate, power,
@@ -465,9 +511,16 @@ static void power_stop(FAR struct pnut_module_s *module,
       power->rates_open = false;
     }
 
+  if (power->battery != NULL)
+    {
+      pnut_topic_unadvertise(power->battery);
+      power->battery = NULL;
+    }
+
   power_close(power);
-  power->low     = 0;
-  power->failing = false;
+  power->low       = 0;
+  power->failing   = false;
+  power->published = false;
 }
 
 /****************************************************************************

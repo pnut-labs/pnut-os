@@ -17,7 +17,8 @@ MAINSRC   = main.c
 CSRCS     = apps.c blocks.c describe.c display.c fb.c glue.c input.c
 CSRCS    += input_dev.c keymap.c page.c redraw.c status.c theme.c ui.c
 CSRCS    += list.c setting.c wifilist.c
-CSRCS    += scr_home.c scr_join.c scr_menu.c scr_settings.c scr_unavailable.c
+CSRCS    += scr_cell.c scr_home.c scr_join.c scr_menu.c scr_settings.c
+CSRCS    += scr_pin.c scr_unavailable.c
 CSRCS    += scr_wifi.c
 
 # The interfaces' code, and the fonts and icons, which the top-level

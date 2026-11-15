@@ -21,6 +21,7 @@
 #include <pnut/timer.h>
 
 #include "pnut/board.pnut.h"
+#include "pnut/power.topics.h"
 #include "pnut/time.topics.h"
 
 /****************************************************************************
@@ -61,14 +62,16 @@ struct power_config_s
 
   FAR const char *board;
 
-  /* Read the battery's voltage, in mV, and whether the device runs on
-   * external power, from the gauge and the charger opened (-1 for no
-   * charger).  A negated errno value; -ENODEV when the device has no
+  /* Read the battery's voltage, in mV, whether the device runs on
+   * external power, the gauge's level in percent (-1 when it gives none)
+   * and whether it charges, from the gauge and the charger opened (-1 for
+   * no charger).  A negated errno value; -ENODEV when the device has no
    * battery to read, which ends the readings.
    */
 
   CODE int (*measure)(FAR void *arg, int gauge, int charger, FAR int *mv,
-                      FAR bool *external);
+                      FAR bool *external, FAR int *level,
+                      FAR bool *charging);
   FAR void *arg;
 
   /* Hand the kernel the sleep clock's rate, parts per billion of the time
@@ -102,6 +105,15 @@ struct power_s
   int charger;                    /* The charger's file, or -1 */
   struct pnut_sleep_rate_reader_s rates;
   bool rates_open;
+
+  /* The battery topic (NULL if it could not be had), and what it was last
+   * told
+   */
+
+  FAR struct pnut_publisher_s *battery;
+  pnut_battery_info_t shown;
+  bool published;
+
   uint8_t low;                    /* Readings in a row under the cutoff */
   bool failing;                   /* The last reading failed, logged */
   bool off;                       /* The program stopped to power off */

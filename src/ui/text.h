@@ -127,4 +127,49 @@
 #define UI_T_WIFI_NO_ANSWER   N_("Wi-Fi did not answer")
 #define UI_T_WIFI_FAILED      N_("Wi-Fi failed")
 
+/* Cellular (Set-Cell) */
+
+#define UI_T_MOBILE_DATA      N_("Mobile data")
+#define UI_T_ACCESS_POINT     N_("Access point")
+#define UI_T_MODEM            N_("Modem")
+#define UI_T_NETWORK_ROW      N_("Network")
+#define UI_T_SIGNAL           N_("Signal")
+#define UI_T_SIM              N_("SIM")
+#define UI_T_SIM_READY        N_("Ready")
+#define UI_T_HOME_NETWORK     N_("home network")
+#define UI_T_ROAMING          N_("roaming")
+#define UI_T_BARS             N_("%u of 4")
+#define UI_T_DBM              N_("%d dBm")
+#define UI_T_APN_BAD          N_("Letters, digits, dots, hyphens and " \
+                                 "underscores only")
+#define UI_T_NOT_SAVED        N_("Not saved: Settings did not take it")
+
+/* The SIM PIN (Proto-SIM-PIN); the heads in capitals, as drawn */
+
+#define UI_T_SIM_PIN_TITLE    N_("SIM PIN")
+#define UI_T_SIM_PIN_HEAD     N_("SIM \xc2\xb7 ENTER PIN")
+#define UI_T_SIM_PUK_HEAD     N_("SIM \xc2\xb7 ENTER PUK")
+#define UI_T_SIM_NEW_PIN_HEAD N_("SIM \xc2\xb7 NEW PIN")
+#define UI_T_TRIES_LEFT       N_("Tries left")
+#define UI_T_TRIES_PIN        N_("%u of 3")
+#define UI_T_TRIES_PUK        N_("%u of 10")
+#define UI_T_LETTER_DIGITS    N_("Letter keys type digits")
+#define UI_T_LETTER_DIGITS_Q20 N_("W E R \xe2\x86\x92 1 2 3")
+#define UI_T_PIN_LENGTH       N_("The PIN: 4 to 8 digits")
+#define UI_T_PUK_LENGTH       N_("The PUK: 8 digits")
+#define UI_T_WRONG_PIN        N_("Wrong PIN")
+#define UI_T_WRONG_PUK        N_("Wrong PUK")
+#define UI_T_PIN_NOTE         N_("Skip goes on without the SIM: no mobile " \
+                                 "network or data. Turning the modem off " \
+                                 "and on in Cellular asks again.")
+#define UI_T_OK               N_("OK")
+#define UI_T_SKIP             N_("Skip")
+
+/* Why Telephony did not take a code (TelephonyError's codes) */
+
+#define UI_T_TEL_NO_MODEM     N_("The modem is not on")
+#define UI_T_TEL_BUSY         N_("Telephony is busy: try again")
+#define UI_T_TEL_NO_ANSWER    N_("Telephony did not answer")
+#define UI_T_TEL_FAILED       N_("Telephony failed")
+
 #endif /* __PNUT_OS_UI_TEXT_H */
