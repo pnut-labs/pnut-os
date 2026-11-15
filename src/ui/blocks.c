@@ -62,6 +62,19 @@
 #define BLOCK_ARROW_W    56
 #define BLOCK_DOT        6
 
+/* A row: 8 px in, its parts 8 px apart; a row is told from a tile by its
+ * flag, so that focus makes its title bold, not its name
+ */
+
+#define BLOCK_PAD        8
+#define BLOCK_ROW_FLAG   LV_OBJ_FLAG_USER_1
+#define BLOCK_FIELD_FLAG LV_OBJ_FLAG_USER_2
+#define BLOCK_BOX_PAD    6
+
+/* The field's dot: U+2022 */
+
+#define BLOCK_DOT_UTF8   "\xe2\x80\xa2"
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -223,6 +236,76 @@ static void block_rule_draw(FAR lv_event_t *e)
   dsc.p2.x       = area.x2;
   dsc.p2.y       = area.y1;
   lv_draw_line(lv_event_get_layer(e), &dsc);
+}
+
+/* A row's frame: a flex row 40 px high, 8 px in, a dotted rule at its
+ * foot
+ */
+
+static FAR lv_obj_t *block_row_frame(FAR lv_obj_t *parent, uint16_t id,
+                                     int32_t h)
+{
+  FAR lv_obj_t *row = lv_obj_create(parent);
+
+  theme_box(row);
+  lv_obj_set_size(row, BLOCK_W, h);
+  lv_obj_set_user_data(row, (FAR void *)(uintptr_t)id);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_hor(row, BLOCK_PAD, 0);
+  lv_obj_set_style_pad_column(row, BLOCK_PAD, 0);
+  return row;
+}
+
+/* The row's dotted rule, its last child: the others keep their places */
+
+static void block_row_rule(FAR lv_obj_t *row)
+{
+  FAR lv_obj_t *rule;
+
+  rule = block_rule(row, -BLOCK_PAD, lv_obj_get_style_height(row, 0) - 1,
+                    BLOCK_W, true);
+  lv_obj_add_flag(rule, LV_OBJ_FLAG_IGNORE_LAYOUT);
+}
+
+/* A label cut to one line at its width */
+
+static FAR lv_obj_t *block_line(FAR lv_obj_t *parent,
+                                FAR const lv_font_t *font,
+                                FAR const char *text)
+{
+  FAR lv_obj_t *label = block_label(parent, font, text);
+
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+  lv_obj_set_size(label, lv_pct(100), lv_font_get_line_height(font));
+  return label;
+}
+
+static void block_row_tapped(FAR lv_obj_t *row, uint16_t id)
+{
+  lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(row, block_tapped, LV_EVENT_CLICKED,
+                      (FAR void *)(uintptr_t)id);
+}
+
+/* Text in capitals, as the canvas's small labels (ASCII; other letters as
+ * they are)
+ */
+
+static void block_caps(FAR lv_obj_t *label, FAR const char *text)
+{
+  char caps[64];
+  size_t i;
+
+  for (i = 0; text[i] != '\0' && i < sizeof(caps) - 1; i++)
+    {
+      caps[i] = text[i] >= 'a' && text[i] <= 'z' ? text[i] - 'a' + 'A' :
+                text[i];
+    }
+
+  caps[i] = '\0';
+  block_set_text(label, caps);
 }
 
 /****************************************************************************
@@ -537,6 +620,235 @@ FAR lv_obj_t *block_shortcut(FAR lv_obj_t *parent, uint16_t id,
   return cell;
 }
 
+FAR lv_obj_t *block_row(FAR lv_obj_t *parent, uint16_t id,
+                        FAR const char *icon, FAR const char *title,
+                        FAR const char *detail)
+{
+  FAR lv_obj_t *row = block_row_frame(parent, id, BLOCK_ROW_H);
+  FAR lv_obj_t *glyph;
+  FAR lv_obj_t *col;
+  FAR lv_obj_t *line;
+
+  lv_obj_add_flag(row, BLOCK_ROW_FLAG);
+
+  /* Child 0, the icon; 1, the title over the detail; 2, the value */
+
+  glyph = block_label(row, &g_ui_icons_16, icon != NULL ? icon : "");
+  if (icon == NULL)
+    {
+      lv_obj_add_flag(glyph, LV_OBJ_FLAG_HIDDEN);
+    }
+
+  col = block_box(row, 0, 0, 10, LV_SIZE_CONTENT);
+  lv_obj_set_flex_grow(col, 1);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(col, 2, 0);
+  block_line(col, &g_ui_sans_14, title);
+  line = block_line(col, &g_ui_sans_12, detail != NULL ? detail : "");
+  if (detail == NULL)
+    {
+      lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+    }
+
+  block_label(row, &g_ui_mono_bold_12, "");
+  block_row_rule(row);
+  block_row_tapped(row, id);
+  return row;
+}
+
+void block_row_set(FAR lv_obj_t *row, FAR const char *title,
+                   FAR const char *detail)
+{
+  FAR lv_obj_t *col = lv_obj_get_child(row, 1);
+  FAR lv_obj_t *line = lv_obj_get_child(col, 1);
+
+  if (title != NULL)
+    {
+      block_set_text(lv_obj_get_child(col, 0), title);
+    }
+
+  if (detail != NULL)
+    {
+      block_set_text(line, detail);
+      if (lv_obj_has_flag(line, LV_OBJ_FLAG_HIDDEN))
+        {
+          lv_obj_remove_flag(line, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+void block_row_set_value(FAR lv_obj_t *row, FAR const char *value)
+{
+  block_set_text(lv_obj_get_child(row, 2), value);
+}
+
+void block_row_chevron(FAR lv_obj_t *row)
+{
+  FAR lv_obj_t *value = lv_obj_get_child(row, 2);
+
+  lv_obj_set_style_text_font(value, &g_ui_icons_14, 0);
+  block_set_text(value, UI_ICON_CHEVRON_RIGHT);
+}
+
+FAR lv_obj_t *block_row_title(FAR lv_obj_t *row)
+{
+  return lv_obj_get_child(lv_obj_get_child(row, 1), 0);
+}
+
+FAR const char *block_row_value(FAR lv_obj_t *row)
+{
+  return lv_label_get_text(lv_obj_get_child(row, 2));
+}
+
+FAR lv_obj_t *block_switch_row(FAR lv_obj_t *parent, uint16_t id,
+                               FAR const char *title, bool on)
+{
+  FAR lv_obj_t *row = block_row(parent, id, NULL, title, NULL);
+
+  block_switch_set(row, on);
+  return row;
+}
+
+void block_switch_set(FAR lv_obj_t *row, bool on)
+{
+  block_row_set_value(row, on ? UI_T_ON : UI_T_OFF);
+}
+
+FAR lv_obj_t *block_heading(FAR lv_obj_t *parent, FAR const char *text)
+{
+  FAR lv_obj_t *heading = block_row_frame(parent, 0, BLOCK_HEADING_H);
+
+  block_line(heading, &g_ui_mono_bold_10, "");
+  block_heading_set(heading, text);
+  block_row_rule(heading);
+  return heading;
+}
+
+void block_heading_set(FAR lv_obj_t *heading, FAR const char *text)
+{
+  block_caps(lv_obj_get_child(heading, 0), text);
+}
+
+FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
+                         FAR const char *value)
+{
+  FAR lv_obj_t *row = block_row_frame(parent, 0, BLOCK_ROW_H);
+  FAR lv_obj_t *col;
+
+  col = block_box(row, 0, 0, 10, LV_SIZE_CONTENT);
+  lv_obj_set_flex_grow(col, 1);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(col, 3, 0);
+  block_caps(block_line(col, &g_ui_mono_bold_10, ""), label);
+  block_line(col, &g_ui_sans_14, value);
+  block_row_rule(row);
+  return row;
+}
+
+FAR lv_obj_t *block_field(FAR lv_obj_t *parent, uint16_t id,
+                          FAR const char *title, FAR struct block_field_s *f)
+{
+  FAR lv_obj_t *row = block_row_frame(parent, id, BLOCK_ROW_H);
+  FAR lv_obj_t *box;
+
+  lv_obj_add_flag(row, BLOCK_FIELD_FLAG);
+  block_label(row, &g_ui_sans_14, title);
+  box = lv_obj_create(row);
+  theme_box(box);
+  lv_obj_set_flex_grow(box, 1);
+  lv_obj_set_height(box, BLOCK_BOX_H);
+  lv_obj_set_style_border_width(box, 2, 0);
+  lv_obj_set_style_border_color(box, lv_color_black(), 0);
+  lv_obj_set_style_pad_hor(box, BLOCK_BOX_PAD, 0);
+
+  f->label = lv_label_create(box);
+  theme_label(f->label, &g_ui_sans_12);
+  lv_label_set_long_mode(f->label, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(f->label, lv_pct(100));
+  lv_obj_align(f->label, LV_ALIGN_LEFT_MID, 0, 0);
+  block_field_show(f);
+  block_row_rule(row);
+  block_row_tapped(row, id);
+  return row;
+}
+
+bool block_field_key(FAR struct block_field_s *f, uint8_t action,
+                     uint32_t ch)
+{
+  switch (action)
+    {
+      case UI_ACT_CHAR:
+
+        /* One byte a character so far: what the keyboard types */
+
+        if (ch >= 0x20 && ch < 0x7f && f->len < f->max &&
+            f->len < BLOCK_FIELD_MAX && (!f->digits ||
+                                         (ch >= '0' && ch <= '9')))
+          {
+            f->text[f->len++] = (char)ch;
+            f->text[f->len]   = '\0';
+            block_field_show(f);
+          }
+
+        return true;
+
+      case UI_ACT_DELETE:
+        if (f->len > 0)
+          {
+            f->text[--f->len] = '\0';
+            block_field_show(f);
+          }
+
+        return true;
+
+      default:
+        return false;
+    }
+}
+
+void block_field_show(FAR struct block_field_s *f)
+{
+  size_t o = 0;
+  uint8_t i;
+
+  for (i = 0; i < f->len; i++)
+    {
+      if (f->masked)
+        {
+          memcpy(f->shown + o, BLOCK_DOT_UTF8, 3);
+          o += 3;
+        }
+      else
+        {
+          f->shown[o++] = f->text[i];
+        }
+    }
+
+  if (f->focused)
+    {
+      f->shown[o++] = '_';
+    }
+
+  f->shown[o] = '\0';
+  if (f->label != NULL)
+    {
+      lv_label_set_text_static(f->label, f->shown);
+    }
+}
+
+FAR const char *block_field_shown(FAR struct block_field_s *f)
+{
+  return f->shown;
+}
+
+void block_field_wipe(FAR struct block_field_s *f)
+{
+  explicit_bzero(f->text, sizeof(f->text));
+  explicit_bzero(f->shown, sizeof(f->shown));
+  f->len = 0;
+  block_field_show(f);
+}
+
 FAR lv_obj_t *block_rule(FAR lv_obj_t *parent, int32_t x, int32_t y,
                          int32_t w, bool dotted)
 {
@@ -562,9 +874,24 @@ uint16_t block_id(FAR lv_obj_t *item)
 
 void block_focus(FAR lv_obj_t *item, bool focused)
 {
-  FAR lv_obj_t *name = lv_obj_get_child(item, 1);
+  FAR lv_obj_t *name;
+
+  /* A field shows its focus by its cursor (the screen's) */
+
+  if (lv_obj_has_flag(item, BLOCK_FIELD_FLAG))
+    {
+      return;
+    }
 
   theme_inverted(item, focused);
+  if (lv_obj_has_flag(item, BLOCK_ROW_FLAG))
+    {
+      lv_obj_set_style_text_font(block_row_title(item), focused ?
+                                 &g_ui_sans_bold_14 : &g_ui_sans_14, 0);
+      return;
+    }
+
+  name = lv_obj_get_child(item, 1);
   if (name != NULL)
     {
       lv_obj_set_style_text_font(name, focused ? &g_ui_sans_bold_12 :

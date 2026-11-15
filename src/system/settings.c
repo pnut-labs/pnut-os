@@ -1710,8 +1710,9 @@ static int settings_start(FAR struct pnut_module_s *module,
       pnut_log(module, PNUT_LOG_WARNING, "No settings topic: %d", ret);
     }
 
-  ret = pnut_settings_serve(loop, SETTINGS_SERVICE, 0, &g_settings_handlers,
-                            settings, &settings->server);
+  ret = pnut_settings_serve(loop, SETTINGS_SERVICE, settings->config.conns,
+                            &g_settings_handlers, settings,
+                            &settings->server);
   if (ret < 0)
     {
       pnut_log(module, PNUT_LOG_ERROR, "Cannot serve: %d", ret);

@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <pnut/msg.h>
+
 #include "describe.h"
 #include "text.h"
 
@@ -122,17 +124,21 @@ static FAR const char *describe_sim(pnut_telephony_info_sim_t sim)
 size_t describe_wifi(FAR const pnut_wifi_info_t *w, FAR char *buf,
                      size_t size)
 {
+  char name[DESCRIBE_NAME_MAX];
+
   switch (w->state)
     {
       case PNUT_WIFI_INFO_STATE_ON:
         return describe_put(buf, size, UI_T_ON, NULL, NULL);
 
       case PNUT_WIFI_INFO_STATE_JOINING:
+        describe_name(w->name, name, sizeof(name));
         return describe_put(buf, size, UI_T_JOINING,
-                            w->name[0] != '\0' ? " " : NULL, w->name);
+                            name[0] != '\0' ? " " : NULL, name);
 
       case PNUT_WIFI_INFO_STATE_JOINED:
-        return describe_put(buf, size, UI_T_ON, UI_DOT, w->name);
+        describe_name(w->name, name, sizeof(name));
+        return describe_put(buf, size, UI_T_ON, UI_DOT, name);
 
       default:
         return describe_put(buf, size, UI_T_OFF, NULL, NULL);
@@ -224,4 +230,68 @@ size_t describe_clock(FAR const struct tm *tm, FAR char *buf, size_t size)
   int n = snprintf(buf, size, "%02d:%02d", tm->tm_hour, tm->tm_min);
 
   return n < 0 ? 0 : (size_t)n < size ? (size_t)n : size - 1;
+}
+
+size_t describe_name(FAR const char *name, FAR char *buf, size_t size)
+{
+  FAR const uint8_t *p = (FAR const uint8_t *)name;
+  size_t o = 0;
+  int len;
+  int i;
+
+  while (*p != '\0' && o + 5 <= size)
+    {
+      /* A sequence's length from its lead byte, checked byte by byte */
+
+      len = *p < 0x80 ? 1 : (*p & 0xe0) == 0xc0 ? 2 :
+            (*p & 0xf0) == 0xe0 ? 3 : (*p & 0xf8) == 0xf0 ? 4 : 0;
+      i = 1;
+      while (i < len && (p[i] & 0xc0) == 0x80)
+        {
+          i++;
+        }
+
+      if (len == 0 || i < len || *p < 0x20 || *p == 0x7f)
+        {
+          o += snprintf(buf + o, size - o, "\\x%02x", *p);
+          p++;
+          continue;
+        }
+
+      memcpy(buf + o, p, len);
+      o += len;
+      p += len;
+    }
+
+  buf[o] = '\0';
+  return o;
+}
+
+FAR const char *describe_wifi_failure(int status, uint32_t code)
+{
+  switch (code)
+    {
+      case PNUT_WIFI_ERROR_CODE_OFF:
+        return UI_T_WIFI_OFF;
+
+      case PNUT_WIFI_ERROR_CODE_NO_RADIO:
+        return UI_T_WIFI_NO_RADIO;
+
+      case PNUT_WIFI_ERROR_CODE_NOT_FOUND:
+        return UI_T_WIFI_NOT_FOUND;
+
+      case PNUT_WIFI_ERROR_CODE_REFUSED:
+        return UI_T_WIFI_REFUSED;
+
+      case PNUT_WIFI_ERROR_CODE_NO_ADDRESS:
+        return UI_T_WIFI_NO_ADDRESS;
+
+      case PNUT_WIFI_ERROR_CODE_CANCELLED:
+        return UI_T_WIFI_CANCELLED;
+
+      default:
+        return status == PNUT_STATUS_TIMEOUT ||
+               status == PNUT_STATUS_UNAVAILABLE ? UI_T_WIFI_NO_ANSWER :
+                                                   UI_T_WIFI_FAILED;
+    }
 }

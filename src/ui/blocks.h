@@ -32,6 +32,13 @@
 #define BLOCK_HEADER_H   44
 #define BLOCK_FOOTER_H   32
 #define BLOCK_PAGES_H    30
+#define BLOCK_ROW_H      40
+#define BLOCK_HEADING_H  20
+
+/* A text field's text, at most, and as shown (a password's dots) */
+
+#define BLOCK_FIELD_MAX    64
+#define BLOCK_FIELD_SHOWN  (BLOCK_FIELD_MAX * 3 + 2)
 
 /* The ids of the blocks a screen does not number itself */
 
@@ -50,6 +57,23 @@ enum block_header_part_e
   BLOCK_HEADER_BATTERY,
   BLOCK_HEADER_TITLE,
   BLOCK_HEADER_PAGE
+};
+
+/* A one-line text field: its text in a fixed buffer, shown as a label of
+ * that buffer (LVGL keeps no copy), wiped when done.  max: the most
+ * characters; masked: shown as dots; digits: only digits taken.
+ */
+
+struct block_field_s
+{
+  char text[BLOCK_FIELD_MAX + 1];
+  char shown[BLOCK_FIELD_SHOWN];
+  uint8_t len;
+  uint8_t max;
+  bool masked;
+  bool digits;
+  bool focused;                   /* Shows where typing goes */
+  FAR lv_obj_t *label;
 };
 
 /****************************************************************************
@@ -110,6 +134,51 @@ FAR lv_obj_t *block_tile(FAR lv_obj_t *parent, uint16_t id,
 
 FAR lv_obj_t *block_shortcut(FAR lv_obj_t *parent, uint16_t id,
                              FAR const char *icon);
+
+/* A row of a list, 40 px: an icon (or NULL), a title, a detail (or
+ * NULL) under it, cut to one line each; a value at the right
+ */
+
+FAR lv_obj_t *block_row(FAR lv_obj_t *parent, uint16_t id,
+                        FAR const char *icon, FAR const char *title,
+                        FAR const char *detail);
+void block_row_set(FAR lv_obj_t *row, FAR const char *title,
+                   FAR const char *detail);
+void block_row_set_value(FAR lv_obj_t *row, FAR const char *value);
+void block_row_chevron(FAR lv_obj_t *row);  /* The value: an arrow */
+FAR lv_obj_t *block_row_title(FAR lv_obj_t *row);
+FAR const char *block_row_value(FAR lv_obj_t *row);
+
+/* A switch: a row whose value says On or Off */
+
+FAR lv_obj_t *block_switch_row(FAR lv_obj_t *parent, uint16_t id,
+                               FAR const char *title, bool on);
+void block_switch_set(FAR lv_obj_t *row, bool on);
+
+/* A list's heading, 20 px, in capitals; and a row that only tells: a
+ * label in capitals over a value
+ */
+
+FAR lv_obj_t *block_heading(FAR lv_obj_t *parent, FAR const char *text);
+void block_heading_set(FAR lv_obj_t *heading, FAR const char *text);
+FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
+                         FAR const char *value);
+
+/* A text field's row: its title, the text in a box */
+
+FAR lv_obj_t *block_field(FAR lv_obj_t *parent, uint16_t id,
+                          FAR const char *title,
+                          FAR struct block_field_s *f);
+
+/* A key typed into the field: a character, Delete (nothing in an empty
+ * field, and still taken: never Back).  Whether it was the field's.
+ */
+
+bool block_field_key(FAR struct block_field_s *f, uint8_t action,
+                     uint32_t ch);
+void block_field_show(FAR struct block_field_s *f);
+FAR const char *block_field_shown(FAR struct block_field_s *f);
+void block_field_wipe(FAR struct block_field_s *f);
 
 /* A rule: 2 px black, or a dotted hairline (the canvas's light grey) */
 

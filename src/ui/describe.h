@@ -30,6 +30,10 @@
 
 #define DESCRIBE_STEPS  5
 
+/* A network's name as shown: 32 bytes, each perhaps \xNN */
+
+#define DESCRIBE_NAME_MAX  (32 * 4 + 1)
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -44,6 +48,12 @@ size_t describe_wifi(FAR const pnut_wifi_info_t *w, FAR char *buf,
 size_t describe_cell(FAR const pnut_telephony_info_t *t, FAR char *buf,
                      size_t size);
 
+/* Why Wi-Fi did not do what was asked, from an answer's status and
+ * error code (WifiError)
+ */
+
+FAR const char *describe_wifi_failure(int status, uint32_t code);
+
 /* A network's strength in a word, from its dBm */
 
 FAR const char *describe_strength(int32_t dbm);
@@ -54,6 +64,12 @@ FAR const char *describe_strength(int32_t dbm);
 
 uint8_t describe_signal_steps(uint32_t bars);
 uint8_t describe_battery_steps(uint32_t level);
+
+/* A name as shown: its UTF-8 as it is, a byte that is not UTF-8 (or a
+ * control) as \xNN
+ */
+
+size_t describe_name(FAR const char *name, FAR char *buf, size_t size);
 
 /* "Tue, 22 Sep"; "14:07" */
 

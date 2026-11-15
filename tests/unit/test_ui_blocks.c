@@ -27,6 +27,7 @@
 #include "blocks.h"
 #include "icons.h"
 #include "keymap.h"
+#include "list.h"
 #include "status.h"
 #include "theme.h"
 
@@ -240,6 +241,138 @@ static void test_blocks_header_same(void **state)
   lv_deinit();
 }
 
+static void test_blocks_field(void **state)
+{
+  struct block_field_s f;
+  lv_obj_t *scr = start();
+  int i;
+
+  memset(&f, 0, sizeof(f));
+  f.max = 63;
+  block_field(scr, 3, "Password", &f);
+
+  /* 63 characters, not 64 */
+
+  for (i = 0; i < 64; i++)
+    {
+      assert_true(block_field_key(&f, UI_ACT_CHAR, 'a' + i % 26));
+    }
+
+  assert_int_equal(f.len, 63);
+  assert_int_equal(strlen(f.text), 63);
+
+  /* Delete takes the last; in an empty field it does nothing, and is
+   * taken (never Back)
+   */
+
+  assert_true(block_field_key(&f, UI_ACT_DELETE, 0));
+  assert_int_equal(f.len, 62);
+  while (f.len > 0)
+    {
+      block_field_key(&f, UI_ACT_DELETE, 0);
+    }
+
+  assert_true(block_field_key(&f, UI_ACT_DELETE, 0));
+  assert_int_equal(f.len, 0);
+
+  /* Steering is not the field's */
+
+  assert_false(block_field_key(&f, UI_ACT_UP, 0));
+
+  /* Masked: a dot for each */
+
+  f.masked = true;
+  block_field_key(&f, UI_ACT_CHAR, 's');
+  block_field_key(&f, UI_ACT_CHAR, 'e');
+  block_field_key(&f, UI_ACT_CHAR, 'c');
+  assert_string_equal(block_field_shown(&f),
+                      "\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2");
+
+  /* Wiped: nothing left of it */
+
+  block_field_wipe(&f);
+  assert_int_equal(f.len, 0);
+  for (i = 0; i < (int)sizeof(f.text); i++)
+    {
+      assert_int_equal(f.text[i], 0);
+    }
+
+  /* Digits only: a letter is refused */
+
+  f.digits = true;
+  f.masked = false;
+  assert_true(block_field_key(&f, UI_ACT_CHAR, '7'));
+  assert_true(block_field_key(&f, UI_ACT_CHAR, 'x'));
+  assert_string_equal(f.text, "7");
+  lv_deinit();
+}
+
+static void test_blocks_rows(void **state)
+{
+  lv_obj_t *scr = start();
+  lv_obj_t *row;
+  lv_obj_t *title;
+
+  row = block_row(scr, 1, NULL,
+                  "A network name of thirty-two bytes, and more", "Secured");
+  lv_obj_set_width(row, 240);
+  lv_obj_update_layout(row);
+  title = block_row_title(row);
+  assert_int_equal(lv_obj_get_height(title),
+                   lv_font_get_line_height(&g_ui_sans_14));
+  assert_true(lv_obj_get_width(title) < 240);
+
+  row = block_switch_row(scr, 2, "Wi-Fi", true);
+  assert_string_equal(block_row_value(row), "On");
+  block_switch_set(row, false);
+  assert_string_equal(block_row_value(row), "Off");
+
+  /* A tap on a row: its id */
+
+  lv_obj_send_event(row, LV_EVENT_CLICKED, NULL);
+  assert_int_equal(g_nids, 1);
+  assert_int_equal(g_ids[0], 2);
+  lv_deinit();
+}
+
+static void test_blocks_list(void **state)
+{
+  struct list_s l;
+  lv_obj_t *scr = start();
+  lv_obj_t *rows[4];
+
+  /* Headings and hidden rows are passed over */
+
+  list_init(&l, scr);
+  rows[0] = block_switch_row(l.box, 1, "Wi-Fi", true);
+  block_heading(l.box, "Nearby");
+  rows[1] = block_row(l.box, 2, NULL, "Home", "Secured");
+  rows[2] = block_row(l.box, 3, NULL, "Gone", NULL);
+  lv_obj_add_flag(rows[2], LV_OBJ_FLAG_HIDDEN);
+  rows[3] = block_row(l.box, 4, NULL, "Cafe", "Open");
+
+  assert_true(list_move(&l, 1));
+  assert_ptr_equal(l.focus, rows[0]);
+  assert_true(list_move(&l, 1));
+  assert_ptr_equal(l.focus, rows[1]);
+  assert_true(list_move(&l, 1));
+  assert_ptr_equal(l.focus, rows[3]);
+  assert_false(list_move(&l, 1));
+  assert_ptr_equal(l.focus, rows[3]);
+  assert_true(list_move(&l, -1));
+  assert_ptr_equal(l.focus, rows[1]);
+
+  assert_ptr_equal(list_find(&l, 4), rows[3]);
+  assert_null(list_find(&l, 9));
+
+  /* The focused row hidden: the focus goes to the next shown */
+
+  lv_obj_add_flag(rows[1], LV_OBJ_FLAG_HIDDEN);
+  list_check(&l);
+  assert_ptr_equal(l.focus, rows[3]);
+  lv_deinit();
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -251,6 +384,9 @@ int main(void)
     cmocka_unit_test(test_blocks_header),
     cmocka_unit_test(test_blocks_same_text),
     cmocka_unit_test(test_blocks_header_same),
+    cmocka_unit_test(test_blocks_field),
+    cmocka_unit_test(test_blocks_rows),
+    cmocka_unit_test(test_blocks_list),
     cmocka_unit_test(test_blocks_softkeys_tapped),
   };
 

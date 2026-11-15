@@ -369,7 +369,7 @@ static void keys_settings(void)
 
 static void keys_settings_shown(void)
 {
-  assert_string_equal(top(), "unavailable");
+  assert_string_equal(top(), "settings");
   assert_string_equal(title(), "Settings");
   key(KEYMAP_F3, true);
 }
@@ -599,6 +599,113 @@ static void test_screens_state(void **state)
   g_now = SCREENS_NOW;
 }
 
+/* test_screens_options: a screen's options, by keys and by a tap */
+
+static int g_chosen[4];
+static int g_nchosen;
+
+static void opt_chosen(FAR struct screen_s *s, int index)
+{
+  g_chosen[g_nchosen++] = index;
+}
+
+static void opt_build(FAR struct screen_s *s)
+{
+  ui_header(s, NULL, "Options test");
+  block_softkeys(s->root, "Options", "Open", "Back");
+}
+
+static bool opt_key(FAR struct screen_s *s, uint8_t action, uint32_t ch)
+{
+  static FAR const char * const items[3] =
+  {
+    "Scan again", "Leave", "Forget"
+  };
+
+  if (action == UI_ACT_SOFT_LEFT || action == UI_ACT_OPTIONS)
+    {
+      ui_options(s, items, 3, opt_chosen);
+      return true;
+    }
+
+  return false;
+}
+
+static const struct screen_class_s g_opt_class =
+{
+  "options-test", opt_build, opt_key, NULL, NULL, NULL, 0
+};
+
+static void opt_open(void)
+{
+  g_nchosen = 0;
+  ui_push(&g_ui, &g_opt_class, NULL);
+  key(KEYMAP_F1, true);
+  assert_true(ui_options_open(&g_ui));
+  key('s', false);
+  key('e', false);
+  assert_false(ui_options_open(&g_ui));
+  assert_int_equal(g_nchosen, 1);
+  assert_int_equal(g_chosen[0], 1);
+
+  /* Back closes them, nothing chosen, the screen still there */
+
+  input_key(&g_input, KEYMAP_ALT, true, true);
+  key(KEYMAP_ENTER, true);
+  input_key(&g_input, KEYMAP_ALT, true, false);
+  assert_true(ui_options_open(&g_ui));
+  key('q', false);
+  assert_false(ui_options_open(&g_ui));
+  assert_int_equal(g_nchosen, 1);
+  assert_string_equal(top(), "options-test");
+
+  /* A tap outside closes them, nothing chosen */
+
+  key(KEYMAP_F1, true);
+  tap(120, 100);
+  assert_false(ui_options_open(&g_ui));
+  assert_int_equal(g_nchosen, 1);
+
+  /* A tap on the third */
+
+  key(KEYMAP_F1, true);
+}
+
+static void opt_tap(void)
+{
+  tap(120, 263);
+  assert_false(ui_options_open(&g_ui));
+  assert_int_equal(g_nchosen, 2);
+  assert_int_equal(g_chosen[1], 2);
+}
+
+static void opt_shown(void)
+{
+  key(KEYMAP_F1, true);
+  key('s', false);
+}
+
+static void opt_save(void)
+{
+  assert_true(ui_options_open(&g_ui));
+  save("options");
+}
+
+static void test_screens_options(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 100, publish },
+    { 300, opt_open },
+    { 400, opt_tap },
+    { 500, opt_shown },
+    { 1300, opt_save },
+    { 1400, NULL },
+  };
+
+  run(steps, 6);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -611,6 +718,7 @@ int main(void)
     cmocka_unit_test(test_screens_keys),
     cmocka_unit_test(test_screens_touch),
     cmocka_unit_test(test_screens_state),
+    cmocka_unit_test(test_screens_options),
     cmocka_unit_test(test_screens_images),
   };
 

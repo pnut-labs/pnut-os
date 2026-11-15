@@ -25,6 +25,7 @@
 #include <pnut/timer.h>
 
 #include "pnut/board.pnut.h"
+#include "pnut/wifi.pnut.h"
 
 #include "display.h"
 #include "input.h"
@@ -34,9 +35,19 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Screens on the stack, at most */
+/* Screens on the stack, at most; a screen's options, at most */
 
-#define UI_DEPTH  8
+#define UI_DEPTH    8
+#define UI_OPTIONS  8
+
+/* Told to a screen's status() beside status.h's: Wi-Fi's service came
+ * (back), its state to read again; and all of it, as a screen comes back
+ * on top
+ */
+
+#define UI_WIFI_SERVICE  0x10
+#define UI_STATUS_ALL    (STATUS_TEL | STATUS_WIFI | STATUS_TIME | \
+                          STATUS_BATTERY | UI_WIFI_SERVICE)
 
 /****************************************************************************
  * Public Types
@@ -75,6 +86,20 @@ struct ui_config_s
 
 struct screen_s;
 
+/* A screen's options, open over it */
+
+struct ui_options_s
+{
+  FAR struct screen_s *screen;
+  CODE void (*chosen)(FAR struct screen_s *s, int index);
+  FAR lv_obj_t *box;
+  FAR lv_obj_t *shadow;
+  FAR lv_obj_t *catcher;          /* Takes a tap outside them */
+  FAR lv_obj_t *rows[UI_OPTIONS];
+  uint8_t count;
+  uint8_t focus;
+};
+
 struct ui_s
 {
   struct pnut_module_s module;    /* First: "ui" */
@@ -84,6 +109,10 @@ struct ui_s
   bool status_open;
   FAR struct screen_s *stack[UI_DEPTH];
   uint8_t depth;
+  struct ui_options_s options;    /* Open when box is not NULL */
+  uint32_t serials;               /* The last screen's serial */
+  struct pnut_wifi_client_s wifi; /* Shared by Wi-Fi's screens */
+  bool wifi_open;
   struct pnut_board_client_s board;
   FAR struct pnut_timer_s *retry; /* Asking Board again, once */
   bool board_open;
@@ -119,6 +148,8 @@ struct screen_s
   FAR lv_obj_t *header;           /* Its header, if it has one */
   FAR const void *arg;            /* What it was opened with */
   uint16_t focus;                 /* The item focused (for tests) */
+  uint32_t serial;                /* Its own, never reused: an answer that
+                                   * comes after it went finds no screen */
   FAR void *state;                /* The class's, size bytes */
 };
 
@@ -129,6 +160,9 @@ struct screen_s
 extern const struct screen_class_s g_scr_home;
 extern const struct screen_class_s g_scr_menu;
 extern const struct screen_class_s g_scr_unavailable;
+extern const struct screen_class_s g_scr_settings;
+extern const struct screen_class_s g_scr_wifi;
+extern const struct screen_class_s g_scr_join;
 
 /****************************************************************************
  * Public Function Prototypes
@@ -144,6 +178,38 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
             FAR const void *arg);
 void ui_pop(FAR struct ui_s *ui);
 FAR struct screen_s *ui_top(FAR struct ui_s *ui);
+
+/* A screen's options, over it (Proto-Options): W and S move, E, Enter and
+ * the middle softkey choose, Back, the options' keys and a tap outside
+ * close them.  chosen is told the index.
+ */
+
+int ui_options(FAR struct screen_s *s, FAR const char * const *items,
+               uint8_t count,
+               CODE void (*chosen)(FAR struct screen_s *s, int index));
+bool ui_options_open(FAR struct ui_s *ui);
+
+/* Lay the top screen out after it changed outside its key and tap
+ * handlers (an answer, a timer), so that a tap finds its blocks
+ */
+
+void ui_place(FAR struct ui_s *ui);
+
+/* The screen of that serial, still on the stack; or NULL */
+
+FAR struct screen_s *ui_find(FAR struct ui_s *ui, uint32_t serial);
+
+/* Wi-Fi's client, connected the first time it is asked for; NULL if it
+ * cannot be.  A call's answer finds its screen with ui_find().
+ */
+
+FAR struct pnut_wifi_client_s *ui_wifi(FAR struct ui_s *ui);
+
+/* Whether a text field of the top screen has the keys (letters type);
+ * a screen's change ends it
+ */
+
+void ui_typing(FAR struct screen_s *s, bool typing);
 
 /* A screen's header, kept as the device's state is */
 

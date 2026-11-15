@@ -82,4 +82,49 @@
 #define UI_T_OPTIONS          N_("Options")
 #define UI_T_MENU             N_("Menu")
 
+/* The options' heading */
+
+#define UI_T_OPTIONS_HEAD     N_("OPTIONS")
+
+/* Settings (Proto-Settings) */
+
+#define UI_T_SETTINGS         N_("Settings")
+#define UI_T_WIFI             N_("Wi-Fi")
+#define UI_T_CELLULAR         N_("Cellular")
+
+/* Wi-Fi (Set-WiFi, Set-WiFi-Join) */
+
+#define UI_T_CONNECTED        N_("Connected")
+#define UI_T_NEARBY           N_("Nearby")
+#define UI_T_SCANNING         N_("Nearby \xc2\xb7 scanning")
+#define UI_T_SCANNED          N_("Nearby \xc2\xb7 scanned %02d:%02d")
+#define UI_T_SCAN_FAILED      N_("Nearby \xc2\xb7 scan failed")
+#define UI_T_NONE_NEARBY      N_("Nearby \xc2\xb7 none in reach")
+#define UI_T_SECURED          N_("Secured")
+#define UI_T_OPEN_NETWORK     N_("Open")
+#define UI_T_SAVED            N_("saved")
+#define UI_T_JOINING_DOTS     N_("Joining\xe2\x80\xa6")
+#define UI_T_SCAN_AGAIN       N_("Scan again")
+#define UI_T_LEAVE            N_("Leave")
+#define UI_T_FORGET           N_("Forget")
+#define UI_T_FORGET_YES       N_("Yes, forget it")
+#define UI_T_KEEP             N_("No, keep it")
+#define UI_T_SECURITY         N_("Security")
+#define UI_T_WPA              N_("WPA2/WPA3-Personal")
+#define UI_T_PASSWORD         N_("Password")
+#define UI_T_SHOW_PASSWORD    N_("Show password")
+#define UI_T_JOIN             N_("Join")
+#define UI_T_PASSWORD_LENGTH  N_("The password: 8 to 63 characters")
+
+/* Why Wi-Fi did not do what was asked (WifiError's codes) */
+
+#define UI_T_WIFI_OFF         N_("Wi-Fi is off")
+#define UI_T_WIFI_NO_RADIO    N_("The radio would not start")
+#define UI_T_WIFI_NOT_FOUND   N_("Not in reach")
+#define UI_T_WIFI_REFUSED     N_("Wrong password, or out of reach")
+#define UI_T_WIFI_NO_ADDRESS  N_("Joined, but no address given")
+#define UI_T_WIFI_CANCELLED   N_("Cancelled")
+#define UI_T_WIFI_NO_ANSWER   N_("Wi-Fi did not answer")
+#define UI_T_WIFI_FAILED      N_("Wi-Fi failed")
+
 #endif /* __PNUT_OS_UI_TEXT_H */

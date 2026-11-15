@@ -102,16 +102,19 @@ LVGL_LIB    := $(BUILD)/lib$(LVGL_NAME).a
 
 .PHONY: run screens
 
-# The screens' test writes the screens it draws to $(BUILD)/screens, made
-# afresh each run
+# The screens' tests write the screens they draw to $(BUILD)/screens,
+# made afresh each run
+
+SCREEN_TESTS := $(BUILD)/test_ui_screens $(BUILD)/test_ui_wifi
 
 run: $(TESTS)
 	@rm -rf $(BUILD)/screens
 	@failed=0; for t in $(TESTS); do $$t || failed=1; done; exit $$failed
 
-screens: $(BUILD)/test_ui_screens
+screens: $(SCREEN_TESTS)
 	@rm -rf $(BUILD)/screens
-	$(BUILD)/test_ui_screens
+	@failed=0; for t in $(SCREEN_TESTS); do $$t || failed=1; done; \
+	exit $$failed
 
 $(BUILD)/test_ui_%: test_ui_%.c $(SRCS) $(HDRS) $(UI_SRCS) $(UI_HDRS) \
                     $(LVGL_LIB) | $(BUILD)/inc/lvgl
