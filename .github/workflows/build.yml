@@ -98,7 +98,7 @@ jobs:
   unit:
     name: unit
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,8 +110,15 @@ jobs:
           sudo apt-get install -y libcmocka-dev libsodium-dev \
             protobuf-compiler python3-protobuf
 
+      # The system UI's fonts and icons are made with these (pinned)
+
+      - name: Install the UI's Python packages
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ui"
+          "$RUNNER_TEMP/ui/bin/pip" install -r tools/requirements.txt
+
       - name: Run the unit tests
-        run: make test
+        run: make test -j"$(nproc)" UI_PYTHON="$RUNNER_TEMP/ui/bin/python3"
 
   style:
     name: style

@@ -1,0 +1,4 @@
+<!-- The "E-ink Softkey Phone" canvas's cellular icon -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="square" stroke-linejoin="miter">
+  <path d="M4 20v-3M9 20v-7M14 20V9M19 20V4"/>
+</svg>

@@ -220,6 +220,78 @@ $(NANOPB)/pb.h:
 	tar xzf $(NANOPB_TARBALL) -C $(NANOPB).tmp --strip-components=1
 	mv $(NANOPB).tmp $(NANOPB)
 
+# LVGL (RFC 0019), for the system UI's tests on the computer: pinned and
+# checked as nanopb is.  NuttX's build fetches its own copy through
+# nuttx-apps' package, of the version its Kconfig names
+# (CONFIG_LVGL_VERSION_*): the two must be the same.
+
+LVGL_VERSION := 9.2.2
+LVGL_SHA256  := 129b4e00e06639fa79d7e8a6cab3c1ecce2445b1a246652ccd34f22e7b17ad6f
+LVGL_TARBALL := $(BUILD)/dl/lvgl-$(LVGL_VERSION).tar.gz
+LVGL         := $(BUILD)/lvgl-$(LVGL_VERSION)
+
+.PHONY: lvgl
+lvgl: $(LVGL)/lvgl.h
+
+$(LVGL)/lvgl.h:
+	rm -rf $(LVGL) $(LVGL).tmp
+	mkdir -p $(BUILD)/dl $(LVGL).tmp
+	if ! echo "$(LVGL_SHA256)  $(LVGL_TARBALL)" | sha256sum -c - > /dev/null 2>&1; then \
+	  curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 5 \
+	    --retry-max-time 60 -o $(LVGL_TARBALL) \
+	    https://github.com/lvgl/lvgl/archive/refs/tags/v$(LVGL_VERSION).tar.gz && \
+	  echo "$(LVGL_SHA256)  $(LVGL_TARBALL)" | sha256sum -c -; \
+	fi
+	tar xzf $(LVGL_TARBALL) -C $(LVGL).tmp --strip-components=1
+	mv $(LVGL).tmp $(LVGL)
+
+# The system UI's fonts and icons (RFC 0019), made in build/ui from
+# src/ui/theme, never committed.  UI_PYTHON has the packages of
+# tools/requirements.txt.  A font is name:file:size:characters.
+
+UI_PYTHON ?= $(PYTHON)
+UIGEN     := $(BUILD)/ui
+UI_THEME  := $(ROOT)/src/ui/theme
+UI_FONTS  := sans_11:IBMPlexSans-Regular:11:text \
+             sans_12:IBMPlexSans-Regular:12:text \
+             sans_13:IBMPlexSans-Regular:13:text \
+             sans_14:IBMPlexSans-Regular:14:text \
+             sans_bold_12:IBMPlexSans-Bold:12:text \
+             sans_bold_13:IBMPlexSans-Bold:13:text \
+             sans_bold_14:IBMPlexSans-Bold:14:text \
+             sans_bold_16:IBMPlexSans-Bold:16:text \
+             mono_bold_10:IBMPlexMono-Bold:10:text \
+             mono_bold_11:IBMPlexMono-Bold:11:text \
+             mono_bold_12:IBMPlexMono-Bold:12:text \
+             mono_bold_26:IBMPlexMono-Bold:26:digits \
+             mono_bold_36:IBMPlexMono-Bold:36:digits
+
+.PHONY: ui-assets
+ui-assets: $(UIGEN)/.stamp
+
+# The list of fonts and of the theme's files, rewritten only when it
+# changes: a font added or resized, an icon removed, makes them again
+
+UI_FILES := $(sort $(wildcard $(UI_THEME)/fonts/*.ttf $(UI_THEME)/icons/*.svg))
+
+$(BUILD)/ui-inputs: force
+	@mkdir -p $(BUILD)
+	@printf '%s\n' $(UI_FONTS) $(UI_FILES) > $@.new
+	@if cmp -s $@.new $@; then rm $@.new; else mv $@.new $@; fi
+
+$(UIGEN)/.stamp: $(UI_FILES) $(BUILD)/ui-inputs tools/mkfont.py \
+                 tools/mkicons.py tools/requirements.txt
+	rm -rf $(UIGEN)
+	mkdir -p $(UIGEN)
+	@for f in $(UI_FONTS); do \
+	  set -- $$(echo $$f | tr : ' '); \
+	  $(UI_PYTHON) $(ROOT)/tools/mkfont.py $(UI_THEME)/fonts/$$2.ttf $$3 \
+	    g_ui_$$1 $$4 $(UIGEN)/$$1.c > /dev/null || exit 1; \
+	done
+	$(UI_PYTHON) $(ROOT)/tools/mkicons.py $(UIGEN) $(UI_THEME)/icons/*.svg \
+	  > /dev/null
+	touch $@
+
 # The interfaces' code (RFC 0023), made afresh in build/gen whenever a
 # .proto file or the generator changes, or a .proto file comes or goes
 # (the list of them changes); never committed
@@ -235,11 +307,12 @@ $(GEN)/.stamp: $(PROTOS) $(BUILD)/protos tools/protoc-gen-pnut tools/generate.sh
 	$(ROOT)/tools/generate.sh $(ROOT) $(GEN) $(PYTHON) $(NANOPB)
 	touch $@
 
-# The unit tests: libpnut built for the computer, with cmocka
+# The unit tests: libpnut built for the computer, with cmocka; the system
+# UI's with LVGL
 
 ifneq ($(TARGETTEST),y)
-test: $(GEN)/.stamp
-	$(MAKE) -C tests/unit GEN=$(GEN) NANOPB=$(NANOPB)
+test: $(GEN)/.stamp $(LVGL)/lvgl.h $(UIGEN)/.stamp
+	$(MAKE) -C tests/unit GEN=$(GEN) NANOPB=$(NANOPB) LVGL=$(LVGL)
 endif
 
 # Style: NuttX's nxstyle on every C file of pnut-os, submodules apart

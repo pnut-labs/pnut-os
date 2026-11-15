@@ -1,0 +1,7 @@
+# The Python packages the system UI's fonts and icons are made with
+# (tools/mkfont.py, tools/mkicons.py), pinned: their wheels carry their own
+# FreeType and MuPDF, so the glyphs, and the screen images the tests
+# compare (tests/screens), come out the same on every computer.
+
+freetype-py==2.5.1
+pymupdf==1.26.4
