@@ -65,8 +65,10 @@ FAR const char *describe_strength(int32_t dbm);
 uint8_t describe_signal_steps(uint32_t bars);
 uint8_t describe_battery_steps(uint32_t level);
 
-/* A name as shown: its UTF-8 as it is, a byte that is not UTF-8 (or a
- * control) as \xNN
+/* A name as shown: its characters the fonts draw as they are; any other
+ * (not UTF-8, a control, invisible, direction-changing, one the fonts
+ * lack, the backslash) as its bytes, \xNN each, so that no name can look
+ * like another
  */
 
 size_t describe_name(FAR const char *name, FAR char *buf, size_t size);

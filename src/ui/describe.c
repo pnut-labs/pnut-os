@@ -15,6 +15,7 @@
  * Included Files
  ****************************************************************************/
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -115,6 +116,84 @@ static FAR const char *describe_sim(pnut_telephony_info_sim_t sim)
       default:
         return NULL;
     }
+}
+
+/* A UTF-8 sequence's length, if it is one: the shortest form of a code
+ * point up to U+10FFFF, no surrogate; 0 if not
+ */
+
+static int describe_utf8(FAR const uint8_t *p)
+{
+  int len;
+  int i;
+
+  len = p[0] < 0x80 ? 1 : p[0] >= 0xc2 && p[0] <= 0xdf ? 2 :
+        (p[0] & 0xf0) == 0xe0 ? 3 : p[0] >= 0xf0 && p[0] <= 0xf4 ? 4 : 0;
+  for (i = 1; i < len; i++)
+    {
+      if ((p[i] & 0xc0) != 0x80)
+        {
+          return 0;
+        }
+    }
+
+  if ((len == 3 && p[0] == 0xe0 && p[1] < 0xa0) ||   /* Overlong */
+      (len == 3 && p[0] == 0xed && p[1] >= 0xa0) ||  /* Surrogate */
+      (len == 4 && p[0] == 0xf0 && p[1] < 0x90) ||   /* Overlong */
+      (len == 4 && p[0] == 0xf4 && p[1] >= 0x90))    /* Over U+10FFFF */
+    {
+      return 0;
+    }
+
+  return len;
+}
+
+static uint32_t describe_point(FAR const uint8_t *p, int len)
+{
+  uint32_t cp = len == 1 ? p[0] : len == 2 ? p[0] & 0x1f :
+                len == 3 ? p[0] & 0x0f : p[0] & 0x07;
+  int i;
+
+  for (i = 1; i < len; i++)
+    {
+      cp = cp << 6 | (p[i] & 0x3f);
+    }
+
+  return cp;
+}
+
+/* Whether a name's character is drawn as it is: one the fonts have
+ * (tools/mkfont.py's TEXT), visible (not U+00A0 nor U+00AD), and not the
+ * backslash that \xNN starts with.  Anything else (controls, invisible
+ * and direction-changing characters, letters the fonts lack and would draw
+ * as nothing) could make one network's name look like another's.
+ */
+
+static bool describe_drawn(uint32_t cp)
+{
+  static const uint16_t more[] =
+  {
+    0x2013, 0x2014, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2026,
+    0x2190, 0x2192
+  };
+
+  size_t i;
+
+  if ((cp >= 0x20 && cp < 0x7f && cp != '\\') ||
+      (cp > 0xa0 && cp <= 0x17f && cp != 0xad))
+    {
+      return true;
+    }
+
+  for (i = 0; i < sizeof(more) / sizeof(more[0]); i++)
+    {
+      if (cp == more[i])
+        {
+          return true;
+        }
+    }
+
+  return false;
 }
 
 /****************************************************************************
@@ -239,28 +318,34 @@ size_t describe_name(FAR const char *name, FAR char *buf, size_t size)
   int len;
   int i;
 
-  while (*p != '\0' && o + 5 <= size)
+  while (*p != '\0')
     {
-      /* A sequence's length from its lead byte, checked byte by byte */
-
-      len = *p < 0x80 ? 1 : (*p & 0xe0) == 0xc0 ? 2 :
-            (*p & 0xf0) == 0xe0 ? 3 : (*p & 0xf8) == 0xf0 ? 4 : 0;
-      i = 1;
-      while (i < len && (p[i] & 0xc0) == 0x80)
+      len = describe_utf8(p);
+      if (len > 0 && describe_drawn(describe_point(p, len)))
         {
-          i++;
-        }
+          if (o + len + 1 > size)
+            {
+              break;
+            }
 
-      if (len == 0 || i < len || *p < 0x20 || *p == 0x7f)
-        {
-          o += snprintf(buf + o, size - o, "\\x%02x", *p);
-          p++;
+          memcpy(buf + o, p, len);
+          o += len;
+          p += len;
           continue;
         }
 
-      memcpy(buf + o, p, len);
-      o += len;
-      p += len;
+      /* Not to be drawn as it is: its bytes, each as \xNN */
+
+      len = len > 0 ? len : 1;
+      if (o + 4 * len + 1 > size)
+        {
+          break;
+        }
+
+      for (i = 0; i < len; i++)
+        {
+          o += snprintf(buf + o, size - o, "\\x%02x", *p++);
+        }
     }
 
   buf[o] = '\0';

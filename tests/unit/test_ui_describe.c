@@ -197,6 +197,36 @@ static void test_describe_name(void **state)
   describe_name("Cafe\xff\x01!", buf, sizeof(buf));
   assert_string_equal(buf, "Cafe\\xff\\x01!");
 
+  /* What the fonts cannot draw, or would draw as nothing, is shown as its
+   * bytes, so that no name looks like another: a zero-width space, a
+   * right-to-left override, a no-break space, a soft hyphen, a C1
+   * control, an overlong '/', a surrogate; and the backslash itself
+   */
+
+  describe_name("Home\xe2\x80\x8b", buf, sizeof(buf));
+  assert_string_equal(buf, "Home\\xe2\\x80\\x8b");
+  describe_name("a\xe2\x80\xae" "b", buf, sizeof(buf));
+  assert_string_equal(buf, "a\\xe2\\x80\\xaeb");
+  describe_name("Home\xc2\xa0", buf, sizeof(buf));
+  assert_string_equal(buf, "Home\\xc2\\xa0");
+  describe_name("Ho\xc2\xad" "me", buf, sizeof(buf));
+  assert_string_equal(buf, "Ho\\xc2\\xadme");
+  describe_name("x\xc2\x85", buf, sizeof(buf));
+  assert_string_equal(buf, "x\\xc2\\x85");
+  describe_name("\xc0\xaf", buf, sizeof(buf));
+  assert_string_equal(buf, "\\xc0\\xaf");
+  describe_name("\xed\xa0\x80", buf, sizeof(buf));
+  assert_string_equal(buf, "\\xed\\xa0\\x80");
+  describe_name("a\\xffb", buf, sizeof(buf));
+  assert_string_equal(buf, "a\\x5cxffb");
+
+  /* A letter the fonts have, and one they have not (Cyrillic) */
+
+  describe_name("\xc5\x81\xc3\xb3" "d\xc5\xba", buf, sizeof(buf));
+  assert_string_equal(buf, "\xc5\x81\xc3\xb3" "d\xc5\xba");
+  describe_name("lilyg\xd0\xbe", buf, sizeof(buf));
+  assert_string_equal(buf, "lilyg\\xd0\\xbe");
+
   /* 32 such bytes still fit */
 
   describe_name("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"
