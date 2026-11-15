@@ -380,3 +380,63 @@ FAR const char *describe_wifi_failure(int status, uint32_t code)
                                                    UI_T_WIFI_FAILED;
     }
 }
+
+size_t describe_operator(FAR const pnut_telephony_info_t *t, FAR char *buf,
+                         size_t size)
+{
+  char name[DESCRIBE_NAME_MAX];
+
+  if (t->modem != PNUT_TELEPHONY_INFO_MODEM_ON ||
+      (t->registration != PNUT_TELEPHONY_INFO_REGISTRATION_HOME &&
+       t->registration != PNUT_TELEPHONY_INFO_REGISTRATION_ROAMING))
+    {
+      return describe_cell(t, buf, size);
+    }
+
+  /* The network's own name: shown as a scanned one is */
+
+  describe_name(t->operator_name, name, sizeof(name));
+  return describe_put(buf, size, name[0] != '\0' ? name : UI_T_NETWORK,
+                      UI_DOT,
+                      t->registration ==
+                      PNUT_TELEPHONY_INFO_REGISTRATION_HOME ?
+                      UI_T_HOME_NETWORK : UI_T_ROAMING);
+}
+
+size_t describe_signal(FAR const pnut_telephony_info_t *t, FAR char *buf,
+                       size_t size)
+{
+  size_t len;
+
+  if (t->modem != PNUT_TELEPHONY_INFO_MODEM_ON ||
+      (t->registration != PNUT_TELEPHONY_INFO_REGISTRATION_HOME &&
+       t->registration != PNUT_TELEPHONY_INFO_REGISTRATION_ROAMING))
+    {
+      return describe_put(buf, size, UI_T_UNKNOWN, NULL, NULL);
+    }
+
+  len = snprintf(buf, size, UI_T_BARS,
+                 (unsigned int)(t->bars > 4 ? 4 : t->bars));
+  if (t->dbm != 0 && len < size)
+    {
+      len += snprintf(buf + len, size - len, "%s" UI_T_DBM, UI_DOT,
+                      (int)t->dbm);
+    }
+
+  return len < size ? len : size - 1;
+}
+
+FAR const char *describe_sim_state(FAR const pnut_telephony_info_t *t)
+{
+  FAR const char *line;
+
+  /* The modem off: the SIM is not read */
+
+  if (t->modem != PNUT_TELEPHONY_INFO_MODEM_ON)
+    {
+      return UI_T_UNKNOWN;
+    }
+
+  line = describe_sim(t->sim);
+  return line != NULL ? line : UI_T_SIM_READY;
+}

@@ -25,6 +25,7 @@
 #include <pnut/timer.h>
 
 #include "pnut/board.pnut.h"
+#include "pnut/telephony.pnut.h"
 #include "pnut/wifi.pnut.h"
 
 #include "display.h"
@@ -113,6 +114,9 @@ struct ui_s
   uint32_t serials;               /* The last screen's serial */
   struct pnut_wifi_client_s wifi; /* Shared by Wi-Fi's screens */
   bool wifi_open;
+  struct pnut_telephony_client_s tel;   /* The SIM PIN screen's */
+  bool tel_open;
+  bool pin_skipped;               /* Skipped until the SIM asks anew */
   struct pnut_board_client_s board;
   FAR struct pnut_timer_s *retry; /* Asking Board again, once */
   bool board_open;
@@ -150,6 +154,7 @@ struct screen_s
   uint16_t focus;                 /* The item focused (for tests) */
   uint32_t serial;                /* Its own, never reused: an answer that
                                    * comes after it went finds no screen */
+  bool typing;                    /* A field of it has the keys */
   FAR void *state;                /* The class's, size bytes */
 };
 
@@ -163,6 +168,8 @@ extern const struct screen_class_s g_scr_unavailable;
 extern const struct screen_class_s g_scr_settings;
 extern const struct screen_class_s g_scr_wifi;
 extern const struct screen_class_s g_scr_join;
+extern const struct screen_class_s g_scr_cell;
+extern const struct screen_class_s g_scr_pin;
 
 /****************************************************************************
  * Public Function Prototypes
@@ -204,9 +211,10 @@ FAR struct screen_s *ui_find(FAR struct ui_s *ui, uint32_t serial);
  */
 
 FAR struct pnut_wifi_client_s *ui_wifi(FAR struct ui_s *ui);
+FAR struct pnut_telephony_client_s *ui_telephony(FAR struct ui_s *ui);
 
-/* Whether a text field of the top screen has the keys (letters type);
- * a screen's change ends it
+/* Whether a text field of the screen has the keys (letters type): kept
+ * with the screen, and given back to it when it is on top again
  */
 
 void ui_typing(FAR struct screen_s *s, bool typing);

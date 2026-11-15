@@ -745,6 +745,11 @@ FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
   return row;
 }
 
+void block_info_set(FAR lv_obj_t *info, FAR const char *value)
+{
+  block_set_text(lv_obj_get_child(lv_obj_get_child(info, 0), 1), value);
+}
+
 FAR lv_obj_t *block_field(FAR lv_obj_t *parent, uint16_t id,
                           FAR const char *title, FAR struct block_field_s *f)
 {

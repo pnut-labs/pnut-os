@@ -14,7 +14,6 @@
  * Included Files
  ****************************************************************************/
 
-#include "apps.h"
 #include "blocks.h"
 #include "describe.h"
 #include "icons.h"
@@ -39,17 +38,6 @@ struct settings_scr_s
   struct list_s list;
   FAR lv_obj_t *wifi;
   FAR lv_obj_t *cell;
-};
-
-/****************************************************************************
- * Private Data
- ****************************************************************************/
-
-/* Cellular's own screen comes with the mobile network's settings */
-
-static const struct ui_app_s g_cellular =
-{
-  UI_T_CELLULAR, UI_ICON_CELLULAR, NULL, false
 };
 
 /****************************************************************************
@@ -93,7 +81,7 @@ static void settings_open(FAR struct screen_s *s)
     }
   else if (st->list.focus == st->cell)
     {
-      ui_push(s->ui, &g_scr_unavailable, &g_cellular);
+      ui_push(s->ui, &g_scr_cell, NULL);
     }
 }
 

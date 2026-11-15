@@ -33,6 +33,7 @@
 #include <pnut/timer.h>
 #include <pnut/topic.h>
 
+#include "pnut/power.topics.h"
 #include "pnut/telephony.topics.h"
 #include "pnut/time.topics.h"
 #include "pnut/wifi.topics.h"
@@ -84,6 +85,7 @@ static struct input_s g_input;
 static FAR struct pnut_publisher_s *g_tel;
 static FAR struct pnut_publisher_s *g_wifi;
 static FAR struct pnut_publisher_s *g_time;
+static FAR struct pnut_publisher_s *g_battery;
 
 /****************************************************************************
  * Private Functions
@@ -122,10 +124,13 @@ static void step_timer(FAR struct pnut_loop_s *loop,
     }
 }
 
-/* The topics the header shows: 3 bars, Wi-Fi joined "Home", Warsaw */
+/* The topics the header shows: 3 bars, Wi-Fi joined "Home", Warsaw, the
+ * battery at 84 % and charging
+ */
 
 static void publish(void)
 {
+  pnut_battery_info_t battery;
   pnut_telephony_info_t tel;
   pnut_wifi_info_t wifi;
   pnut_time_change_t time;
@@ -147,6 +152,11 @@ static void publish(void)
   strcpy(time.zone, "Europe/Warsaw");
   strcpy(time.rule, SCREENS_RULE);
   assert_int_equal(pnut_time_change_publish(g_time, &time), 0);
+
+  memset(&battery, 0, sizeof(battery));
+  battery.level    = 84;
+  battery.charging = true;
+  assert_int_equal(pnut_battery_info_publish(g_battery, &battery), 0);
 }
 
 static void run(FAR const struct step_s *steps, int nsteps)
@@ -157,6 +167,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   struct ui_config_s uconfig;
   FAR struct pnut_loop_s *loop;
   char dir[] = "/tmp/pnut-screens-XXXXXX";
+  char cmd[64];
   int i;
 
   assert_non_null(mkdtemp(dir));
@@ -166,6 +177,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   assert_int_equal(pnut_telephony_info_advertise(loop, &g_tel), 0);
   assert_int_equal(pnut_wifi_info_advertise(loop, &g_wifi), 0);
   assert_int_equal(pnut_time_change_advertise(loop, &g_time), 0);
+  assert_int_equal(pnut_battery_info_advertise(loop, &g_battery), 0);
 
   memset(g_frame, 0xff, sizeof(g_frame));
   memset(&screen, 0, sizeof(screen));
@@ -198,8 +210,10 @@ static void run(FAR const struct step_s *steps, int nsteps)
   pnut_topic_unadvertise(g_tel);
   pnut_topic_unadvertise(g_wifi);
   pnut_topic_unadvertise(g_time);
+  pnut_topic_unadvertise(g_battery);
   pnut_loop_destroy(loop);
-  rmdir(dir);
+  snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+  assert_int_equal(system(cmd), 0);
 }
 
 static void key(uint32_t code, bool special)

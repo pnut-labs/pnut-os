@@ -159,13 +159,15 @@ config PNUT_SETTINGS_CONNS
 
 config PNUT_SETTINGS_OWNERS
 	int "Owners of settings"
-	default 16
+	default 32
 	range 1 255
 	---help---
 		Every module of a program whose loop has levels on holds an
 		owner, if only for its log level (RFC 0026): six in the system
-		program.  An owner that finds no room is refused, and its
-		program tries again, logging only at debug.
+		program, 19 on the T-Deck Max (2026-11); with 16, Telephony's
+		and Audio's found no room once the system UI's came.  An owner
+		that finds no room is refused, and its program tries again,
+		logging only at debug.  About 50 bytes each.
 
 config PNUT_SETTINGS_MAX
 	int "Settings, all owners' together"

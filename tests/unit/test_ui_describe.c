@@ -249,6 +249,24 @@ static void test_describe_wifi_failure(void **state)
                       "Wi-Fi failed");
 }
 
+static void test_describe_sim_state(void **state)
+{
+  pnut_telephony_info_t t;
+
+  memset(&t, 0, sizeof(t));
+  t.modem = PNUT_TELEPHONY_INFO_MODEM_ON;
+  t.sim   = PNUT_TELEPHONY_INFO_SIM_READY;
+  assert_string_equal(describe_sim_state(&t), "Ready");
+  t.sim = PNUT_TELEPHONY_INFO_SIM_NEEDS_PIN;
+  assert_string_equal(describe_sim_state(&t), "SIM locked");
+
+  /* The modem off: nothing known of the SIM */
+
+  t.modem = PNUT_TELEPHONY_INFO_MODEM_OFF;
+  t.sim   = PNUT_TELEPHONY_INFO_SIM_SIM_UNKNOWN;
+  assert_string_equal(describe_sim_state(&t), "\xe2\x80\x94");
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -264,6 +282,7 @@ int main(void)
     cmocka_unit_test(test_describe_time),
     cmocka_unit_test(test_describe_name),
     cmocka_unit_test(test_describe_wifi_failure),
+    cmocka_unit_test(test_describe_sim_state),
   };
 
   return cmocka_run_group_tests_name("ui_describe", tests, NULL, NULL);

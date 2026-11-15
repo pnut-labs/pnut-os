@@ -33,6 +33,7 @@
 #include "board.h"
 #include "pnut_internal.h"
 #include "power.h"
+#include "pnut/power.topics.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -67,6 +68,8 @@ struct battery_s
   int calls;
   int error;                      /* What a TEST_FAIL reading returns */
   int chargers;                   /* Readings given a charger */
+  FAR const int *level;           /* The gauge's percent; NULL: none */
+  FAR const bool *charging;
 };
 
 /* What the description has besides the battery's power-off voltage */
@@ -97,7 +100,7 @@ static FAR struct power_s *g_power;
  ****************************************************************************/
 
 static int measure(FAR void *arg, int gauge, int charger, FAR int *mv,
-                   FAR bool *external)
+                   FAR bool *external, FAR int *level, FAR bool *charging)
 {
   FAR struct battery_s *battery = arg;
   int i = battery->calls < battery->count ? battery->calls :
@@ -122,6 +125,8 @@ static int measure(FAR void *arg, int gauge, int charger, FAR int *mv,
 
   *mv       = battery->mv[i];
   *external = battery->external != NULL && battery->external[i];
+  *level    = battery->level != NULL ? battery->level[i] : -1;
+  *charging = battery->charging != NULL && battery->charging[i];
   return 0;
 }
 
@@ -145,6 +150,18 @@ static void stop_handler(FAR struct pnut_loop_s *loop,
     }
 
   pnut_loop_stop(loop, 0);
+}
+
+/* Power's battery topic, a directory on the computer, gone from dir */
+
+static void battery_topic_gone(FAR const char *dir)
+{
+  char path[96];
+
+  snprintf(path, sizeof(path), "%s/topic.battery/last", dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.battery", dir);
+  rmdir(path);
 }
 
 /* Run the module until it stops the loop, or for ms at most */
@@ -302,6 +319,7 @@ static bool run_board(FAR struct battery_s *battery, int empty_mv,
   unlink(path);
   snprintf(path, sizeof(path), "%s/topic.settings", dir);
   rmdir(path);
+  battery_topic_gone(dir);
   assert_int_equal(rmdir(dir), 0);
   return off;
 }
@@ -757,6 +775,7 @@ static void rate_run(FAR struct rate_s *rate, int32_t ppb)
   unlink(path);
   snprintf(path, sizeof(path), "%s/topic.sleep_rate", dir);
   rmdir(path);
+  battery_topic_gone(dir);
   assert_int_equal(rmdir(dir), 0);
 }
 
@@ -774,6 +793,91 @@ static void test_power_sleep_rate(void **state)
   rate.error = -EINVAL;
   rate_run(&rate, 200000000);
   assert_int_equal(rate.calls, 2);
+}
+
+/* test_power_battery_topic: the level and charging on the battery topic,
+ * at the first reading and then only when they change; a gauge with no
+ * level publishes nothing
+ */
+
+static pnut_battery_info_t g_infos[8];
+static int g_ninfos;
+
+static void battery_info(FAR struct pnut_battery_info_reader_s *reader,
+                         FAR const pnut_battery_info_t *msg, FAR void *arg)
+{
+  assert_true(g_ninfos < 8);
+  g_infos[g_ninfos++] = *msg;
+}
+
+static void test_power_battery_topic(void **state)
+{
+  static const int mv[] =
+  {
+    3900, 3900, 3890, 3890, 3890
+  };
+
+  static const int level[] =
+  {
+    84, 84, 83, 83, -1
+  };
+
+  static const bool charging[] =
+  {
+    false, false, false, true, true
+  };
+
+  struct battery_s battery =
+  {
+    mv, NULL, 5, 0, 0, 0, level, charging
+  };
+
+  struct pnut_battery_info_reader_s reader;
+  FAR struct power_s *power = calloc(1, sizeof(*power));
+  struct pnut_loop_config_s lconfig;
+  struct power_config_s config;
+  FAR struct pnut_loop_s *loop;
+  char dir[48];
+
+  assert_non_null(power);
+  snprintf(dir, sizeof(dir), "/tmp/pnut-battery-%d", (int)getpid());
+  assert_int_equal(mkdir(dir, 0700), 0);
+  pnut_loop_defaults(&lconfig);
+  lconfig.rundir = dir;
+  assert_int_equal(pnut_loop_create(&lconfig, &loop), 0);
+  g_ninfos = 0;
+  assert_int_equal(pnut_battery_info_subscribe(loop, battery_info, NULL,
+                                               &reader), 0);
+
+  memset(&config, 0, sizeof(config));
+  config.interval = TEST_INTERVAL;
+  config.cutoff   = TEST_CUTOFF;
+  config.reads    = TEST_READS;
+  config.gauge    = TEST_DEVICE;
+  config.measure  = measure;
+  config.arg      = &battery;
+  power_init(power, &config);
+  assert_int_equal(pnut_module_add(loop, &power->module), 0);
+  assert_int_equal(pnut_timer_start(loop, 200, 0, stop_handler, power,
+                                    NULL), 0);
+  assert_int_equal(pnut_loop_run(loop), 0);
+
+  assert_int_equal(g_ninfos, 3);
+  assert_int_equal(g_infos[0].level, 84);
+  assert_false(g_infos[0].charging);
+  assert_int_equal(g_infos[1].level, 83);
+  assert_false(g_infos[1].charging);
+  assert_int_equal(g_infos[2].level, 83);
+  assert_true(g_infos[2].charging);
+
+  pnut_battery_info_unsubscribe(&reader);
+  pnut_loop_destroy(loop);
+  free(power);
+
+  /* No system() in NuttX's simulator, where this test runs too */
+
+  battery_topic_gone(dir);
+  assert_int_equal(rmdir(dir), 0);
 }
 
 /****************************************************************************
@@ -799,6 +903,7 @@ int main(void)
     cmocka_unit_test(test_power_board_spare),
     cmocka_unit_test(test_power_board_none),
     cmocka_unit_test(test_power_sleep_rate),
+    cmocka_unit_test(test_power_battery_topic),
   };
 
   return cmocka_run_group_tests_name("power", tests, NULL, NULL);

@@ -163,6 +163,7 @@ FAR lv_obj_t *block_heading(FAR lv_obj_t *parent, FAR const char *text);
 void block_heading_set(FAR lv_obj_t *heading, FAR const char *text);
 FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
                          FAR const char *value);
+void block_info_set(FAR lv_obj_t *info, FAR const char *value);
 
 /* A text field's row: its title, the text in a box */
 

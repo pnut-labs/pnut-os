@@ -105,7 +105,8 @@ LVGL_LIB    := $(BUILD)/lib$(LVGL_NAME).a
 # The screens' tests write the screens they draw to $(BUILD)/screens,
 # made afresh each run
 
-SCREEN_TESTS := $(BUILD)/test_ui_screens $(BUILD)/test_ui_wifi
+SCREEN_TESTS := $(BUILD)/test_ui_screens $(BUILD)/test_ui_wifi \
+                $(BUILD)/test_ui_cell $(BUILD)/test_ui_pin
 
 run: $(TESTS)
 	@rm -rf $(BUILD)/screens
