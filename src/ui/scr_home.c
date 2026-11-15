@@ -74,7 +74,8 @@ static void home_time(FAR struct screen_s *s)
 
 static void home_open(FAR struct screen_s *s, FAR const struct ui_app_s *app)
 {
-  ui_push(s->ui, &g_scr_unavailable, app);
+  ui_push(s->ui, app->settings ? &g_scr_settings : &g_scr_unavailable,
+          app);
 }
 
 static void home_build(FAR struct screen_s *s)

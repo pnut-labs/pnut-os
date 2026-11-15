@@ -145,6 +145,18 @@ config PNUT_SETTINGS_DEFAULTS
 		(RFC 0025): the build writes it from configs/<target>/defaults.toml.
 		Empty for none.
 
+config PNUT_SETTINGS_CONNS
+	int "Connections Settings accepts at once"
+	default 16
+	range 1 255
+	---help---
+		Every program holds one for all its settings (its modules' log
+		levels at least): eight so far.  The system UI holds one more while
+		a screen of settings is open, and so does each settings command
+		typed in a shell; one over the count is closed as it comes, and
+		its caller finds Settings unavailable.  A connection's buffers
+		(about 12 KB) are taken only while it is open.
+
 config PNUT_SETTINGS_OWNERS
 	int "Owners of settings"
 	default 16

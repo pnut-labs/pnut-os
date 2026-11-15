@@ -65,6 +65,7 @@ struct settings_config_s
   FAR const char *defaults;       /* The target's defaults, or NULL; kept */
   struct settings_limits_s limits;
   uint32_t delay;                 /* Milliseconds from a change to its write */
+  uint8_t conns;                  /* Connections at once; 0: the library's */
   settings_who_t who;
   settings_runs_t runs;
   settings_who_t origin;          /* NULL: none is asked */

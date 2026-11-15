@@ -20,6 +20,8 @@ import sys
 
 import freetype
 
+# The text fonts' characters; src/ui/describe.c (describe_drawn) shows a
+# network's name with these alone, the others as \xNN: keep them alike
 TEXT = [cp for lo, hi in ((0x20, 0x7E), (0xA0, 0x17F))
         for cp in range(lo, hi + 1)]
 TEXT += [0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2026,

@@ -35,6 +35,7 @@
 #include "glue.h"
 #include "keymap.h"
 #include "blocks.h"
+#include "text.h"
 #include "theme.h"
 #include "ui.h"
 
@@ -45,6 +46,19 @@
 /* Asking Board again after a call that could not be made */
 
 #define UI_RETRY_MS  1000
+#define UI_WIFI      "wifi"
+
+/* The options' frame, over the screen above its softkeys; their rows' ids,
+ * and the id of a tap outside them
+ */
+
+#define UI_OPTIONS_X        6
+#define UI_OPTIONS_W        (240 - 6 - 10)
+#define UI_OPTIONS_HEAD     20
+#define UI_OPTIONS_ROW      30
+#define UI_OPTIONS_FOOT     40
+#define UI_OPTIONS_ID       0xfe00
+#define UI_OPTIONS_OUTSIDE  (UI_OPTIONS_ID + UI_OPTIONS)
 
 /****************************************************************************
  * Private Functions
@@ -55,7 +69,7 @@
  * meanwhile finds it
  */
 
-static void ui_place(FAR struct ui_s *ui)
+void ui_place(FAR struct ui_s *ui)
 {
   FAR struct screen_s *s = ui_top(ui);
 
@@ -97,6 +111,114 @@ static void ui_status_changed(FAR void *arg, uint8_t what)
   ui_place(ui);
 }
 
+static void ui_typing_off(FAR struct ui_s *ui)
+{
+  if (ui->config.input != NULL)
+    {
+      input_typing(ui->config.input, false);
+    }
+}
+
+/* Wi-Fi's service came (back): the top screen reads its state again */
+
+static void ui_wifi_state(FAR struct pnut_wifi_client_s *client,
+                          bool connected, FAR void *arg)
+{
+  FAR struct ui_s *ui = arg;
+  FAR struct screen_s *s = ui_top(ui);
+
+  if (connected && s != NULL && s->cls->status != NULL)
+    {
+      s->cls->status(s, UI_WIFI_SERVICE);
+      ui_place(ui);
+    }
+}
+
+static void ui_options_tapped(FAR lv_event_t *e)
+{
+  FAR lv_obj_t *obj = lv_event_get_current_target(e);
+
+  lv_obj_send_event(lv_obj_get_screen(obj), g_ui_event_block,
+                    lv_event_get_user_data(e));
+}
+
+static void ui_options_close(FAR struct ui_s *ui)
+{
+  FAR struct ui_options_s *o = &ui->options;
+
+  if (o->box != NULL)
+    {
+      lv_obj_delete_async(o->catcher);
+      lv_obj_delete_async(o->shadow);
+      lv_obj_delete_async(o->box);
+      o->box     = NULL;
+      o->shadow  = NULL;
+      o->catcher = NULL;
+    }
+}
+
+static void ui_options_focus(FAR struct ui_options_s *o, uint8_t focus)
+{
+  lv_obj_t *label;
+  int i;
+
+  o->focus = focus;
+  for (i = 0; i < o->count; i++)
+    {
+      theme_inverted(o->rows[i], i == focus);
+      label = lv_obj_get_child(o->rows[i], 0);
+      lv_obj_set_style_text_font(label, i == focus ? &g_ui_sans_bold_13 :
+                                                     &g_ui_sans_13, 0);
+    }
+}
+
+static void ui_options_choose(FAR struct ui_s *ui, uint8_t index)
+{
+  FAR struct ui_options_s *o = &ui->options;
+  FAR struct screen_s *s = o->screen;
+
+  ui_options_close(ui);
+  if (o->chosen != NULL && index < o->count)
+    {
+      o->chosen(s, index);
+    }
+}
+
+/* A key while the options are open: theirs */
+
+static void ui_options_key(FAR struct ui_s *ui, uint8_t action)
+{
+  FAR struct ui_options_s *o = &ui->options;
+
+  switch (action)
+    {
+      case UI_ACT_UP:
+        ui_options_focus(o, o->focus > 0 ? o->focus - 1 : 0);
+        break;
+
+      case UI_ACT_DOWN:
+        ui_options_focus(o, o->focus + 1 < o->count ? o->focus + 1 :
+                         o->focus);
+        break;
+
+      case UI_ACT_OPEN:
+      case UI_ACT_CONFIRM:
+      case UI_ACT_SOFT_MIDDLE:
+        ui_options_choose(ui, o->focus);
+        break;
+
+      case UI_ACT_BACK:
+      case UI_ACT_SOFT_RIGHT:
+      case UI_ACT_SOFT_LEFT:
+      case UI_ACT_OPTIONS:
+        ui_options_close(ui);
+        break;
+
+      default:
+        break;
+    }
+}
+
 static void ui_key_event(FAR lv_event_t *e)
 {
   FAR struct screen_s *s = lv_event_get_user_data(e);
@@ -105,6 +227,13 @@ static void ui_key_event(FAR lv_event_t *e)
 
   if (s != ui_top(s->ui))
     {
+      return;
+    }
+
+  if (ui_options_open(s->ui))
+    {
+      ui_options_key(s->ui, action);
+      ui_place(s->ui);
       return;
     }
 
@@ -121,6 +250,24 @@ static void ui_key_event(FAR lv_event_t *e)
 static void ui_block_event(FAR lv_event_t *e)
 {
   FAR struct screen_s *s = lv_event_get_user_data(e);
+  uint16_t id = (uint16_t)(uintptr_t)lv_event_get_param(e);
+
+  /* While the options are open a tap is theirs, or closes them */
+
+  if (s == ui_top(s->ui) && ui_options_open(s->ui))
+    {
+      if (id >= UI_OPTIONS_ID && id < UI_OPTIONS_ID + UI_OPTIONS)
+        {
+          ui_options_choose(s->ui, id - UI_OPTIONS_ID);
+        }
+      else
+        {
+          ui_options_close(s->ui);
+        }
+
+      ui_place(s->ui);
+      return;
+    }
 
   if (s == ui_top(s->ui) && s->cls->event != NULL)
     {
@@ -438,6 +585,12 @@ static void ui_stop(FAR struct pnut_module_s *module,
       ui_drop(ui, false);
     }
 
+  if (ui->wifi_open)
+    {
+      pnut_wifi_disconnect(&ui->wifi);
+      ui->wifi_open = false;
+    }
+
   if (ui->status_open)
     {
       status_stop(&ui->status);
@@ -473,6 +626,8 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
 {
   FAR struct screen_s *s;
 
+  ui_options_close(ui);
+
   if (ui->depth == UI_DEPTH)
     {
       return -ENOSPC;
@@ -484,10 +639,12 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
       return -ENOMEM;
     }
 
-  s->cls   = cls;
-  s->ui    = ui;
-  s->arg   = arg;
-  s->state = s + 1;
+  s->cls    = cls;
+  s->ui     = ui;
+  s->arg    = arg;
+  s->state  = s + 1;
+  s->serial = ++ui->serials;
+  ui_typing_off(ui);
   s->root  = lv_obj_create(NULL);
   theme_screen(s->root);
   lv_obj_add_event_cb(s->root, ui_key_event, LV_EVENT_KEY, s);
@@ -515,13 +672,14 @@ void ui_pop(FAR struct ui_s *ui)
 
   /* The one below on screen first: the top one is deleted after */
 
+  ui_options_close(ui);
+  ui_typing_off(ui);
   below = ui->stack[ui->depth - 2];
   ui_load(ui, below);
   ui_drop(ui, true);
   if (below->cls->status != NULL)
     {
-      below->cls->status(below, STATUS_TEL | STATUS_WIFI | STATUS_TIME |
-                                STATUS_BATTERY);
+      below->cls->status(below, UI_STATUS_ALL);
     }
 }
 
@@ -541,4 +699,129 @@ FAR lv_obj_t *ui_header(FAR struct screen_s *s, FAR const char *icon,
 void ui_local(FAR struct ui_s *ui, FAR struct tm *tm)
 {
   status_local(&ui->status, status_now(&ui->status), tm);
+}
+
+int ui_options(FAR struct screen_s *s, FAR const char * const *items,
+               uint8_t count,
+               CODE void (*chosen)(FAR struct screen_s *s, int index))
+{
+  FAR struct ui_options_s *o = &s->ui->options;
+  FAR lv_obj_t *head;
+  FAR lv_obj_t *label;
+  int32_t h = 2 + UI_OPTIONS_HEAD + count * UI_OPTIONS_ROW + 2;
+  int32_t y = 320 - UI_OPTIONS_FOOT - h;
+  int i;
+
+  if (count == 0 || count > UI_OPTIONS)
+    {
+      return -EINVAL;
+    }
+
+  ui_options_close(s->ui);
+  o->screen = s;
+  o->chosen = chosen;
+  o->count  = count;
+
+  /* A tap outside them, above the softkeys, closes them (the softkeys still
+   * take theirs); the canvas's offset shadow, then the frame
+   */
+
+  o->catcher = lv_obj_create(s->root);
+  theme_box(o->catcher);
+  lv_obj_set_pos(o->catcher, 0, 0);
+  lv_obj_set_size(o->catcher, 240, 320 - BLOCK_FOOTER_H);
+  lv_obj_add_flag(o->catcher, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(o->catcher, ui_options_tapped, LV_EVENT_CLICKED,
+                      (FAR void *)(uintptr_t)UI_OPTIONS_OUTSIDE);
+
+  o->shadow = lv_obj_create(s->root);
+  theme_box(o->shadow);
+  lv_obj_set_pos(o->shadow, UI_OPTIONS_X + 4, y + 4);
+  lv_obj_set_size(o->shadow, UI_OPTIONS_W, h);
+  lv_obj_set_style_bg_color(o->shadow, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(o->shadow, LV_OPA_COVER, 0);
+
+  o->box = lv_obj_create(s->root);
+  theme_box(o->box);
+  lv_obj_set_pos(o->box, UI_OPTIONS_X, y);
+  lv_obj_set_size(o->box, UI_OPTIONS_W, h);
+  lv_obj_set_style_bg_color(o->box, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(o->box, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(o->box, 2, 0);
+  lv_obj_set_style_border_color(o->box, lv_color_black(), 0);
+  lv_obj_add_flag(o->box, LV_OBJ_FLAG_CLICKABLE);
+
+  head = lv_label_create(o->box);
+  theme_label(head, &g_ui_mono_bold_10);
+  lv_label_set_text(head, UI_T_OPTIONS_HEAD);
+  lv_obj_set_pos(head, 6, (UI_OPTIONS_HEAD - 14) / 2);
+
+  for (i = 0; i < count; i++)
+    {
+      o->rows[i] = lv_obj_create(o->box);
+      theme_box(o->rows[i]);
+      lv_obj_set_pos(o->rows[i], 0, UI_OPTIONS_HEAD + i * UI_OPTIONS_ROW);
+      lv_obj_set_size(o->rows[i], UI_OPTIONS_W - 4, UI_OPTIONS_ROW);
+      label = lv_label_create(o->rows[i]);
+      theme_label(label, &g_ui_sans_13);
+      lv_label_set_text(label, items[i]);
+      lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+      block_rule(o->rows[i], 0, 0, UI_OPTIONS_W - 4, true);
+      lv_obj_add_flag(o->rows[i], LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(o->rows[i], ui_options_tapped, LV_EVENT_CLICKED,
+                          (FAR void *)(uintptr_t)(UI_OPTIONS_ID + i));
+    }
+
+  ui_options_focus(o, 0);
+  ui_place(s->ui);
+  return 0;
+}
+
+bool ui_options_open(FAR struct ui_s *ui)
+{
+  return ui->options.box != NULL;
+}
+
+FAR struct screen_s *ui_find(FAR struct ui_s *ui, uint32_t serial)
+{
+  int i;
+
+  for (i = 0; i < ui->depth; i++)
+    {
+      if (ui->stack[i]->serial == serial)
+        {
+          return ui->stack[i];
+        }
+    }
+
+  return NULL;
+}
+
+FAR struct pnut_wifi_client_s *ui_wifi(FAR struct ui_s *ui)
+{
+  int ret;
+
+  if (!ui->wifi_open)
+    {
+      ret = pnut_wifi_connect(ui->module.loop, UI_WIFI, ui_wifi_state, ui,
+                              &ui->wifi);
+      if (ret < 0)
+        {
+          pnut_log(&ui->module, PNUT_LOG_ERROR, "No Wi-Fi client: %d",
+                   ret);
+          return NULL;
+        }
+
+      ui->wifi_open = true;
+    }
+
+  return &ui->wifi;
+}
+
+void ui_typing(FAR struct screen_s *s, bool typing)
+{
+  if (s == ui_top(s->ui) && s->ui->config.input != NULL)
+    {
+      input_typing(s->ui->config.input, typing);
+    }
 }

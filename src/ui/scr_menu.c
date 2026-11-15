@@ -130,7 +130,8 @@ static void menu_open(FAR struct screen_s *s)
     }
   else
     {
-      ui_push(s->ui, &g_scr_unavailable, app);
+      ui_push(s->ui, app->settings ? &g_scr_settings : &g_scr_unavailable,
+              app);
     }
 }
 

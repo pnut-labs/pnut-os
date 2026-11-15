@@ -272,6 +272,7 @@ int main(int argc, FAR char *argv[])
   sconfig.limits.secrets  = CONFIG_PNUT_SETTINGS_SECRETS;
 #endif
   sconfig.delay           = CONFIG_PNUT_SETTINGS_DELAY;
+  sconfig.conns           = CONFIG_PNUT_SETTINGS_CONNS;
   sconfig.who             = system_who;
   sconfig.runs            = system_runs;
   sconfig.identity        = states;
