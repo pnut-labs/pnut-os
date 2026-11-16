@@ -222,6 +222,10 @@ message UiItem {
   oneof value {
     string text = 3 [(nanopb).max_size = 65];
   }
+
+  // An icon of the system's set at the right of an item that opens, for
+  // what opening does (Cat-Detail: a call, an email)
+  string icon = 4 [(nanopb).max_size = 17];
 }
 
 message UiDetail {

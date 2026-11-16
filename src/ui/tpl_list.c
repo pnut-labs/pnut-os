@@ -88,12 +88,13 @@ static void tpl_list_fill(FAR lv_obj_t *block, FAR const pnut_ui_row_t *row)
   block_app_row_set(block,
                     row->initials ?
                     app_text(tpl_list_initials(row->lead, two, sizeof(two)),
-                             lead) :
+                             lead, sizeof(lead)) :
                     app_icon(row->lead),
-                    row->initials, app_text(row->title, title),
-                    app_text(row->detail, detail),
+                    row->initials,
+                    app_text(row->title, title, sizeof(title)),
+                    app_text(row->detail, detail, sizeof(detail)),
                     row->which_value == PNUT_UI_ROW_TEXT_TAG ?
-                    app_text(row->value.text, value) : NULL,
+                    app_text(row->value.text, value, sizeof(value)) : NULL,
                     row->unread, tpl_list_trailer(row->trailer));
 }
 

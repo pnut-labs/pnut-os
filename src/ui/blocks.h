@@ -187,6 +187,15 @@ FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
                          FAR const char *value);
 void block_info_set(FAR lv_obj_t *info, FAR const char *value);
 
+/* An item of an app's detail (Cat-Detail), 40 px: a label in capitals
+ * over a value, an icon of the set at the right or NULL; it takes the
+ * focus and a tap when numbered (id not 0)
+ */
+
+FAR lv_obj_t *block_item(FAR lv_obj_t *parent, uint16_t id,
+                         FAR const char *label, FAR const char *value,
+                         FAR const char *icon);
+
 /* A text field's row: its title, the text in a box */
 
 FAR lv_obj_t *block_field(FAR lv_obj_t *parent, uint16_t id,

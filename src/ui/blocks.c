@@ -69,6 +69,7 @@
 #define BLOCK_PAD        8
 #define BLOCK_ROW_FLAG   LV_OBJ_FLAG_USER_1
 #define BLOCK_FIELD_FLAG LV_OBJ_FLAG_USER_2
+#define BLOCK_ITEM_FLAG  LV_OBJ_FLAG_USER_3
 #define BLOCK_BOX_PAD    6
 
 /* The field's dot: U+2022 */
@@ -841,6 +842,34 @@ FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
   return row;
 }
 
+FAR lv_obj_t *block_item(FAR lv_obj_t *parent, uint16_t id,
+                         FAR const char *label, FAR const char *value,
+                         FAR const char *icon)
+{
+  FAR lv_obj_t *row = block_row_frame(parent, id, BLOCK_ROW_H);
+  FAR lv_obj_t *col;
+
+  lv_obj_add_flag(row, BLOCK_ITEM_FLAG);
+  col = block_box(row, 0, 0, 10, LV_SIZE_CONTENT);
+  lv_obj_set_flex_grow(col, 1);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(col, 3, 0);
+  block_caps(block_line(col, &g_ui_mono_bold_10, ""), label);
+  block_line(col, &g_ui_sans_14, value);
+  if (icon != NULL)
+    {
+      block_label(row, &g_ui_icons_16, icon);
+    }
+
+  block_row_rule(row);
+  if (id != 0)
+    {
+      block_row_tapped(row, id);
+    }
+
+  return row;
+}
+
 void block_info_set(FAR lv_obj_t *info, FAR const char *value)
 {
   block_set_text(lv_obj_get_child(lv_obj_get_child(info, 0), 1), value);
@@ -985,6 +1014,11 @@ void block_focus(FAR lv_obj_t *item, bool focused)
     }
 
   theme_inverted(item, focused);
+  if (lv_obj_has_flag(item, BLOCK_ITEM_FLAG))
+    {
+      return;                     /* Its texts keep their weights */
+    }
+
   if (lv_obj_has_flag(item, BLOCK_ROW_FLAG))
     {
       /* An app's row marked unread stays bold */

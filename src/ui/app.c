@@ -77,6 +77,12 @@ app_template(FAR const pnut_ui_show_request_t *in)
       case PNUT_UI_SHOW_REQUEST_LIST_TAG:
         return &g_tpl_list;
 
+      case PNUT_UI_SHOW_REQUEST_DETAIL_TAG:
+        return &g_tpl_detail;
+
+      case PNUT_UI_SHOW_REQUEST_EMPTY_TAG:
+        return &g_tpl_empty;
+
       default:
         return NULL;
     }
@@ -186,7 +192,7 @@ static void app_build_from(FAR struct screen_s *s,
   app_options(s, in);
 
   ui_header(s, app != NULL ? app_icon(app->manifest.icon) : NULL,
-            app_text(in->title, title));
+            app_text(in->title, title, sizeof(title)));
   if (st->tpl->build(s, in) < 0)
     {
       st->tpl = NULL;             /* No memory: nothing to keep */
@@ -205,14 +211,24 @@ static void app_chosen(FAR struct screen_s *s, int index)
 {
   FAR struct app_scr_s *st = app_state(s);
   FAR const pnut_ui_row_t *row = NULL;
+  uint32_t id = 0;
+  int item;
+
+  /* With the row or item focused, when the template has one */
 
   if (st->tpl == &g_tpl_list)
     {
       row = applist_focused(&st->t.list.list);
+      id  = row != NULL ? row->id : 0;
+    }
+  else if (st->tpl == &g_tpl_detail && st->t.detail.list.focus != NULL)
+    {
+      item = block_id(st->t.detail.list.focus) - 1;
+      id   = item >= 0 ? st->t.detail.ids[item] : 0;
     }
 
-  app_input(s, PNUT_UI_INPUT_ACTION_OPTION_CHOSEN,
-            row != NULL ? row->id : 0, st->option_ids[index]);
+  app_input(s, PNUT_UI_INPUT_ACTION_OPTION_CHOSEN, id,
+            st->option_ids[index]);
 }
 
 static bool app_key(FAR struct screen_s *s, uint8_t action, uint32_t ch)
@@ -322,9 +338,9 @@ bool app_primary_on(FAR struct screen_s *s)
   return !app_state(s)->middle_off;
 }
 
-FAR const char *app_text(FAR const char *in, FAR char *out)
+FAR const char *app_text(FAR const char *in, FAR char *out, size_t size)
 {
-  describe_name(in, out, APP_TEXT_MAX);
+  describe_name(in, out, size);
   return out;
 }
 
@@ -401,7 +417,8 @@ int app_update(FAR struct ui_s *ui, FAR const pnut_ui_update_request_t *in)
   switch (in->which_change)
     {
       case PNUT_UI_UPDATE_REQUEST_TITLE_TAG:
-        block_header_title(s->header, app_text(in->change.title, title));
+        block_header_title(s->header, app_text(in->change.title, title,
+                                                 sizeof(title)));
         break;
 
       case PNUT_UI_UPDATE_REQUEST_MIDDLE_TAG:

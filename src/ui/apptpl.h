@@ -22,18 +22,22 @@
 #include "pnut/ui.pb.h"
 
 #include "applist.h"
+#include "list.h"
 #include "ui.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* An app's options, at most (ui.proto); an app's text as drawn, every
- * byte perhaps \xNN (describe_name())
+/* An app's options, at most (ui.proto); room for an app's text as drawn,
+ * every byte perhaps \xNN (describe_name()): APP_TEXT_MAX for the short
+ * ones (titles, lines, labels, values, up to 64 bytes), APP_TEXT_LONG for
+ * the long (an Empty's or a Busy's line, a Confirm's detail)
  */
 
-#define APP_OPTIONS   8
-#define APP_TEXT_MAX  (64 * 4 + 1)
+#define APP_OPTIONS    8
+#define APP_TEXT_MAX   (64 * 4 + 1)
+#define APP_TEXT_LONG  (192 * 4 + 1)
 
 /****************************************************************************
  * Public Types
@@ -45,6 +49,20 @@ struct tpl_list_s
 {
   struct applist_s list;
   FAR lv_obj_t *rows[APPLIST_PER_PAGE];   /* The page's, reused */
+};
+
+/* The Detail template's: its items, in a column that scrolls; an item's
+ * block is numbered by its index + 1 when the app numbered the item
+ */
+
+#define TPL_DETAIL_ITEMS \
+  (sizeof(((FAR pnut_ui_detail_t *)0)->items) / \
+   sizeof(((FAR pnut_ui_detail_t *)0)->items[0]))
+
+struct tpl_detail_s
+{
+  struct list_s list;
+  uint32_t ids[TPL_DETAIL_ITEMS];
 };
 
 /* The open app's screen (RFC 0037): the screen on top of its own stack, as
@@ -68,6 +86,7 @@ struct app_scr_s
   union
     {
       struct tpl_list_s list;
+      struct tpl_detail_s detail;
     } t;
 };
 
@@ -97,21 +116,23 @@ struct app_tpl_s
  ****************************************************************************/
 
 extern const struct app_tpl_s g_tpl_list;
+extern const struct app_tpl_s g_tpl_detail;
+extern const struct app_tpl_s g_tpl_empty;
 
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
 /* For the templates: an event about the screen to the app; whether the
- * primary action is on; an app's text as drawn (APP_TEXT_MAX); an icon of
- * the set by its name, or NULL
+ * primary action is on; an app's text as drawn, into out of size bytes; an
+ * icon of the set by its name, or NULL
  */
 
 void app_input(FAR struct screen_s *s, int action, uint32_t row,
                uint32_t option);
 void app_page_needed(FAR struct screen_s *s, uint32_t first);
 bool app_primary_on(FAR struct screen_s *s);
-FAR const char *app_text(FAR const char *in, FAR char *out);
+FAR const char *app_text(FAR const char *in, FAR char *out, size_t size);
 FAR const char *app_icon(FAR const char *name);
 
 #endif /* __PNUT_OS_UI_APPTPL_H */

@@ -930,6 +930,349 @@ static void test_list_gone_with_options(void **state)
 }
 
 /****************************************************************************
+ * Name: test_detail
+ *
+ * Description:
+ *   A Detail (Cat-Detail): label over value; the items the app numbers
+ *   take the focus, the others are skipped; the primary action opens the
+ *   one focused; a tap opens the one tapped.
+ ****************************************************************************/
+
+#define CONTACT    21
+
+static void show_contact(void)
+{
+  static pnut_ui_show_request_t in;
+  static const char *const labels[5] =
+    {
+      "Mobile", "Email", "LoRa node", "Birthday", "Last message"
+    };
+
+  static const char *const values[5] =
+    {
+      "601 234 567", "ewa@example.com", "7F3A \xc2\xb7 last heard 2 h ago",
+      "14 March", "Mon, 18:20 \xc2\xb7 SMS"
+    };
+
+  static const uint32_t ids[5] =
+    {
+      1, 2, 0, 0, 5
+    };
+
+  static const char *const icons[5] =
+    {
+      "phone", "email", "", "", "messages"
+    };
+
+  int i;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = CONTACT;
+  strcpy(in.title, "Mama");
+  strcpy(in.middle, "Call");
+  in.options_count = 1;
+  in.options[0].id = OPT_CALL;
+  strcpy(in.options[0].label, "Send message");
+  strcpy(in.options[0].letter, "m");
+  in.which_content = PNUT_UI_SHOW_REQUEST_DETAIL_TAG;
+  in.content.detail.items_count = 5;
+  for (i = 0; i < 5; i++)
+    {
+      in.content.detail.items[i].id = ids[i];
+      strcpy(in.content.detail.items[i].label, labels[i]);
+      in.content.detail.items[i].which_value = PNUT_UI_ITEM_TEXT_TAG;
+      strcpy(in.content.detail.items[i].value.text, values[i]);
+      strcpy(in.content.detail.items[i].icon, icons[i]);
+    }
+
+  app_send_show(&g_app, &in);
+}
+
+static void img_detail(void)
+{
+  save("app-detail");
+}
+
+static void down2(void)
+{
+  down();
+  down();
+}
+
+static void tap_second(void)
+{
+  tap(120, BLOCK_HEADER_H + BLOCK_ROW_H + BLOCK_ROW_H / 2);
+}
+
+static void tap_fourth(void)
+{
+  tap(120, BLOCK_HEADER_H + 3 * BLOCK_ROW_H + BLOCK_ROW_H / 2);
+}
+
+static void letter_m(void)
+{
+  key('m', false);
+}
+
+static void test_detail(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_contact },
+    { 300, look_before },
+    { 310, img_detail },
+    { 320, mark },
+    { 330, enter },
+    { 400, down2 },
+    { 500, look },
+    { 510, enter },
+    { 600, tap_second },
+    { 650, tap_fourth },
+    { 700, options },
+    { 750, letter_m },
+    { 800, NULL },
+  };
+
+  FAR const pnut_ui_input_t *in;
+  int n;
+
+  write_manifest(FAKE_NOTES, "contacts", 5, g_all);
+  run(steps, 15);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_string_equal(g_title, "Mama");
+  assert_int_equal(g_focus_before, 1);  /* The first item's block */
+  assert_int_equal(g_focus, 5);         /* Down twice: past the two of 0 */
+
+  /* The tap on the fourth item, which is not numbered, sends nothing */
+
+  n = app_inputs(&g_app, g_from, PNUT_UI_INPUT_ACTION_ROW_OPENED, &in);
+  assert_int_equal(n, 3);
+  assert_int_equal(g_app.events[g_from].kind.input.row, 1);
+  assert_int_equal(in->row, 2);         /* The tap on the second, last */
+
+  /* An option, with the item focused: the second, as tapped */
+
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_OPTION_CHOSEN, &in), 1);
+  assert_int_equal(in->option, OPT_CALL);
+  assert_int_equal(in->row, 2);
+}
+
+/****************************************************************************
+ * Name: test_detail_scrolls
+ *
+ * Description:
+ *   Twelve items, only the first two numbered: down past the second
+ *   scrolls the rest into view, a row at a time, though nothing more
+ *   takes the focus; the primary action with no item numbered sends
+ *   nothing.
+ ****************************************************************************/
+
+static bool g_scrolled;
+
+static void show_event(void)
+{
+  static pnut_ui_show_request_t in;
+  int i;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = CONTACT;
+  strcpy(in.title, "Event");
+  in.which_content = PNUT_UI_SHOW_REQUEST_DETAIL_TAG;
+  in.content.detail.items_count = 12;
+  for (i = 0; i < 12; i++)
+    {
+      in.content.detail.items[i].id = i < 2 ? i + 1 : 0;
+      snprintf(in.content.detail.items[i].label,
+               sizeof(in.content.detail.items[i].label), "Part %d", i + 1);
+      in.content.detail.items[i].which_value = PNUT_UI_ITEM_TEXT_TAG;
+      strcpy(in.content.detail.items[i].value.text, "Text");
+    }
+
+  app_send_show(&g_app, &in);
+}
+
+static void show_event_bare(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = CONTACT + 1;
+  in.which_content = PNUT_UI_SHOW_REQUEST_DETAIL_TAG;
+  in.content.detail.items_count = 2;
+  strcpy(in.content.detail.items[0].label, "Place");
+  strcpy(in.content.detail.items[1].label, "Notes");
+  app_send_show(&g_app, &in);
+}
+
+static void down10(void)
+{
+  int i;
+
+  for (i = 0; i < 10; i++)
+    {
+      down();
+    }
+}
+
+static void look_scrolled(void)
+{
+  FAR struct app_scr_s *st = ui_top(&g_ui)->state;
+
+  g_scrolled = lv_obj_get_scroll_bottom(st->t.detail.list.box) <= 0;
+}
+
+static void test_detail_scrolls(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_event },
+    { 300, down10 },
+    { 400, look_scrolled },
+    { 410, show_event_bare },
+    { 500, mark },
+    { 510, enter },
+    { 600, NULL },
+  };
+
+  FAR const pnut_ui_input_t *in;
+
+  write_manifest(FAKE_NOTES, "contacts", 5, g_all);
+  run(steps, 9);
+  assert_true(g_scrolled);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_ROW_OPENED, &in), 0);
+  assert_int_equal(app_inputs(&g_app, g_from, PNUT_UI_INPUT_ACTION_MIDDLE,
+                              &in), 0);
+}
+
+/****************************************************************************
+ * Name: test_detail_invalid
+ *
+ * Description:
+ *   Two items of one id, or a focus that is no item's: invalid.
+ ****************************************************************************/
+
+static void show_contact_twice(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = CONTACT;
+  in.which_content = PNUT_UI_SHOW_REQUEST_DETAIL_TAG;
+  in.content.detail.items_count = 2;
+  in.content.detail.items[0].id = 4;
+  in.content.detail.items[1].id = 4;
+  app_send_show(&g_app, &in);
+}
+
+static void show_contact_focus(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = CONTACT;
+  in.focus  = 9;
+  in.which_content = PNUT_UI_SHOW_REQUEST_DETAIL_TAG;
+  in.content.detail.items_count = 1;
+  in.content.detail.items[0].id = 4;
+  app_send_show(&g_app, &in);
+}
+
+static void test_detail_invalid(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_contact_twice },
+    { 300, keep_status },
+    { 310, show_contact_focus },
+    { 500, NULL },
+  };
+
+  write_manifest(FAKE_NOTES, "contacts", 5, g_all);
+  run(steps, 6);
+  assert_int_equal(g_status1, PNUT_STATUS_INVALID);
+  assert_int_equal(g_app.status, PNUT_STATUS_INVALID);
+}
+
+/****************************************************************************
+ * Name: test_empty
+ *
+ * Description:
+ *   An Empty (Cat-Empty): the primary action is the middle action; Back
+ *   goes to the app; with the primary action off, Enter sends nothing.
+ ****************************************************************************/
+
+#define DRAFTS     31
+
+static void show_drafts(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = DRAFTS;
+  strcpy(in.title, "Drafts");
+  strcpy(in.middle, "New");
+  in.which_content = PNUT_UI_SHOW_REQUEST_EMPTY_TAG;
+  strcpy(in.content.empty.heading, "No drafts");
+  strcpy(in.content.empty.text, "Messages you leave unsent are kept here.");
+  strcpy(in.content.empty.icon, "messages");
+  app_send_show(&g_app, &in);
+}
+
+static void drafts_off(void)
+{
+  static pnut_ui_update_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = DRAFTS;
+  in.which_change = PNUT_UI_UPDATE_REQUEST_MIDDLE_TAG;
+  in.change.middle.off = true;
+  app_send_update(&g_app, &in);
+}
+
+static void img_empty(void)
+{
+  save("app-empty");
+}
+
+static void test_empty(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_drafts },
+    { 300, look },
+    { 310, img_empty },
+    { 320, mark },
+    { 330, enter },
+    { 400, back },
+    { 500, drafts_off },
+    { 600, enter },
+    { 800, NULL },
+  };
+
+  FAR const pnut_ui_input_t *in;
+
+  write_manifest(FAKE_NOTES, "messages", 5, g_all);
+  run(steps, 11);
+  assert_string_equal(g_title, "Drafts");
+  assert_int_equal(app_inputs(&g_app, g_from, PNUT_UI_INPUT_ACTION_MIDDLE,
+                              &in), 1);
+  assert_int_equal(in->screen, DRAFTS);
+  assert_int_equal(app_inputs(&g_app, g_from, PNUT_UI_INPUT_ACTION_BACK,
+                              &in), 1);
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -961,6 +1304,12 @@ int main(void)
                                     fake_teardown),
     cmocka_unit_test_setup_teardown(test_list_gone_with_options, fake_setup,
                                     fake_teardown),
+    cmocka_unit_test_setup_teardown(test_detail, fake_setup, fake_teardown),
+    cmocka_unit_test_setup_teardown(test_detail_invalid, fake_setup,
+                                    fake_teardown),
+    cmocka_unit_test_setup_teardown(test_detail_scrolls, fake_setup,
+                                    fake_teardown),
+    cmocka_unit_test_setup_teardown(test_empty, fake_setup, fake_teardown),
   };
 
   return cmocka_run_group_tests_name("ui_app", tests, NULL, NULL);

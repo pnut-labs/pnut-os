@@ -171,6 +171,7 @@ static void test_detail_fits(void **state)
       FILL(in.content.detail.items[i].label, 'l');
       in.content.detail.items[i].which_value = PNUT_UI_ITEM_TEXT_TAG;
       FILL(in.content.detail.items[i].value.text, 'v');
+      FILL(in.content.detail.items[i].icon, 'i');
     }
 
   assert_true(encoded(PNUT_UI_SHOW_REQUEST_FIELDS, &in) <=
