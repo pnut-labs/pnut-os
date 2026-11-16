@@ -36,10 +36,12 @@
 
 #define STATES_SERVICE    "services"
 
-/* NxInit's names, without their NUL, and its lines (control.h) */
+/* NxInit's names, without their NUL (NXINIT_SERVICE_NAME_MAX less one), and
+ * its lines (NXINIT_CONTROL_LINE_MAX, in its control.h)
+ */
 
-#define STATES_NAME_MAX   31
-#define STATES_LINE_MAX   80
+#define STATES_NAME_MAX   63
+#define STATES_LINE_MAX   128
 
 /* Commands sent to NxInit and not answered yet; pids NxInit said are no
  * service's, remembered so as not to ask again

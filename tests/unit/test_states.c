@@ -46,6 +46,13 @@
 #define CHECK_MS      10
 #define GIVEUP_MS     3000
 
+/* Two services of NxInit's longest name, 63 bytes: reverse-DNS ids */
+
+#define LONG_LISTED "org.example.applications." \
+                    "a-long-reverse-dns-id.listed-from-boot"
+#define LONG_LATE   "org.example.applications." \
+                    "a-long-reverse-dns-id.started-as-later"
+
 /****************************************************************************
  * Private Types
  ****************************************************************************/
@@ -56,7 +63,7 @@
 
 struct fake_service_s
 {
-  char name[32];
+  char name[64];
   char state[16];
   int pid;
 };
@@ -68,13 +75,13 @@ struct fake_s
   int listener;
   int wake[2];
   int clients[FAKE_CLIENTS];
-  char in[FAKE_CLIENTS][80];
+  char in[FAKE_CLIENTS][128];
   size_t len[FAKE_CLIENTS];
   bool watching[FAKE_CLIENTS];
   struct fake_service_s table[FAKE_SERVICES];
   int ntable;
   int asks;                             /* "who" commands */
-  char last[64];                        /* The last start or stop */
+  char last[128];                       /* The last start or stop */
   char stops[128];                      /* Every stop, ';' after each */
   bool silent;                          /* Leaves "who" unanswered */
   bool broken;                          /* A write failed */
@@ -105,7 +112,7 @@ struct fixture_s
   struct states_service_s services[4];
   uint32_t seq;
   bool runs[2];
-  char who[8][32];
+  char who[8][64];
   int rets[8];
   int asks[8];
   bool answered;
@@ -156,7 +163,7 @@ static void fake_set(FAR struct fake_s *fake, FAR const char *name,
                      FAR const char *state, int pid, bool event)
 {
   FAR struct fake_service_s *service;
-  char line[80];
+  char line[128];
   int i;
 
   pthread_mutex_lock(&fake->lock);
@@ -189,7 +196,7 @@ static void fake_set(FAR struct fake_s *fake, FAR const char *name,
 
 static void fake_list(FAR struct fake_s *fake, int fd)
 {
-  char out[80];
+  char out[128];
   int j;
 
   snprintf(out, sizeof(out), "ok %d\n", fake->ntable);
@@ -205,7 +212,7 @@ static void fake_list(FAR struct fake_s *fake, int fd)
 static void fake_line(FAR struct fake_s *fake, int i, FAR char *line)
 {
   FAR struct fake_service_s *service;
-  char out[80];
+  char out[128];
   int fd = fake->clients[i];
   int pid;
   int j;
@@ -616,6 +623,7 @@ static void test_states_programs(void **state)
     "runtime\n";
   struct programs_s programs;
   char big[PROGRAMS_TEXT_MAX + 1];
+  char name[65];
   int line = 0;
   int i;
 
@@ -652,6 +660,23 @@ static void test_states_programs(void **state)
 
   assert_int_equal(programs_load(&programs, "/nonexistent/programs", &line),
                    -ENOENT);
+
+  /* A program and its service named by a reverse-DNS id of 63 bytes,
+   * NxInit's longest name; one byte more is refused
+   */
+
+  memset(name, 'a', sizeof(name));
+  memcpy(name, "org.", 4);
+  name[63] = '\0';
+  snprintf(big, sizeof(big), "%s %s\n", name, name);
+  assert_int_equal(programs_parse(&programs, big, strlen(big), &line), 0);
+  assert_true(programs_runs(&programs, name, name));
+
+  name[63] = 'a';
+  name[64] = '\0';
+  snprintf(big, sizeof(big), "%s %s\n", name, name);
+  assert_int_equal(programs_parse(&programs, big, strlen(big), &line),
+                   -EINVAL);
 }
 
 /****************************************************************************
@@ -1234,7 +1259,7 @@ struct call_s
   pid_t pid;                      /* Who's; 0 for the caller's own */
   int status;
   uint32_t code;
-  char answer[32];                /* Who's */
+  char answer[64];                /* Who's */
   bool shell;                     /* Who's: a shell's command */
 };
 
@@ -1361,7 +1386,7 @@ static void run_call(FAR const char *me, FAR struct call_s *call,
 static void test_states_calls(void **state)
 {
   struct call_s call;
-  char last[64];
+  char last[128];
 
   memset(&call, 0, sizeof(call));
   call.kind = CALL_START;
@@ -1414,6 +1439,21 @@ static void test_states_calls(void **state)
   run_call("telephony", &call, last, sizeof(last));
   assert_int_equal(call.status, PNUT_STATUS_NOTFOUND);
   assert_false(call.shell);
+
+  /* The longest names: a program's, whole in Who's answer; a service's,
+   * whole in NxInit's command
+   */
+
+  call.pid = 0;
+  run_call(LONG_LISTED, &call, last, sizeof(last));
+  assert_int_equal(call.status, PNUT_STATUS_OK);
+  assert_string_equal(call.answer, LONG_LISTED);
+
+  call.kind = CALL_START;
+  call.name = LONG_LATE;
+  run_call("ui", &call, last, sizeof(last));
+  assert_int_equal(call.status, PNUT_STATUS_NOTFOUND);
+  assert_string_equal(last, "start " LONG_LATE);
 }
 
 /****************************************************************************
@@ -1459,6 +1499,53 @@ static void test_states_who_named(void **state)
   assert_string_equal(f.who[0], "late");
 
   pnut_services_disconnect(&f.client);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
+ * Name: test_states_long_name
+ *
+ * Description:
+ *   A service with the longest name NxInit takes, 63 bytes, a reverse-DNS
+ *   id, is listed and named whole: from NxInit's list, and from its answer
+ *   to "who" for a task it has not shown yet.
+ ****************************************************************************/
+
+static void ask_long(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, LONG_LATE, "starting", 12, false);
+
+  f->rets[0] = states_who(&f->states, 7, &name);
+  strlcpy(f->who[0], name != NULL ? name : "(none)", sizeof(f->who[0]));
+  f->rets[1] = states_who(&f->states, 12, &name);
+  strlcpy(f->who[1], name != NULL ? name : "(none)", sizeof(f->who[1]));
+
+  f->done = true;
+  pnut_loop_stop(f->loop, 0);
+}
+
+static void test_states_long_name(void **state)
+{
+  struct fixture_s f;
+
+  assert_int_equal(strlen(LONG_LISTED), 63);
+  assert_int_equal(strlen(LONG_LATE), 63);
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, LONG_LISTED, "ready", 7, false);
+
+  f.until = listed;
+  f.then  = ask_long;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  assert_string_equal(f.who[0], LONG_LISTED);
+  assert_int_equal(f.rets[1], OK);
+  assert_string_equal(f.who[1], LONG_LATE);
+  assert_false(f.fake.broken);
+
   fixture_teardown(&f);
 }
 
@@ -1552,6 +1639,7 @@ int main(void)
     cmocka_unit_test(test_states_who_unanswered),
     cmocka_unit_test(test_states_calls),
     cmocka_unit_test(test_states_who_named),
+    cmocka_unit_test(test_states_long_name),
     cmocka_unit_test(test_states_origin),
   };
 

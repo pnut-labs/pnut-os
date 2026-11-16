@@ -30,7 +30,7 @@
 #define PROGRAMS_TEXT_MAX      1024
 #define PROGRAMS_MAX           16
 #define PROGRAMS_SERVICES_MAX  64
-#define PROGRAMS_NAME_MAX      31
+#define PROGRAMS_NAME_MAX      63
 
 /****************************************************************************
  * Public Types

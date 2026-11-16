@@ -60,7 +60,7 @@ message ServiceState {
     RESTARTING = 4;               // Exited, to be started again
   }
 
-  string name = 1 [(nanopb).max_size = 32];
+  string name = 1 [(nanopb).max_size = 64];
   State state = 2;
   int32 pid = 3;                  // 0 when it is not running
 }
@@ -79,7 +79,7 @@ message ServicesReply {
 
 // A page after the name last given; an empty one for the first page
 message ServicesPageRequest {
-  string after = 1 [(nanopb).max_size = 32];
+  string after = 1 [(nanopb).max_size = 64];
 }
 
 message ServicesPage {
@@ -88,7 +88,7 @@ message ServicesPage {
 }
 
 message ServicesNameRequest {
-  string name = 1 [(nanopb).max_size = 32];
+  string name = 1 [(nanopb).max_size = 64];
 }
 
 message ServicesWhoRequest {
@@ -96,7 +96,7 @@ message ServicesWhoRequest {
 }
 
 message ServicesWhoReply {
-  string name = 1 [(nanopb).max_size = 32];   // The program's; empty for
+  string name = 1 [(nanopb).max_size = 64];   // The program's; empty for
                                               // a shell's command
   bool shell = 2;                 // A command typed in a developer's
                                   // shell: it may do what the system UI
@@ -110,7 +110,7 @@ message ServiceChange {
   option (pnut.topic) = "services";
   option (pnut.depth) = 8;
 
-  string name = 1 [(nanopb).max_size = 32];
+  string name = 1 [(nanopb).max_size = 64];
   ServiceState.State state = 2;
   int32 pid = 3;
   uint32 seq = 4;
