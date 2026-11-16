@@ -29,6 +29,7 @@
 #include "pnut/wifi.pnut.h"
 
 #include "display.h"
+#include "host.h"
 #include "input.h"
 #include "status.h"
 
@@ -78,6 +79,13 @@ struct ui_config_s
   /* The wall clock; NULL for time() (tests give a fixed one) */
 
   CODE time_t (*now)(void);
+
+  /* Apps (RFC 0037): their manifests' folder, and Service states'
+   * service, which names them; either NULL serves no apps
+   */
+
+  FAR const char *apps;
+  FAR const char *services;
 };
 
 /* The system UI (RFC 0019): its screens, on LVGL, on the program's loop.
@@ -117,6 +125,8 @@ struct ui_s
   struct pnut_telephony_client_s tel;   /* The SIM PIN screen's */
   bool tel_open;
   bool pin_skipped;               /* Skipped until the SIM asks anew */
+  struct host_s host;             /* Apps' connections */
+  bool host_open;
   struct pnut_board_client_s board;
   FAR struct pnut_timer_s *retry; /* Asking Board again, once */
   bool board_open;

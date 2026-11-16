@@ -585,6 +585,20 @@ static int ui_start(FAR struct pnut_module_s *module,
       ui->status_open = true;
     }
 
+  if (ui->config.services != NULL && ui->config.apps != NULL)
+    {
+      ret = host_open(&ui->host, ui, loop, ui->config.apps,
+                      ui->config.services);
+      if (ret < 0)
+        {
+          pnut_log(module, PNUT_LOG_ERROR, "No apps: %d", ret);
+        }
+      else
+        {
+          ui->host_open = true;
+        }
+    }
+
   pnut_module_ready(module);
   if (ui->config.board == NULL)
     {
@@ -608,6 +622,12 @@ static void ui_stop(FAR struct pnut_module_s *module,
                     FAR struct pnut_loop_s *loop)
 {
   FAR struct ui_s *ui = (FAR struct ui_s *)module;
+
+  if (ui->host_open)
+    {
+      host_close(&ui->host);
+      ui->host_open = false;
+    }
 
   if (ui->retry != NULL)
     {

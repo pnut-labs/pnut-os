@@ -36,6 +36,13 @@
 
 #define UI_BOARD  "board"
 
+/* Apps (RFC 0037): their manifests, and Service states' service, which
+ * names them
+ */
+
+#define UI_APPS      "/etc/apps"
+#define UI_SERVICES  "services"
+
 /* A handler's budget: drawing a screen on the loop takes tens of ms on
  * the ESP32-S3 (25-60 ms measured), building one as long; over this the
  * library logs it
@@ -80,6 +87,8 @@ int main(int argc, FAR char *argv[])
   uconfig.input       = &input;
   uconfig.open_screen = fb_open;
   uconfig.open_input  = input_dev_open;
+  uconfig.apps        = UI_APPS;
+  uconfig.services    = UI_SERVICES;
   ui_init(&ui, &uconfig);
 
   /* The UI first: it starts LVGL, which Input's devices belong to */
