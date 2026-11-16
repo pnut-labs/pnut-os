@@ -1,0 +1,301 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// The system UI's interface for apps (RFC 0037), in the ui program: an
+// app, a program of its own, draws only through it.  The app opens one
+// connection, describes its screens in the templates of the catalogue,
+// and is told what the owner does with them; the system UI draws, and
+// owns every key.  An app is named by its service's name, which Service
+// states' Who gives for the connection's task, and may use the templates
+// its manifest lists (pnut/manifest.proto).
+//
+// Requests go up as methods; events come down on Open's stream, as the
+// app's credit allows.  An app that leaves 16 events waiting for credit,
+// when one more is due, has its stream ended and is taken off.  Every
+// event about a screen names it, so that the app can drop one about a
+// screen it has left.
+//
+// Catalogue level 1, step 1 of RFC 0037's order of the work: List,
+// Detail, Confirm, Empty and Busy.  Later steps add methods (Text, Read,
+// Resume, Intent) and templates under new numbers.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/options.proto";
+
+service Ui {
+  option (pnut.iface) = 14;
+
+  // The app's session: Welcome is the stream's first item, then every
+  // event.  Refused: denied for a task that is no service's and not
+  // typed in a developer's shell; unavailable when Service states cannot
+  // tell; busy while another app is open; invalid for an id that is not
+  // one (from the developer's shell).
+  rpc Open (UiOpenRequest) returns (stream UiEvent) {
+    option (pnut.method) = 1;
+  }
+
+  // A whole screen, new or replaced, or a sheet over the screen; only
+  // from the open app (denied, NOT_OPEN), in a template its manifest
+  // lists (denied, NOT_LISTED), and one that holds together (invalid,
+  // MALFORMED).  A template of a newer catalogue level than the system
+  // UI's is skipped as the message is decoded, so the Show has none:
+  // invalid, UNKNOWN_TEMPLATE, and the app falls back to an older one.
+  rpc Show (UiShowRequest) returns (UiReply) {
+    option (pnut.method) = 2;
+  }
+
+  // A change to the screen on top; one naming another screen is dropped
+  rpc Update (UiUpdateRequest) returns (UiReply) {
+    option (pnut.method) = 3;
+  }
+
+  // A page of a list's rows, as a page needed asked: one for a screen no
+  // longer on top, or not from the row asked, is dropped
+  rpc Rows (UiRowsRequest) returns (UiReply) {
+    option (pnut.method) = 4;
+  }
+
+  // The app leaves (RFC 0037's Close: close is the generated code's own
+  // name): its screen and its sheet go
+  rpc Leave (UiLeaveRequest) returns (UiReply) {
+    option (pnut.method) = 5;
+  }
+}
+
+// The catalogue's templates (RFC 0037), as a manifest lists them
+enum UiTemplate {
+  UI_TEMPLATE_NONE = 0;
+  UI_TEMPLATE_LIST = 1;
+  UI_TEMPLATE_DETAIL = 2;
+  UI_TEMPLATE_CONFIRM = 3;
+  UI_TEMPLATE_EMPTY = 4;
+  UI_TEMPLATE_BUSY = 5;
+}
+
+message UiReply {
+}
+
+// The detail of an error answer (pnut.Error's code)
+message UiError {
+  enum Code {
+    NONE = 0;
+    NOT_AN_APP = 1;               // Open: no app's task, or no manifest
+    ANOTHER_APP = 2;              // Open: another app is open (busy)
+    BAD_ID = 3;                   // Open: an id that is not one
+    NOT_OPEN = 4;                 // Not from the open app
+    NOT_LISTED = 5;               // A template its manifest does not list
+    UNKNOWN_TEMPLATE = 6;         // None, or one of a newer level
+    MALFORMED = 7;                // A description that does not hold
+                                  // together
+  }
+}
+
+message UiOpenRequest {
+  // The app's id: used only for a program typed in a developer's shell,
+  // which Service states cannot name; any other is named by its service
+  string app = 1 [(nanopb).max_size = 64];
+
+  // The catalogue level the app was built for
+  uint32 level = 2;
+}
+
+// What comes down Open's stream
+message UiEvent {
+  oneof kind {
+    UiWelcome welcome = 1;
+    UiInput input = 2;
+    UiPageNeeded page = 3;
+    UiStop stop = 4;
+  }
+}
+
+// The first item of Open's stream
+message UiWelcome {
+  enum Display {
+    UNKNOWN = 0;
+    EPAPER = 1;                   // Redraws are gathered (RFC 0019)
+  }
+
+  enum Reason {
+    NONE = 0;
+    OPENED = 1;                   // The owner opened the app
+  }
+
+  uint32 level = 1;               // The system UI's catalogue level
+  Display display = 2;
+  uint32 rows_per_page = 3;       // Rows a page needed asks for
+  uint32 rows_kept = 4;           // Rows the system UI keeps per screen
+
+  // The owner's languages, first the one wanted most; the region; the
+  // clock
+  repeated string languages = 5 [(nanopb).max_count = 4,
+                                 (nanopb).max_size = 8];
+  string region = 6 [(nanopb).max_size = 8];
+  bool clock24 = 7;
+
+  Reason reason = 8;
+}
+
+// What the owner did on a screen or a sheet
+message UiInput {
+  enum Action {
+    NONE = 0;
+    ROW_OPENED = 1;               // List, Detail: the primary action on a
+                                  // row, or a tap on it
+    OPTION_CHOSEN = 2;            // An option, with the row focused
+    MIDDLE = 3;                   // Empty: the primary action
+    BACK = 4;                     // Answered with Show, a Confirm or Leave
+    CONFIRMED = 5;                // Confirm
+    CANCELLED = 6;                // Confirm, Busy
+  }
+
+  uint32 screen = 1;              // The screen's or the sheet's id
+  Action action = 2;
+  uint32 row = 3;                 // The row's or the item's id; 0: none
+  uint32 option = 4;              // The option's id
+}
+
+// A list wants rows from the index first on (from 0, in the list's
+// order); the app answers with Rows
+message UiPageNeeded {
+  uint32 screen = 1;
+  uint32 first = 2;
+}
+
+// Save and exit
+message UiStop {
+}
+
+// A row of a list (Cat-Rows): its lead, an icon of the system's set by
+// name or a person's initials; its title and detail, one line each; its
+// value at the right; a mark of the trailer's
+message UiRow {
+  enum Trailer {
+    NONE = 0;
+    CHEVRON = 1;                  // Opens a screen
+    ON = 2;                       // A switch
+    OFF = 3;
+  }
+
+  uint32 id = 1;                  // The app's; never 0
+  string lead = 2 [(nanopb).max_size = 17];
+  bool initials = 3;              // lead is up to 2 initials, not an icon
+  string title = 4 [(nanopb).max_size = 49];
+  string detail = 5 [(nanopb).max_size = 49];
+
+  // At the right: text so far; typed values the system UI formats (a
+  // time, a count, RFC 0037) join it as other members
+  oneof value {
+    string text = 6 [(nanopb).max_size = 17];
+  }
+
+  bool unread = 7;                // The title bold
+  Trailer trailer = 8;
+}
+
+// An option of the screen's Options, with its command letter: one the
+// key map steers with, or one used already, is drawn without it
+message UiOption {
+  uint32 id = 1;                  // Never 0
+  string label = 2 [(nanopb).max_size = 33];
+  string letter = 3 [(nanopb).max_size = 2];
+}
+
+// A list: count rows in all, the first of them here, the others asked
+// for with page needed
+message UiList {
+  uint32 count = 1;
+  repeated UiRow rows = 2 [(nanopb).max_count = 20];
+}
+
+// An item of a detail: a label over a value; one with an id takes the
+// focus and is opened by the primary action
+message UiItem {
+  uint32 id = 1;                  // 0: it takes no focus
+  string label = 2 [(nanopb).max_size = 33];
+
+  // Text so far; typed values join it as other members, as a row's
+  oneof value {
+    string text = 3 [(nanopb).max_size = 65];
+  }
+}
+
+message UiDetail {
+  repeated UiItem items = 1 [(nanopb).max_count = 12];
+}
+
+// A sheet: the question, what it means, the confirming answer's label
+message UiConfirm {
+  string question = 1 [(nanopb).max_size = 97];
+  string detail = 2 [(nanopb).max_size = 193];
+  string confirm = 3 [(nanopb).max_size = 17];
+}
+
+// Nothing yet: a heading, a line of what to do, an icon of the system's
+// set
+message UiEmpty {
+  string heading = 1 [(nanopb).max_size = 49];
+  string text = 2 [(nanopb).max_size = 129];
+  string icon = 3 [(nanopb).max_size = 17];
+}
+
+// Waiting: what for, a line of how it goes; whether the owner may cancel
+message UiBusy {
+  string heading = 1 [(nanopb).max_size = 49];
+  string text = 2 [(nanopb).max_size = 129];
+  bool cancel = 3;
+}
+
+message UiShowRequest {
+  // The app's id for it; never 0.  A sheet's differs from the screen's
+  // beneath (MALFORMED).
+  uint32 screen = 1;
+  string title = 2 [(nanopb).max_size = 49];
+  bool sheet = 3;                 // Over the screen: Confirm, Busy
+  uint32 focus = 4;               // The row or item focused; 0: the first
+
+  // The primary action's label (the middle softkey), and whether it is
+  // off for now; empty: the template's own
+  string middle = 5 [(nanopb).max_size = 17];
+  bool middle_off = 6;
+
+  repeated UiOption options = 7 [(nanopb).max_count = 8];
+
+  oneof content {
+    UiList list = 8;
+    UiDetail detail = 9;
+    UiConfirm confirm = 10;
+    UiEmpty empty = 11;
+    UiBusy busy = 12;
+  }
+}
+
+// The primary action's label, or whether it is off
+message UiMiddle {
+  string label = 1 [(nanopb).max_size = 17];
+  bool off = 2;
+}
+
+message UiUpdateRequest {
+  uint32 screen = 1;
+
+  oneof change {
+    string title = 2 [(nanopb).max_size = 49];
+    UiRow row = 3;                // The row of that id, replaced
+    UiMiddle middle = 4;
+    UiBusy busy = 5;              // A Busy's heading, text and cancel
+  }
+}
+
+message UiRowsRequest {
+  uint32 screen = 1;
+  uint32 first = 2;               // The index of rows[0], as asked
+  repeated UiRow rows = 3 [(nanopb).max_count = 20];
+}
+
+message UiLeaveRequest {
+}

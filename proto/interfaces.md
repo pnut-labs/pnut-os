@@ -19,6 +19,7 @@ Every interface has a number, given in its `.proto` file with
 | 11 | `pnut.Radio`, the low-power packet radios (RFC 0034) | `proto/pnut/radio.proto` |
 | 12 | `pnut.Location`, the GNSS receiver (RFC 0035) | `proto/pnut/location.proto` |
 | 13 | `pnut.Motion`, the motion sensors (RFC 0036) | `proto/pnut/motion.proto` |
+| 14 | `pnut.Ui`, the system UI's interface for apps (RFC 0037) | `proto/pnut/ui.proto` |
 | 65000 | `pnut.test.Echo`, libpnut's tests | `tests/proto/pnut/test/echo.proto` |
 
 Numbers from 65000 are for tests.

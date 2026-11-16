@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mateusz Pianka
+
+// An app's manifest (RFC 0008), as far as the system UI reads it so far
+// (RFC 0037): the app's icon and name, and the templates it may show.
+// Until Packages exists (RFC 0009), a built-in app's manifest is the file
+// /etc/apps/<id>.manifest, this message encoded.
+
+syntax = "proto3";
+
+package pnut;
+
+import "nanopb.proto";
+import "pnut/ui.proto";
+
+message AppManifest {
+  string icon = 1 [(nanopb).max_size = 17];   // From the system's set
+  string name = 2 [(nanopb).max_size = 33];
+  repeated UiTemplate templates = 3 [(nanopb).max_count = 32];
+}
