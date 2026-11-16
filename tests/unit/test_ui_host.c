@@ -1,0 +1,921 @@
+/****************************************************************************
+ * pnut-os/tests/unit/test_ui_host.c
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Mateusz Pianka
+ *
+ ****************************************************************************/
+
+/* The apps' connection to the system UI (RFC 0037): a fake app and a fake
+ * Service states, on one loop with the ui module, which draws into a
+ * frame in memory.  The app is this test's own task, so Who is asked
+ * about this process's pid.
+ */
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <errno.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+#include <cmocka.h>
+
+#include <pb_encode.h>
+
+#include <pnut/loop.h>
+#include <pnut/msg.h>
+#include <pnut/timer.h>
+
+#include "pnut/manifest.pb.h"
+#include "pnut/services.pnut.h"
+#include "pnut/ui.pnut.h"
+
+#include "host.h"
+#include "input.h"
+#include "ui.h"
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#define WIDTH    240
+#define HEIGHT   320
+#define STRIDE   (WIDTH / 8)
+
+#define NOTES    "org.example.notes"
+#define EVENTS   40
+
+/****************************************************************************
+ * Private Types
+ ****************************************************************************/
+
+struct step_s
+{
+  uint32_t at;
+  CODE void (*run)(void);
+};
+
+/* What Service states answers Who: a service's name, the developer's
+ * shell, not found, or nothing
+ */
+
+enum who_e
+{
+  WHO_NAMED,
+  WHO_SHELL,
+  WHO_NOTFOUND,
+  WHO_SILENT
+};
+
+/* A fake app's connection, and what it saw */
+
+struct app_s
+{
+  struct pnut_ui_client_s client;
+  bool connected;
+  bool up;
+  uint16_t stream;
+  int opened;                     /* Open's status, or -1 before */
+  uint32_t code;                  /* The last error's UiError code */
+  int ended;                      /* The stream's end status, or -1 */
+  pnut_ui_event_t events[EVENTS];
+  int nevents;
+  int replies;
+  int status;                     /* The last answer's */
+};
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+static uint8_t g_frame[STRIDE * HEIGHT];
+static struct ui_s g_ui;
+static struct input_s g_input;
+static FAR struct pnut_loop_s *g_loop;
+static struct pnut_services_server_s g_services;
+static enum who_e g_who;
+static char g_named[64];
+static int g_whos;
+static char g_dir[] = "/tmp/pnut-host-XXXXXX";
+static char g_apps[64];
+static struct app_s g_app;
+static struct app_s g_app2;
+static uint8_t g_depth;
+
+/* The host's state, kept by a step while the loop runs: once it stops,
+ * the module has stopped, and its apps are gone
+ */
+
+static char g_id[64];
+static bool g_shell;
+static bool g_open;
+static bool g_depth_kept;
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+static int fake_update(FAR void *arg, int16_t x, int16_t y, int16_t w,
+                       int16_t h, bool full)
+{
+  return 0;
+}
+
+static const struct display_ops_s g_ops =
+{
+  fake_update
+};
+
+/* Service states' Who, as the test sets it */
+
+static void fake_who(FAR struct pnut_services_server_s *server,
+                     FAR const struct pnut_request_s *req,
+                     FAR const pnut_services_who_request_t *in,
+                     FAR void *arg)
+{
+  pnut_services_who_reply_t out;
+
+  g_whos++;
+  assert_int_equal(in->pid, getpid());
+  memset(&out, 0, sizeof(out));
+  switch (g_who)
+    {
+      case WHO_NAMED:
+        strlcpy(out.name, g_named, sizeof(out.name));
+        pnut_services_who_reply(server, req, PNUT_STATUS_OK, &out);
+        break;
+
+      case WHO_SHELL:
+        out.shell = true;
+        pnut_services_who_reply(server, req, PNUT_STATUS_OK, &out);
+        break;
+
+      case WHO_NOTFOUND:
+        pnut_services_fail(server, req, PNUT_STATUS_NOTFOUND,
+                           PNUT_SERVICES_ERROR_CODE_UNKNOWN_SERVICE,
+                           "no such task");
+        break;
+
+      default:
+        break;                    /* Never answered */
+    }
+}
+
+static const struct pnut_services_handlers_s g_services_handlers =
+{
+  .who = fake_who
+};
+
+/* A manifest in the apps' folder */
+
+static void write_manifest(FAR const char *id, int ntemplates,
+                           FAR const int *templates)
+{
+  pnut_app_manifest_t m;
+  uint8_t buf[256];
+  pb_ostream_t out = pb_ostream_from_buffer(buf, sizeof(buf));
+  char path[160];
+  FILE *f;
+  int i;
+
+  memset(&m, 0, sizeof(m));
+  strcpy(m.icon, "notes");
+  strcpy(m.name, "Notes");
+  m.templates_count = ntemplates;
+  for (i = 0; i < ntemplates; i++)
+    {
+      m.templates[i] = templates[i];
+    }
+
+  assert_true(pb_encode(&out, PNUT_APP_MANIFEST_FIELDS, &m));
+  snprintf(path, sizeof(path), "%s/%s.manifest", g_apps, id);
+  f = fopen(path, "wb");
+  assert_non_null(f);
+  assert_int_equal(fwrite(buf, 1, out.bytes_written, f),
+                   out.bytes_written);
+  fclose(f);
+}
+
+/* The fake app */
+
+static void app_state(FAR struct pnut_ui_client_s *client, bool connected,
+                      FAR void *arg)
+{
+  FAR struct app_s *app = arg;
+
+  app->connected = connected;
+}
+
+static void app_opened(FAR struct pnut_ui_client_s *client, int status,
+                       FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct app_s *app = arg;
+
+  app->opened = status;
+  app->code = err != NULL ? err->code : 0;
+  app->up = status == PNUT_STATUS_OK;
+}
+
+static void app_item(FAR struct pnut_ui_client_s *client, int status,
+                     FAR const pnut_ui_event_t *item, FAR void *arg)
+{
+  FAR struct app_s *app = arg;
+
+  if (item == NULL)
+    {
+      app->ended = status;
+      app->up = false;
+      return;
+    }
+
+  assert_true(app->nevents < EVENTS);
+  app->events[app->nevents++] = *item;
+}
+
+static void app_done(FAR struct pnut_ui_client_s *client, int status,
+                     FAR const pnut_ui_reply_t *out,
+                     FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct app_s *app = arg;
+
+  app->replies++;
+  app->status = status;
+  app->code = err != NULL ? err->code : 0;
+}
+
+static void app_connect(FAR struct app_s *app)
+{
+  memset(app, 0, sizeof(*app));
+  app->opened = -1;
+  app->ended  = -1;
+  assert_int_equal(pnut_ui_connect(g_loop, HOST_SERVICE, app_state, app,
+                                   &app->client), 0);
+}
+
+static void app_open(FAR struct app_s *app, FAR const char *id,
+                     uint16_t credit)
+{
+  pnut_ui_open_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  if (id != NULL)
+    {
+      strlcpy(in.app, id, sizeof(in.app));
+    }
+
+  in.level = 1;
+  assert_int_equal(pnut_ui_open(&app->client, &in, credit, 3000,
+                                app_opened, app_item, app, &app->stream),
+                   0);
+}
+
+static void app_show(FAR struct app_s *app, uint32_t screen, int tmpl)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = screen;
+  strcpy(in.title, "Inbox");
+  switch (tmpl)
+    {
+      case PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST:
+        in.which_content = PNUT_UI_SHOW_REQUEST_LIST_TAG;
+        in.content.list.count = 1;
+        in.content.list.rows_count = 1;
+        in.content.list.rows[0].id = 1;
+        strcpy(in.content.list.rows[0].title, "Shopping");
+        break;
+
+      case PNUT_UI_TEMPLATE_UI_TEMPLATE_DETAIL:
+        in.which_content = PNUT_UI_SHOW_REQUEST_DETAIL_TAG;
+        in.content.detail.items_count = 1;
+        strcpy(in.content.detail.items[0].label, "Note");
+        in.content.detail.items[0].which_value = PNUT_UI_ITEM_TEXT_TAG;
+        strcpy(in.content.detail.items[0].value.text, "Milk");
+        break;
+
+      default:
+        break;                    /* No template */
+    }
+
+  assert_int_equal(pnut_ui_show(&app->client, &in, 3000, app_done, app),
+                   0);
+}
+
+static void app_leave(FAR struct app_s *app)
+{
+  pnut_ui_leave_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  assert_int_equal(pnut_ui_leave(&app->client, &in, 3000, app_done, app),
+                   0);
+}
+
+/* An event from the system UI, as a screen would send it */
+
+static int send_back(uint32_t screen)
+{
+  pnut_ui_event_t ev;
+
+  memset(&ev, 0, sizeof(ev));
+  ev.which_kind = PNUT_UI_EVENT_INPUT_TAG;
+  ev.kind.input.screen = screen;
+  ev.kind.input.action = PNUT_UI_INPUT_ACTION_BACK;
+  return host_event(&g_ui.host, &ev);
+}
+
+static void step_timer(FAR struct pnut_loop_s *loop,
+                       FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR const struct step_s *step = arg;
+
+  if (step->run != NULL)
+    {
+      step->run();
+    }
+  else
+    {
+      pnut_loop_stop(loop, 0);
+    }
+}
+
+/* Run the steps with the ui module, Service states' fake and the apps'
+ * folder, Who answering as set
+ */
+
+static void run(FAR const struct step_s *steps, int nsteps)
+{
+  struct pnut_loop_config_s lconfig;
+  struct display_config_s screen;
+  struct input_config_s iconfig;
+  struct ui_config_s uconfig;
+  int i;
+
+  pnut_loop_defaults(&lconfig);
+  lconfig.rundir = g_dir;
+  assert_int_equal(pnut_loop_create(&lconfig, &g_loop), 0);
+  assert_int_equal(pnut_services_serve(g_loop, "services", 0,
+                                       &g_services_handlers, NULL,
+                                       &g_services), 0);
+
+  memset(g_frame, 0xff, sizeof(g_frame));
+  memset(&screen, 0, sizeof(screen));
+  screen.frame  = g_frame;
+  screen.stride = STRIDE;
+  screen.width  = WIDTH;
+  screen.height = HEIGHT;
+  screen.ops    = &g_ops;
+
+  memset(&iconfig, 0, sizeof(iconfig));
+  iconfig.display = &g_ui.display;
+  input_init(&g_input, &iconfig);
+
+  memset(&uconfig, 0, sizeof(uconfig));
+  uconfig.screen   = &screen;
+  uconfig.input    = &g_input;
+  uconfig.apps     = g_apps;
+  uconfig.services = "services";
+  ui_init(&g_ui, &uconfig);
+  assert_int_equal(pnut_module_add(g_loop, &g_ui.module), 0);
+  assert_int_equal(pnut_module_add(g_loop, &g_input.module), 0);
+
+  for (i = 0; i < nsteps; i++)
+    {
+      assert_int_equal(pnut_timer_start(g_loop, steps[i].at, 0,
+                                        step_timer, (FAR void *)&steps[i],
+                                        NULL), 0);
+    }
+
+  assert_int_equal(pnut_loop_run(g_loop), 0);
+  pnut_ui_disconnect(&g_app.client);
+  pnut_ui_disconnect(&g_app2.client);
+  pnut_services_close(&g_services);
+  pnut_loop_destroy(g_loop);
+}
+
+static int setup(void **state)
+{
+  strcpy(g_dir, "/tmp/pnut-host-XXXXXX");
+  assert_non_null(mkdtemp(g_dir));
+  snprintf(g_apps, sizeof(g_apps), "%s/apps", g_dir);
+  assert_int_equal(mkdir(g_apps, 0755), 0);
+  g_who = WHO_NAMED;
+  strcpy(g_named, NOTES);
+  g_whos = 0;
+  memset(&g_app, 0, sizeof(g_app));
+  memset(&g_app2, 0, sizeof(g_app2));
+  g_id[0] = '\0';
+  g_shell = false;
+  g_open = false;
+  g_depth_kept = false;
+  return 0;
+}
+
+static int teardown(void **state)
+{
+  char cmd[64];
+
+  snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
+  assert_int_equal(system(cmd), 0);
+  return 0;
+}
+
+static const int g_list[] =
+{
+  PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST
+};
+
+/* Steps shared by the tests */
+
+static void connect_app(void)
+{
+  app_connect(&g_app);
+}
+
+static void open_app(void)
+{
+  assert_true(g_app.connected);
+  app_open(&g_app, NULL, 4);
+}
+
+static void open_app_no_credit(void)
+{
+  assert_true(g_app.connected);
+  app_open(&g_app, NULL, 0);
+}
+
+static void show_list(void)
+{
+  app_show(&g_app, 1, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
+}
+
+static void keep_depth(void)
+{
+  g_depth = g_ui.depth;
+}
+
+/* Whether the stack is as deep as keep_depth() saw */
+
+static void check_depth(void)
+{
+  g_depth_kept = g_ui.depth == g_depth;
+}
+
+static void keep_app(void)
+{
+  FAR struct host_app_s *app = host_app(&g_ui.host);
+
+  g_open = app != NULL;
+  strlcpy(g_id, app != NULL ? app->id : "", sizeof(g_id));
+  g_shell = app != NULL && app->shell;
+}
+
+/****************************************************************************
+ * Name: test_open_named
+ *
+ * Description:
+ *   A task Service states names, whose manifest exists, is welcomed: the
+ *   stream's first item is Welcome.
+ ****************************************************************************/
+
+static void test_open_named(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 400, NULL },
+  };
+
+  FAR const pnut_ui_welcome_t *w;
+
+  write_manifest(NOTES, 1, g_list);
+  run(steps, 3);
+
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_whos, 1);
+  assert_int_equal(g_app.nevents, 1);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  w = &g_app.events[0].kind.welcome;
+  assert_int_equal(w->level, 1);
+  assert_int_equal(w->display, PNUT_UI_WELCOME_DISPLAY_EPAPER);
+  assert_int_equal(w->rows_per_page, 20);
+  assert_int_equal(w->rows_kept, 200);
+  assert_int_equal(w->reason, PNUT_UI_WELCOME_REASON_OPENED);
+  assert_int_equal(w->languages_count, 1);
+  assert_string_equal(w->languages[0], "en");
+  assert_true(w->clock24);
+}
+
+/****************************************************************************
+ * Name: test_open_unknown
+ *
+ * Description:
+ *   A task that is no service's is refused; so is a service without a
+ *   manifest, and a system service.
+ ****************************************************************************/
+
+static void test_open_unknown(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 400, NULL },
+  };
+
+  g_who = WHO_NOTFOUND;
+  run(steps, 3);
+  assert_int_equal(g_app.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_AN_APP);
+  assert_false(g_app.up);
+
+  g_who = WHO_NAMED;
+  run(steps, 3);
+  assert_int_equal(g_app.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_AN_APP);
+
+  /* A system service: no app, whatever it claims */
+
+  strcpy(g_named, "telephony");
+  run(steps, 3);
+  assert_int_equal(g_app.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_AN_APP);
+}
+
+/****************************************************************************
+ * Name: test_open_shell
+ *
+ * Description:
+ *   A program typed in the developer's shell opens under the id it gives,
+ *   with every template when it has no manifest, with its manifest's when
+ *   it has one; an id that is not one is invalid.
+ ****************************************************************************/
+
+static void open_as_demo(void)
+{
+  app_open(&g_app, "org.pnut.demo", 4);
+}
+
+static void open_as_bad(void)
+{
+  app_open(&g_app, "Notes", 4);
+}
+
+static void show_detail(void)
+{
+  app_show(&g_app, 2, PNUT_UI_TEMPLATE_UI_TEMPLATE_DETAIL);
+}
+
+static void test_open_shell(void **state)
+{
+  static const struct step_s good[] =
+  {
+    { 20, connect_app },
+    { 60, open_as_demo },
+    { 200, show_detail },
+    { 300, keep_app },
+    { 400, NULL },
+  };
+
+  static const struct step_s bad[] =
+  {
+    { 20, connect_app },
+    { 60, open_as_bad },
+    { 400, NULL },
+  };
+
+  g_who = WHO_SHELL;
+  run(good, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_true(g_open);
+  assert_string_equal(g_id, "org.pnut.demo");
+  assert_true(g_shell);
+
+  run(bad, 3);
+  assert_int_equal(g_app.opened, PNUT_STATUS_INVALID);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_BAD_ID);
+
+  /* With a manifest of its own: the templates it lists, no more */
+
+  write_manifest("org.pnut.demo", 1, g_list);
+  run(good, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_LISTED);
+}
+
+/****************************************************************************
+ * Name: test_open_no_answer
+ *
+ * Description:
+ *   Service states does not answer: Open fails unavailable after
+ *   HOST_WHO_MS, never accepted unnamed.
+ ****************************************************************************/
+
+static void test_open_no_answer(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 60 + HOST_WHO_MS + 500, NULL },
+  };
+
+  write_manifest(NOTES, 1, g_list);
+  g_who = WHO_SILENT;
+  run(steps, 3);
+  assert_int_equal(g_app.opened, PNUT_STATUS_UNAVAILABLE);
+  assert_false(g_app.up);
+}
+
+/****************************************************************************
+ * Name: test_open_second
+ *
+ * Description:
+ *   One app at a time: a second Open while one is open is busy.
+ ****************************************************************************/
+
+static void connect_app2(void)
+{
+  app_connect(&g_app2);
+}
+
+static void open_app2(void)
+{
+  app_open(&g_app2, NULL, 4);
+}
+
+static void test_open_second(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 30, connect_app2 },
+    { 60, open_app },
+    { 200, open_app2 },
+    { 400, NULL },
+  };
+
+  write_manifest(NOTES, 1, g_list);
+  run(steps, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_BUSY);
+  assert_int_equal(g_app2.code, PNUT_UI_ERROR_CODE_ANOTHER_APP);
+}
+
+/****************************************************************************
+ * Name: test_show_denied
+ *
+ * Description:
+ *   A template the manifest does not list is denied; a Show with no
+ *   template is invalid; a Show from a connection that has not opened is
+ *   denied.  The UI's stack is left as it was.
+ ****************************************************************************/
+
+static void show_none(void)
+{
+  app_show(&g_app, 3, PNUT_UI_TEMPLATE_UI_TEMPLATE_NONE);
+}
+
+static void show_list_app2(void)
+{
+  app_show(&g_app2, 4, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
+}
+
+static void test_show_denied(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 30, connect_app2 },
+    { 60, open_app },
+    { 150, keep_depth },
+    { 200, show_detail },
+    { 350, check_depth },
+    { 400, NULL },
+  };
+
+  static const struct step_s none[] =
+  {
+    { 20, connect_app },
+    { 30, connect_app2 },
+    { 60, open_app },
+    { 200, show_none },
+    { 250, show_list_app2 },
+    { 450, NULL },
+  };
+
+  write_manifest(NOTES, 1, g_list);
+  run(steps, 7);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.replies, 1);
+  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_LISTED);
+  assert_true(g_depth_kept);
+
+  run(none, 6);
+  assert_int_equal(g_app.status, PNUT_STATUS_INVALID);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_UNKNOWN_TEMPLATE);
+  assert_int_equal(g_app2.replies, 1);
+  assert_int_equal(g_app2.status, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app2.code, PNUT_UI_ERROR_CODE_NOT_OPEN);
+}
+
+/****************************************************************************
+ * Name: test_credit
+ *
+ * Description:
+ *   An app that gives no credit: HOST_EVENTS events wait, Welcome among
+ *   them; one more ends its stream, and the app is no longer open.
+ *   Credit given before then lets the waiting ones go, in order.
+ ****************************************************************************/
+
+static int g_sent[HOST_EVENTS + 2];
+
+static void flood(void)
+{
+  int i;
+
+  for (i = 0; i < HOST_EVENTS + 1; i++)
+    {
+      g_sent[i] = send_back(100 + i);
+    }
+
+  g_sent[HOST_EVENTS + 1] = send_back(999);
+}
+
+static void some(void)
+{
+  int i;
+
+  for (i = 0; i < 3; i++)
+    {
+      g_sent[i] = send_back(100 + i);
+    }
+}
+
+static void give_credit(void)
+{
+  assert_int_equal(pnut_ui_open_credit(&g_app.client, g_app.stream, 8), 0);
+}
+
+static void test_credit(void **state)
+{
+  static const struct step_s flooded[] =
+  {
+    { 20, connect_app },
+    { 60, open_app_no_credit },
+    { 200, flood },
+    { 300, keep_app },
+    { 400, NULL },
+  };
+
+  static const struct step_s paced[] =
+  {
+    { 20, connect_app },
+    { 60, open_app_no_credit },
+    { 200, some },
+    { 300, give_credit },
+    { 450, keep_app },
+    { 500, NULL },
+  };
+
+  int i;
+
+  write_manifest(NOTES, 1, g_list);
+  run(flooded, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+
+  /* Welcome waits first: 15 more fit, the 16th ends the stream */
+
+  for (i = 0; i < HOST_EVENTS - 1; i++)
+    {
+      assert_int_equal(g_sent[i], 0);
+    }
+
+  assert_int_equal(g_sent[HOST_EVENTS - 1], -ENOSPC);
+  assert_int_equal(g_sent[HOST_EVENTS], -ENOTCONN);
+  assert_int_equal(g_sent[HOST_EVENTS + 1], -ENOTCONN);
+  assert_int_equal(g_app.ended, PNUT_STATUS_BUSY);
+  assert_false(g_open);
+
+  run(paced, 6);
+  assert_int_equal(g_app.nevents, 4);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  for (i = 0; i < 3; i++)
+    {
+      assert_int_equal(g_app.events[i + 1].kind.input.screen, 100 + i);
+    }
+
+  assert_true(g_open);
+}
+
+/****************************************************************************
+ * Name: test_gone
+ *
+ * Description:
+ *   The app goes with events waiting: nothing is sent after, the system
+ *   UI's stack is back as it was, and another app may open.
+ ****************************************************************************/
+
+static void disconnect_app(void)
+{
+  pnut_ui_disconnect(&g_app.client);
+}
+
+static void check_gone(void)
+{
+  assert_null(host_app(&g_ui.host));
+  assert_int_equal(send_back(5), -ENOTCONN);
+  assert_int_equal(g_ui.depth, g_depth);
+}
+
+static void test_gone(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 30, keep_depth },
+    { 60, open_app_no_credit },
+    { 200, show_list },
+    { 250, some },
+    { 300, disconnect_app },
+    { 400, check_gone },
+    { 420, connect_app2 },
+    { 460, open_app2 },
+    { 700, NULL },
+  };
+
+  write_manifest(NOTES, 1, g_list);
+  run(steps, 10);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
+}
+
+/****************************************************************************
+ * Name: test_leave
+ *
+ * Description:
+ *   Leave takes the app off; its stream ends; another Open is accepted.
+ ****************************************************************************/
+
+static void leave_app(void)
+{
+  app_leave(&g_app);
+}
+
+static void test_leave(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 30, connect_app2 },
+    { 40, keep_depth },
+    { 60, open_app },
+    { 200, show_list },
+    { 300, leave_app },
+    { 350, check_depth },
+    { 400, open_app2 },
+    { 600, NULL },
+  };
+
+  write_manifest(NOTES, 1, g_list);
+  run(steps, 9);
+  assert_int_equal(g_app.replies, 2);       /* Show's, then Leave's */
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_int_equal(g_app.ended, PNUT_STATUS_ENDED);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
+  assert_true(g_depth_kept);
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+int main(void)
+{
+  const struct CMUnitTest tests[] =
+  {
+    cmocka_unit_test_setup_teardown(test_open_named, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_open_unknown, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_open_shell, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_open_no_answer, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_open_second, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_show_denied, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_credit, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_gone, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_leave, setup, teardown),
+  };
+
+  return cmocka_run_group_tests_name("ui_host", tests, NULL, NULL);
+}
