@@ -105,6 +105,7 @@ struct ui_options_s
   FAR lv_obj_t *shadow;
   FAR lv_obj_t *catcher;          /* Takes a tap outside them */
   FAR lv_obj_t *rows[UI_OPTIONS];
+  char letters[UI_OPTIONS];       /* An option's command letter, or 0 */
   uint8_t count;
   uint8_t focus;
 };
@@ -180,6 +181,7 @@ extern const struct screen_class_s g_scr_wifi;
 extern const struct screen_class_s g_scr_join;
 extern const struct screen_class_s g_scr_cell;
 extern const struct screen_class_s g_scr_pin;
+extern const struct screen_class_s g_scr_app;     /* An app's (app.c) */
 
 /****************************************************************************
  * Public Function Prototypes
@@ -196,6 +198,23 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
 void ui_pop(FAR struct ui_s *ui);
 FAR struct screen_s *ui_top(FAR struct ui_s *ui);
 
+/* A screen of the stack replaced, in its place, by a new one of a class
+ * (shown if it is on top); a screen taken off wherever it is (not Home).
+ * -ENOENT for a screen not on the stack.
+ */
+
+int ui_replace(FAR struct ui_s *ui, FAR struct screen_s *old,
+               FAR const struct screen_class_s *cls, FAR const void *arg);
+void ui_remove(FAR struct ui_s *ui, FAR struct screen_s *s);
+
+/* A new screen of a class put at an index of the stack, under those
+ * above, and not shown (an app's screen beneath the SIM PIN); at the top,
+ * or past it, it is pushed
+ */
+
+int ui_insert(FAR struct ui_s *ui, int index,
+              FAR const struct screen_class_s *cls, FAR const void *arg);
+
 /* A screen's options, over it (Proto-Options): W and S move, E, Enter and
  * the middle softkey choose, Back, the options' keys and a tap outside
  * close them.  chosen is told the index.
@@ -204,6 +223,16 @@ FAR struct screen_s *ui_top(FAR struct ui_s *ui);
 int ui_options(FAR struct screen_s *s, FAR const char * const *items,
                uint8_t count,
                CODE void (*chosen)(FAR struct screen_s *s, int index));
+
+/* The same, each option with its command letter (lowercase, or 0 for
+ * none), drawn at its right; the letter's key chooses it (RFC 0037)
+ */
+
+int ui_options_lettered(FAR struct screen_s *s,
+                        FAR const char * const *items,
+                        FAR const char *letters, uint8_t count,
+                        CODE void (*chosen)(FAR struct screen_s *s,
+                                            int index));
 bool ui_options_open(FAR struct ui_s *ui);
 
 /* Lay the top screen out after it changed outside its key and tap

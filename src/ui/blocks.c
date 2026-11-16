@@ -308,6 +308,21 @@ static void block_caps(FAR lv_obj_t *label, FAR const char *text)
   block_set_text(label, caps);
 }
 
+/* A part of a row shown with its text, or hidden without */
+
+static void block_part(FAR lv_obj_t *label, FAR const char *text)
+{
+  if (text == NULL || text[0] == '\0')
+    {
+      lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+      block_set_text(label, "");
+      return;
+    }
+
+  block_set_text(label, text);
+  lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -700,6 +715,87 @@ FAR const char *block_row_value(FAR lv_obj_t *row)
   return lv_label_get_text(lv_obj_get_child(row, 2));
 }
 
+FAR lv_obj_t *block_app_row(FAR lv_obj_t *parent, uint16_t id)
+{
+  FAR lv_obj_t *row = block_row_frame(parent, id, BLOCK_ROW_H);
+  FAR lv_obj_t *lead;
+  FAR lv_obj_t *col;
+  FAR lv_obj_t *trailer;
+
+  lv_obj_add_flag(row, BLOCK_ROW_FLAG);
+
+  /* Child 0, the lead in its 24 px slot; 1, the title over the detail;
+   * 2, the value; 3, the trailer
+   */
+
+  lead = block_label(row, &g_ui_mono_bold_11, "");
+  lv_label_set_long_mode(lead, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(lead, BLOCK_LEAD_W);
+  lv_obj_set_style_text_align(lead, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_add_flag(lead, LV_OBJ_FLAG_HIDDEN);
+
+  col = block_box(row, 0, 0, 10, LV_SIZE_CONTENT);
+  lv_obj_set_flex_grow(col, 1);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(col, 2, 0);
+  block_line(col, &g_ui_sans_14, "");
+  lv_obj_add_flag(block_line(col, &g_ui_sans_12, ""), LV_OBJ_FLAG_HIDDEN);
+
+  block_label(row, &g_ui_mono_bold_10, "");
+  trailer = block_label(row, &g_ui_icons_14, "");
+  lv_obj_add_flag(trailer, LV_OBJ_FLAG_HIDDEN);
+  block_row_rule(row);
+  block_row_tapped(row, id);
+  return row;
+}
+
+void block_app_row_set(FAR lv_obj_t *row, FAR const char *lead,
+                       bool initials, FAR const char *title,
+                       FAR const char *detail, FAR const char *value,
+                       bool unread, int trailer)
+{
+  FAR lv_obj_t *col = lv_obj_get_child(row, 1);
+  FAR lv_obj_t *mark = lv_obj_get_child(row, 3);
+  bool focused = lv_obj_get_style_bg_opa(row, 0) == LV_OPA_COVER;
+
+  lv_obj_set_style_text_font(lv_obj_get_child(row, 0), initials ?
+                             &g_ui_mono_bold_11 : &g_ui_icons_18, 0);
+  block_part(lv_obj_get_child(row, 0), lead);
+  block_set_text(lv_obj_get_child(col, 0), title != NULL ? title : "");
+  block_part(lv_obj_get_child(col, 1), detail);
+  block_part(lv_obj_get_child(row, 2), value);
+
+  if (unread)
+    {
+      lv_obj_add_state(row, LV_STATE_USER_1);
+    }
+  else
+    {
+      lv_obj_remove_state(row, LV_STATE_USER_1);
+    }
+
+  lv_obj_set_style_text_font(block_row_title(row), focused || unread ?
+                             &g_ui_sans_bold_14 : &g_ui_sans_14, 0);
+
+  switch (trailer)
+    {
+      case BLOCK_TRAILER_CHEVRON:
+        lv_obj_set_style_text_font(mark, &g_ui_icons_14, 0);
+        block_part(mark, UI_ICON_CHEVRON_RIGHT);
+        break;
+
+      case BLOCK_TRAILER_ON:
+      case BLOCK_TRAILER_OFF:
+        lv_obj_set_style_text_font(mark, &g_ui_mono_bold_12, 0);
+        block_part(mark, trailer == BLOCK_TRAILER_ON ? UI_T_ON : UI_T_OFF);
+        break;
+
+      default:
+        block_part(mark, NULL);
+        break;
+    }
+}
+
 FAR lv_obj_t *block_switch_row(FAR lv_obj_t *parent, uint16_t id,
                                FAR const char *title, bool on)
 {
@@ -891,7 +987,11 @@ void block_focus(FAR lv_obj_t *item, bool focused)
   theme_inverted(item, focused);
   if (lv_obj_has_flag(item, BLOCK_ROW_FLAG))
     {
-      lv_obj_set_style_text_font(block_row_title(item), focused ?
+      /* An app's row marked unread stays bold */
+
+      lv_obj_set_style_text_font(block_row_title(item),
+                                 focused ||
+                                 lv_obj_has_state(item, LV_STATE_USER_1) ?
                                  &g_ui_sans_bold_14 : &g_ui_sans_14, 0);
       return;
     }

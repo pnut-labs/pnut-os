@@ -225,12 +225,26 @@ static void ui_options_choose(FAR struct ui_s *ui, uint8_t index)
 
 /* A key while the options are open: theirs */
 
-static void ui_options_key(FAR struct ui_s *ui, uint8_t action)
+static void ui_options_key(FAR struct ui_s *ui, uint8_t action,
+                           uint32_t ch)
 {
   FAR struct ui_options_s *o = &ui->options;
+  int i;
 
   switch (action)
     {
+      case UI_ACT_CHAR:
+        for (i = 0; i < o->count; i++)
+          {
+            if (o->letters[i] != '\0' && (uint32_t)o->letters[i] == ch)
+              {
+                ui_options_choose(ui, i);
+                break;
+              }
+          }
+
+        break;
+
       case UI_ACT_UP:
         ui_options_focus(o, o->focus > 0 ? o->focus - 1 : 0);
         break;
@@ -271,7 +285,7 @@ static void ui_key_event(FAR lv_event_t *e)
 
   if (ui_options_open(s->ui))
     {
-      ui_options_key(s->ui, action);
+      ui_options_key(s->ui, action, action == UI_ACT_CHAR ? key : 0);
       ui_place(s->ui);
       return;
     }
@@ -541,10 +555,9 @@ static void ui_root_deleted(FAR lv_event_t *e)
  * through them) but no longer the top's.
  */
 
-static void ui_drop(FAR struct ui_s *ui, bool async)
+static void ui_drop_screen(FAR struct ui_s *ui, FAR struct screen_s *s,
+                           bool async)
 {
-  FAR struct screen_s *s = ui->stack[--ui->depth];
-
   if (s->cls->leave != NULL)
     {
       s->cls->leave(s);
@@ -559,6 +572,62 @@ static void ui_drop(FAR struct ui_s *ui, bool async)
     {
       lv_obj_delete(s->root);
     }
+}
+
+static void ui_drop(FAR struct ui_s *ui, bool async)
+{
+  ui_drop_screen(ui, ui->stack[--ui->depth], async);
+}
+
+/* A new screen of a class, with its LVGL screen and handlers, not built
+ * yet; or NULL
+ */
+
+static FAR struct screen_s *ui_screen_new(FAR struct ui_s *ui,
+                                          FAR const struct screen_class_s
+                                          *cls, FAR const void *arg)
+{
+  FAR struct screen_s *s;
+
+  s = lv_malloc_zeroed(sizeof(*s) + cls->size);
+  if (s == NULL)
+    {
+      return NULL;
+    }
+
+  s->cls    = cls;
+  s->ui     = ui;
+  s->arg    = arg;
+  s->state  = s + 1;
+  s->serial = ++ui->serials;
+  s->root  = lv_obj_create(NULL);
+  theme_screen(s->root);
+  lv_obj_add_event_cb(s->root, ui_key_event, LV_EVENT_KEY, s);
+  lv_obj_add_event_cb(s->root, ui_block_event, g_ui_event_block, s);
+  lv_obj_add_event_cb(s->root, ui_root_deleted, LV_EVENT_DELETE, s);
+  if (input_group(ui->config.input) != NULL)
+    {
+      lv_group_add_obj(input_group(ui->config.input), s->root);
+    }
+
+  return s;
+}
+
+/* Where a screen is on the stack, or -1 */
+
+static int ui_index(FAR struct ui_s *ui, FAR struct screen_s *s)
+{
+  int i;
+
+  for (i = 0; i < ui->depth; i++)
+    {
+      if (ui->stack[i] == s)
+        {
+          return i;
+        }
+    }
+
+  return -1;
 }
 
 static int ui_start(FAR struct pnut_module_s *module,
@@ -700,31 +769,25 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
       return -ENOSPC;
     }
 
-  s = lv_malloc_zeroed(sizeof(*s) + cls->size);
+  ui_typing_off(ui);
+  s = ui_screen_new(ui, cls, arg);
   if (s == NULL)
     {
       return -ENOMEM;
     }
 
-  s->cls    = cls;
-  s->ui     = ui;
-  s->arg    = arg;
-  s->state  = s + 1;
-  s->serial = ++ui->serials;
-  ui_typing_off(ui);
-  s->root  = lv_obj_create(NULL);
-  theme_screen(s->root);
-  lv_obj_add_event_cb(s->root, ui_key_event, LV_EVENT_KEY, s);
-  lv_obj_add_event_cb(s->root, ui_block_event, g_ui_event_block, s);
-  lv_obj_add_event_cb(s->root, ui_root_deleted, LV_EVENT_DELETE, s);
-  if (input_group(ui->config.input) != NULL)
-    {
-      lv_group_add_obj(input_group(ui->config.input), s->root);
-    }
-
   ui->stack[ui->depth++] = s;
   cls->build(s);
-  ui_load(ui, s);
+
+  /* Building it may have taken it off again (an app's screen whose app
+   * went): then the screen below shows already
+   */
+
+  if (ui_index(ui, s) == ui->depth - 1)
+    {
+      ui_load(ui, s);
+    }
+
   return 0;
 }
 
@@ -759,6 +822,108 @@ FAR struct screen_s *ui_top(FAR struct ui_s *ui)
   return ui->depth > 0 ? ui->stack[ui->depth - 1] : NULL;
 }
 
+int ui_replace(FAR struct ui_s *ui, FAR struct screen_s *old,
+               FAR const struct screen_class_s *cls, FAR const void *arg)
+{
+  FAR struct screen_s *s;
+  int i = ui_index(ui, old);
+  bool top;
+
+  if (i < 0)
+    {
+      return -ENOENT;
+    }
+
+  top = i == ui->depth - 1;
+
+  if (ui->options.box != NULL && ui->options.screen == old)
+    {
+      ui_options_close(ui);
+    }
+
+  if (top)
+    {
+      ui_typing_off(ui);
+    }
+
+  s = ui_screen_new(ui, cls, arg);
+  if (s == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  ui->stack[i] = s;
+  cls->build(s);
+
+  /* The old one is deleted after: LVGL may be going through its handlers.
+   * Building may have taken the new one off again: then the screen below
+   * shows already.
+   */
+
+  if (top && ui_index(ui, s) == ui->depth - 1)
+    {
+      ui_load(ui, s);
+    }
+
+  ui_drop_screen(ui, old, true);
+  return 0;
+}
+
+int ui_insert(FAR struct ui_s *ui, int index,
+              FAR const struct screen_class_s *cls, FAR const void *arg)
+{
+  FAR struct screen_s *s;
+
+  if (index <= 0 || index >= ui->depth)
+    {
+      return ui_push(ui, cls, arg);
+    }
+
+  if (ui->depth == UI_DEPTH)
+    {
+      return -ENOSPC;
+    }
+
+  s = ui_screen_new(ui, cls, arg);
+  if (s == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  memmove(&ui->stack[index + 1], &ui->stack[index],
+          (ui->depth - index) * sizeof(ui->stack[0]));
+  ui->stack[index] = s;
+  ui->depth++;
+  cls->build(s);
+  return 0;
+}
+
+void ui_remove(FAR struct ui_s *ui, FAR struct screen_s *s)
+{
+  int i = ui_index(ui, s);
+
+  if (i <= 0)
+    {
+      return;                     /* Not on the stack, or Home */
+    }
+
+  if (i == ui->depth - 1)
+    {
+      ui_pop(ui);
+      return;
+    }
+
+  if (ui->options.box != NULL && ui->options.screen == s)
+    {
+      ui_options_close(ui);
+    }
+
+  memmove(&ui->stack[i], &ui->stack[i + 1],
+          (ui->depth - i - 1) * sizeof(ui->stack[0]));
+  ui->depth--;
+  ui_drop_screen(ui, s, true);
+}
+
 FAR lv_obj_t *ui_header(FAR struct screen_s *s, FAR const char *icon,
                         FAR const char *title)
 {
@@ -776,7 +941,17 @@ int ui_options(FAR struct screen_s *s, FAR const char * const *items,
                uint8_t count,
                CODE void (*chosen)(FAR struct screen_s *s, int index))
 {
+  return ui_options_lettered(s, items, NULL, count, chosen);
+}
+
+int ui_options_lettered(FAR struct screen_s *s,
+                        FAR const char * const *items,
+                        FAR const char *letters, uint8_t count,
+                        CODE void (*chosen)(FAR struct screen_s *s,
+                                            int index))
+{
   FAR struct ui_options_s *o = &s->ui->options;
+  char caps[2];
   FAR lv_obj_t *head;
   FAR lv_obj_t *label;
   int32_t h = 2 + UI_OPTIONS_HEAD + count * UI_OPTIONS_ROW + 2;
@@ -837,6 +1012,19 @@ int ui_options(FAR struct screen_s *s, FAR const char * const *items,
       theme_label(label, &g_ui_sans_13);
       lv_label_set_text(label, items[i]);
       lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+
+      o->letters[i] = letters != NULL ? letters[i] : '\0';
+      if (o->letters[i] != '\0')
+        {
+          caps[0] = o->letters[i] >= 'a' && o->letters[i] <= 'z' ?
+                    o->letters[i] - 'a' + 'A' : o->letters[i];
+          caps[1] = '\0';
+          label = lv_label_create(o->rows[i]);
+          theme_label(label, &g_ui_mono_bold_12);
+          lv_label_set_text(label, caps);
+          lv_obj_align(label, LV_ALIGN_RIGHT_MID, -8, 0);
+        }
+
       block_rule(o->rows[i], 0, 0, UI_OPTIONS_W - 4, true);
       lv_obj_add_flag(o->rows[i], LV_OBJ_FLAG_CLICKABLE);
       lv_obj_add_event_cb(o->rows[i], ui_options_tapped, LV_EVENT_CLICKED,

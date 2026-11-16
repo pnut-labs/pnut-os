@@ -51,6 +51,29 @@ static void hold(struct keymap_state_s *s, uint32_t code, bool on)
   assert_int_equal(r.action, UI_ACT_NONE);
 }
 
+/* A letter that does not steer, outside a text field: a command letter
+ * (RFC 0037), lowercase; anything else is nothing
+ */
+
+static void test_command_letters(void **state)
+{
+  struct keymap_state_s s;
+  struct keymap_result_s r;
+
+  memset(&s, 0, sizeof(s));
+  keymap_key(&s, 'x', false, true, &r);
+  assert_int_equal(r.action, UI_ACT_CHAR);
+  assert_int_equal(r.ch, 'x');
+  assert_false(r.repeats);
+
+  keymap_key(&s, 'C', false, true, &r);
+  assert_int_equal(r.action, UI_ACT_CHAR);
+  assert_int_equal(r.ch, 'c');
+
+  press(&s, '1', false, UI_ACT_NONE, false);
+  press(&s, '.', false, UI_ACT_NONE, false);
+}
+
 static void test_steering(void **state)
 {
   struct keymap_state_s s;
@@ -65,7 +88,6 @@ static void test_steering(void **state)
   press(&s, 'e', false, UI_ACT_OPEN, false);
   press(&s, KEYMAP_ENTER, true, UI_ACT_OPEN, false);
   press(&s, ' ', false, UI_ACT_PAGE_NEXT, true);
-  press(&s, 'x', false, UI_ACT_NONE, false);
   press(&s, KEYMAP_F1, true, UI_ACT_SOFT_LEFT, false);
   press(&s, KEYMAP_F2, true, UI_ACT_SOFT_MIDDLE, false);
   press(&s, KEYMAP_F3, true, UI_ACT_SOFT_RIGHT, false);
@@ -210,6 +232,7 @@ int main(void)
   const struct CMUnitTest tests[] =
   {
     cmocka_unit_test(test_steering),
+    cmocka_unit_test(test_command_letters),
     cmocka_unit_test(test_alt_enter),
     cmocka_unit_test(test_typing),
     cmocka_unit_test(test_find_steers),

@@ -11,7 +11,9 @@ design's stroke for that size unless an SVG gives its own.  As fonts they
 take the colour of the text around them, so an icon on an inverted row
 inverts with it.  The icons get code points from U+E000 in the order of
 their file names; OUTDIR/icons.h names them, UI_ICON_<NAME> as a UTF-8
-string for a label.  OUTDIR gets icons_<size>.c, defining g_ui_icons_<size>.
+string for a label, and lists them by their file names in UI_ICON_TABLE,
+for apps, which name an icon of the set (RFC 0037).  OUTDIR gets
+icons_<size>.c, defining g_ui_icons_<size>.
 """
 import os
 import re
@@ -74,6 +76,12 @@ def main():
         utf8 = chr(BASE + i).encode()
         lines.append("#define UI_ICON_%-14s \"%s\""
                      % (name, "".join("\\x%02x" % b for b in utf8)))
+    lines += ["", "/* Every icon by its file's name, for apps: { name, icon }, ... */",
+              "", "#define UI_ICON_TABLE \\"]
+    for i, (svg, name) in enumerate(zip(svgs, names)):
+        lines.append("  { \"%s\", UI_ICON_%s }%s"
+                     % (os.path.basename(svg)[:-4], name,
+                        ", \\" if i < len(names) - 1 else ""))
     lines += ["", "#endif /* __PNUT_OS_UI_ICONS_H */", ""]
     with open(os.path.join(out, "icons.h"), "w") as f:
         f.write("\n".join(lines))

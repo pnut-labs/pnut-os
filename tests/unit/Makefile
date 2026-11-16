@@ -91,7 +91,7 @@ UI      := $(ROOT)/src/ui
 UIGEN   := $(ROOT)/build/ui
 UI_SRCS := $(filter-out %/main.c %/fb.c %/input_dev.c,$(wildcard $(UI)/*.c))
 UI_SRCS += $(wildcard $(UIGEN)/*.c)
-UI_HDRS := $(wildcard $(UI)/*.h $(UIGEN)/*.h) lv_conf.h
+UI_HDRS := $(wildcard $(UI)/*.h $(UIGEN)/*.h) lv_conf.h fake_app.h
 
 LVGL_CFLAGS := -std=gnu11 -O1 -g -DLV_CONF_INCLUDE_SIMPLE -I$(CURDIR)
 LVGL_CFLAGS += -I$(LVGL) -I$(BUILD)/inc
@@ -106,6 +106,7 @@ LVGL_LIB    := $(BUILD)/lib$(LVGL_NAME).a
 # made afresh each run
 
 SCREEN_TESTS := $(BUILD)/test_ui_screens $(BUILD)/test_ui_wifi \
+                $(BUILD)/test_ui_app \
                 $(BUILD)/test_ui_cell $(BUILD)/test_ui_pin
 
 run: $(TESTS)

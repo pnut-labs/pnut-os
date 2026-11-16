@@ -24,6 +24,7 @@
 #include "pnut/services.pnut.h"
 #include "pnut/ui.pnut.h"
 
+#include "applist.h"
 #include "manifest.h"
 
 /****************************************************************************
@@ -38,7 +39,7 @@
 
 #define HOST_LEVEL      1
 #define HOST_ROWS_PAGE  20
-#define HOST_ROWS_KEPT  200
+#define HOST_ROWS_KEPT  APPLIST_KEPT
 
 /* Events waiting for the app's credit, Welcome among them; one more ends
  * its stream.  How long Service states has to say who an app is.  How
