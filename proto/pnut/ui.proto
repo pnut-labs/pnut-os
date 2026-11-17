@@ -110,6 +110,7 @@ message UiEvent {
     UiInput input = 2;
     UiPageNeeded page = 3;
     UiStop stop = 4;
+    UiShown shown = 5;
   }
 }
 
@@ -168,6 +169,11 @@ message UiPageNeeded {
 
 // Save and exit
 message UiStop {
+}
+
+// The app is on top again, from warm: it answers with Show of its current
+// screen
+message UiShown {
 }
 
 // A row of a list (Cat-Rows): its lead, an icon of the system's set by

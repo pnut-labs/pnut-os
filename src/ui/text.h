@@ -82,6 +82,7 @@
 #define UI_T_OPTIONS          N_("Options")
 #define UI_T_MENU             N_("Menu")
 #define UI_T_CANCEL           N_("Cancel")
+#define UI_T_OPENING          N_("Opening %s\xe2\x80\xa6")
 
 /* The options' heading; an app's Confirm's (Cat-Confirm) */
 

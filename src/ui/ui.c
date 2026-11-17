@@ -747,10 +747,28 @@ static void ui_stop(FAR struct pnut_module_s *module,
  * Public Functions
  ****************************************************************************/
 
+void ui_times_default(FAR struct ui_times_s *t)
+{
+  t->who     = UI_TIME_WHO;
+  t->opening = UI_TIME_OPENING;
+  t->open    = UI_TIME_OPEN;
+  t->busy    = UI_TIME_BUSY;
+  t->hung    = UI_TIME_HUNG;
+  t->stall   = UI_TIME_STALL;
+  t->stop    = UI_TIME_STOP;
+  t->gather  = UI_TIME_GATHER;
+  t->spacing = UI_TIME_SPACING;
+}
+
 void ui_init(FAR struct ui_s *ui, FAR const struct ui_config_s *config)
 {
   memset(ui, 0, sizeof(*ui));
   ui->config       = *config;
+  if (ui->config.times.who == 0)
+    {
+      ui_times_default(&ui->config.times);
+    }
+
   ui->fd           = -1;
   ui->module.name  = "ui";
   ui->module.start = ui_start;

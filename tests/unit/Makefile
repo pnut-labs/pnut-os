@@ -106,7 +106,7 @@ LVGL_LIB    := $(BUILD)/lib$(LVGL_NAME).a
 # made afresh each run
 
 SCREEN_TESTS := $(BUILD)/test_ui_screens $(BUILD)/test_ui_wifi \
-                $(BUILD)/test_ui_app \
+                $(BUILD)/test_ui_app $(BUILD)/test_ui_life \
                 $(BUILD)/test_ui_cell $(BUILD)/test_ui_pin
 
 run: $(TESTS)

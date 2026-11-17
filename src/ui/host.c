@@ -6,12 +6,16 @@
  *
  ****************************************************************************/
 
-/* The system UI's service for apps (RFC 0037): an app opens it, is named
- * by Service states' Who from its connection's task, and may show the
- * templates its manifest lists.  Events go down Open's stream as the
- * app's credit allows; an app that leaves HOST_EVENTS of them waiting is
- * taken off.  One app at a time, until the life cycle (RFC 0037, step 2).
- * An app's text is never logged.
+/* The system UI's service for apps (RFC 0037): the system UI starts an app
+ * through Service states, the app opens this service, is named by Service
+ * states' Who from its connection's task, and may show the templates its
+ * manifest lists.  Up to HOST_APPS apps at once: the open one, one kept
+ * warm, one being opened.  An app the system UI did not start (after the
+ * system UI's own restart, or a second task of one running) has its Open
+ * answered with Stop; a program typed in a developer's shell opens as it
+ * comes.  Events go down Open's stream as the app's credit allows; an app
+ * that leaves HOST_EVENTS of them waiting is taken off.  An app's text is
+ * never logged.
  */
 
 /****************************************************************************
@@ -19,6 +23,8 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 #include <pnut/log.h>
@@ -32,72 +38,207 @@
  * Private Functions
  ****************************************************************************/
 
-static void host_flush(FAR struct host_s *h);
+static void host_flush(FAR struct host_app_s *app);
 
-/* Whether a request comes from the open app's connection */
+/* The app whose connection a request comes from, or NULL */
 
-static bool host_from_app(FAR struct host_s *h,
-                          FAR const struct pnut_request_s *req)
+static FAR struct host_app_s *host_from(FAR struct host_s *h,
+                                        FAR const struct pnut_request_s *req)
 {
-  return h->app.used && h->app.stream.open &&
-         req->from.conn == h->app.stream.to.conn &&
-         req->from.gen == h->app.stream.to.gen;
-}
+  int i;
 
-/* The app is no longer open: its screens off, its events dropped */
-
-static void host_forget(FAR struct host_s *h)
-{
-  if (h->retry != NULL)
+  for (i = 0; i < HOST_APPS; i++)
     {
-      pnut_timer_cancel(h->loop, h->retry);
-      h->retry = NULL;
+      FAR struct host_app_s *app = &h->slots[i];
+
+      if (app->connected && app->stream.open &&
+          req->from.conn == app->stream.to.conn &&
+          req->from.gen == app->stream.to.gen)
+        {
+          return app;
+        }
     }
 
-  app_gone(h->ui);
-  memset(&h->app, 0, sizeof(h->app));
+  return NULL;
 }
 
-/* Take the app off, ending its stream with a status */
+/* The app of an id, or NULL */
 
-static void host_drop(FAR struct host_s *h, int status)
+static FAR struct host_app_s *host_find(FAR struct host_s *h,
+                                        FAR const char *id)
 {
-  if (!h->app.used)
+  int i;
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      if (h->slots[i].state != HOST_FREE &&
+          strcmp(h->slots[i].id, id) == 0)
+        {
+          return &h->slots[i];
+        }
+    }
+
+  return NULL;
+}
+
+static FAR struct host_app_s *host_free_slot(FAR struct host_s *h)
+{
+  int i;
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      if (h->slots[i].state == HOST_FREE)
+        {
+          return &h->slots[i];
+        }
+    }
+
+  return NULL;
+}
+
+/* The app is gone: its screen off if it was open, its slot free */
+
+static void host_forget(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+  bool open = app->state == HOST_OPEN;
+
+  if (app->busy != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->busy);
+    }
+
+  if (app->due != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->due);
+    }
+
+  if (app->connected && app->stream.open)
+    {
+      pnut_stream_end(&app->stream, PNUT_STATUS_UNAVAILABLE);
+    }
+
+  app_opening_gone(h->ui, app);
+  memset(app, 0, sizeof(*app));
+  app->host = h;
+  if (open)
+    {
+      app_gone(h->ui);
+    }
+}
+
+/* Service states answered a Stop */
+
+static void host_stopped(FAR struct pnut_services_client_s *client,
+                         int status, FAR const pnut_services_reply_t *out,
+                         FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct host_s *h = arg;
+
+  if (status != PNUT_STATUS_OK)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_WARNING, "an app not stopped: %d",
+               status);
+    }
+}
+
+/* Service states stops an app's task */
+
+static void host_stop_task(FAR struct host_s *h, FAR const char *id)
+{
+  pnut_services_name_request_t in;
+  int ret;
+
+  memset(&in, 0, sizeof(in));
+  strlcpy(in.name, id, sizeof(in.name));
+  ret = pnut_services_stop(&h->services, &in, 0, host_stopped, h);
+  if (ret < 0)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_WARNING, "app %s not stopped: %d",
+               id, ret);
+    }
+}
+
+/* Nothing drawn since the app was started: the UI's Busy */
+
+static void host_busy_due(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct host_app_s *app = arg;
+
+  app->busy = NULL;
+  if (!app->drawn &&
+      (app->state == HOST_OPENING || app->state == HOST_OPEN))
+    {
+      app_opening(app->host->ui, app);
+    }
+}
+
+/* No Open since the app was started: stopped, its Busy off */
+
+static void host_open_due(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct host_app_s *app = arg;
+  FAR struct host_s *h = app->host;
+
+  app->due = NULL;
+  if (app->state == HOST_OPENING && !app->connected)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_WARNING, "app %s did not open",
+               app->id);
+      host_stop_task(h, app->id);
+      host_forget(app);
+    }
+}
+
+/* Take an app off, ending its stream with a status */
+
+static void host_drop(FAR struct host_app_s *app, int status)
+{
+  FAR struct host_s *h = app->host;
+
+  if (app->state == HOST_FREE)
     {
       return;
     }
 
-  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s %s", h->app.id,
+  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s %s", app->id,
            status == PNUT_STATUS_ENDED ? "left" :
            status == PNUT_STATUS_BUSY ? "taken off: events wait" :
            "taken off: an event was not sent");
-  if (h->app.stream.open)
+  if (app->connected && app->stream.open)
     {
-      pnut_stream_end(&h->app.stream, status);
+      pnut_stream_end(&app->stream, status);
     }
 
-  host_forget(h);
+  host_forget(app);
 }
 
 static void host_retry(FAR struct pnut_loop_s *loop,
                        FAR struct pnut_timer_s *timer, FAR void *arg)
 {
   FAR struct host_s *h = arg;
+  int i;
 
   h->retry = NULL;
-  host_flush(h);
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      host_flush(&h->slots[i]);
+    }
 }
 
 /* Send what waits, as credit allows */
 
-static void host_flush(FAR struct host_s *h)
+static void host_flush(FAR struct host_app_s *app)
 {
+  FAR struct host_s *h = app->host;
   int ret;
 
-  while (h->app.used && h->app.count > 0)
+  while (app->connected && app->count > 0)
     {
-      ret = pnut_ui_open_push(&h->server, &h->app.stream,
-                              &h->app.queue[h->app.head]);
+      ret = pnut_ui_open_push(&h->server, &app->stream,
+                              &app->queue[app->head]);
       if (ret == -EAGAIN)
         {
           return;                 /* No credit: ready comes with it */
@@ -125,12 +266,12 @@ static void host_flush(FAR struct host_s *h)
            * nothing; an event that does not encode ends it
            */
 
-          host_drop(h, PNUT_STATUS_INTERNAL);
+          host_drop(app, PNUT_STATUS_INTERNAL);
           return;
         }
 
-      h->app.head = (h->app.head + 1) % HOST_EVENTS;
-      h->app.count--;
+      app->head = (app->head + 1) % HOST_EVENTS;
+      app->count--;
     }
 }
 
@@ -144,12 +285,13 @@ static void host_ready(FAR struct pnut_stream_s *stream, FAR void *arg)
 static void host_closed(FAR struct pnut_stream_s *stream, int status,
                         FAR void *arg)
 {
-  FAR struct host_s *h = arg;
+  FAR struct host_app_s *app = arg;
 
-  if (h->app.used)
+  if (app->state != HOST_FREE)
     {
-      pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s gone", h->app.id);
-      host_forget(h);
+      pnut_log(&app->host->ui->module, PNUT_LOG_INFO, "app %s gone",
+               app->id);
+      host_forget(app);
     }
 }
 
@@ -159,6 +301,67 @@ static void host_refuse(FAR struct host_s *h, int status, uint32_t code,
   pnut_ui_fail(&h->server, &h->asked, status, code, why);
 }
 
+/* The app becomes the open one: the one open before is kept warm, its
+ * screen off
+ */
+
+static void host_bring(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+  int i;
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      if (&h->slots[i] != app && h->slots[i].state == HOST_OPEN)
+        {
+          h->slots[i].state = HOST_WARM;
+          app_gone(h->ui);
+        }
+    }
+
+  app->state = HOST_OPEN;
+  app->order = ++h->orders;
+}
+
+static void host_welcome(FAR struct host_app_s *app)
+{
+  pnut_ui_event_t ev;
+
+  memset(&ev, 0, sizeof(ev));
+  ev.which_kind = PNUT_UI_EVENT_WELCOME_TAG;
+  ev.kind.welcome.level = HOST_LEVEL;
+  ev.kind.welcome.display = PNUT_UI_WELCOME_DISPLAY_EPAPER;
+  ev.kind.welcome.rows_per_page = HOST_ROWS_PAGE;
+  ev.kind.welcome.rows_kept = HOST_ROWS_KEPT;
+
+  /* The owner's language and region come with Languages (#88) */
+
+  ev.kind.welcome.languages_count = 1;
+  strlcpy(ev.kind.welcome.languages[0], "en",
+          sizeof(ev.kind.welcome.languages[0]));
+  ev.kind.welcome.clock24 = true;
+  ev.kind.welcome.reason = PNUT_UI_WELCOME_REASON_OPENED;
+  host_event_to(app, &ev);
+}
+
+/* Accept the Open asked into an app's slot: its stream open */
+
+static int host_accept(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+  int ret;
+
+  ret = pnut_ui_open_accept(&h->server, &h->asked, &app->stream,
+                            host_ready, host_closed, app);
+  if (ret < 0)
+    {
+      return ret;                 /* It went meanwhile */
+    }
+
+  app->connected = true;
+  return 0;
+}
+
 /* Who answered: the app is named, or refused */
 
 static void host_who(FAR struct pnut_services_client_s *client, int status,
@@ -166,8 +369,11 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
                      FAR const pnut_error_t *err, FAR void *arg)
 {
   FAR struct host_s *h = arg;
-  FAR struct host_app_s *app = &h->app;
+  FAR struct host_app_s *app;
+  struct manifest_s manifest;
   pnut_ui_event_t ev;
+  char id[MANIFEST_ID_MAX + 1];
+  bool shell = false;
   int ret;
 
   if (!h->asking)
@@ -190,7 +396,6 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
       return;
     }
 
-  memset(app, 0, sizeof(*app));
   if (out->name[0] != '\0')
     {
       /* A service's: its name is the app's id, and it has a manifest.  A
@@ -198,8 +403,8 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
        * nor a manifest, and is refused.
        */
 
-      strlcpy(app->id, out->name, sizeof(app->id));
-      ret = manifest_load(h->apps, app->id, &app->manifest);
+      strlcpy(id, out->name, sizeof(id));
+      ret = manifest_load(h->apps, id, &manifest);
       if (ret == -ENOENT || ret == -EINVAL)
         {
           host_refuse(h, PNUT_STATUS_DENIED, PNUT_UI_ERROR_CODE_NOT_AN_APP,
@@ -226,12 +431,12 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
           return;
         }
 
-      strlcpy(app->id, h->claimed, sizeof(app->id));
-      app->shell = true;
-      ret = manifest_load(h->apps, app->id, &app->manifest);
+      strlcpy(id, h->claimed, sizeof(id));
+      shell = true;
+      ret = manifest_load(h->apps, id, &manifest);
       if (ret == -ENOENT)
         {
-          manifest_any(&app->manifest);
+          manifest_any(&manifest);
         }
       else if (ret == -EINVAL)
         {
@@ -253,33 +458,68 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
       return;
     }
 
-  ret = pnut_ui_open_accept(&h->server, &h->asked, &app->stream,
-                            host_ready, host_closed, h);
-  if (ret < 0)
+  /* A native app the system UI started is opening; any other task of a
+   * native app is told to stop (RFC 0037: after the system UI's own
+   * restart, an app's Open is answered with Stop); a shell's program
+   * opens as it comes
+   */
+
+  app = host_find(h, id);
+  if (!shell && (app == NULL || app->state != HOST_OPENING))
     {
-      memset(app, 0, sizeof(*app));
-      return;                     /* It went meanwhile */
+      app = host_free_slot(h);
+      if (app == NULL || host_accept(app) < 0)
+        {
+          host_refuse(h, PNUT_STATUS_BUSY, PNUT_UI_ERROR_CODE_ANOTHER_APP,
+                      "no room for another app");
+          return;
+        }
+
+      app->state = HOST_STOPPING;
+      strlcpy(app->id, id, sizeof(app->id));
+      pnut_log(&h->ui->module, PNUT_LOG_INFO,
+               "app %s not started here: told to stop", id);
+      memset(&ev, 0, sizeof(ev));
+      ev.which_kind = PNUT_UI_EVENT_STOP_TAG;
+      host_event_to(app, &ev);
+      return;
     }
 
-  app->used = true;
+  if (shell)
+    {
+      app = app != NULL ? NULL : host_free_slot(h);
+      if (app == NULL)
+        {
+          host_refuse(h, PNUT_STATUS_BUSY, PNUT_UI_ERROR_CODE_ANOTHER_APP,
+                      "another app is open");
+          return;
+        }
+    }
+
+  if (host_accept(app) < 0)
+    {
+      if (!shell)
+        {
+          host_stop_task(h, app->id);
+          host_forget(app);
+        }
+
+      return;
+    }
+
+  if (app->due != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->due);
+      app->due = NULL;
+    }
+
+  strlcpy(app->id, id, sizeof(app->id));
+  app->manifest = manifest;
+  app->shell = shell;
+  host_bring(app);
   pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s opened%s", app->id,
-           app->shell ? " from the developer's shell" : "");
-
-  memset(&ev, 0, sizeof(ev));
-  ev.which_kind = PNUT_UI_EVENT_WELCOME_TAG;
-  ev.kind.welcome.level = HOST_LEVEL;
-  ev.kind.welcome.display = PNUT_UI_WELCOME_DISPLAY_EPAPER;
-  ev.kind.welcome.rows_per_page = HOST_ROWS_PAGE;
-  ev.kind.welcome.rows_kept = HOST_ROWS_KEPT;
-
-  /* The owner's language and region come with Languages (#88) */
-
-  ev.kind.welcome.languages_count = 1;
-  strlcpy(ev.kind.welcome.languages[0], "en",
-          sizeof(ev.kind.welcome.languages[0]));
-  ev.kind.welcome.clock24 = true;
-  ev.kind.welcome.reason = PNUT_UI_WELCOME_REASON_OPENED;
-  host_event(h, &ev);
+           shell ? " from the developer's shell" : "");
+  host_welcome(app);
 }
 
 static void host_open_app(FAR struct pnut_ui_server_s *server,
@@ -291,15 +531,12 @@ static void host_open_app(FAR struct pnut_ui_server_s *server,
   pnut_services_who_request_t who;
   int ret;
 
-  /* One app at a time; one being named (Who answers within HOST_WHO_MS)
-   * counts
-   */
+  /* One Open named at a time (Who answers within its time) */
 
-  if (h->asking || h->app.used)
+  if (h->asking)
     {
       pnut_ui_fail(server, req, PNUT_STATUS_BUSY,
-                   PNUT_UI_ERROR_CODE_ANOTHER_APP,
-                   h->asking ? "an app is opening" : "another app is open");
+                   PNUT_UI_ERROR_CODE_ANOTHER_APP, "an app is opening");
       return;
     }
 
@@ -309,7 +546,8 @@ static void host_open_app(FAR struct pnut_ui_server_s *server,
 
   memset(&who, 0, sizeof(who));
   who.pid = req->pid;
-  ret = pnut_services_who(&h->services, &who, HOST_WHO_MS, host_who, h);
+  ret = pnut_services_who(&h->services, &who, h->ui->config.times.who,
+                          host_who, h);
   if (ret < 0)
     {
       h->asking = false;
@@ -375,17 +613,35 @@ static void host_answer(FAR struct pnut_ui_server_s *server,
     }
 }
 
+/* The open app's, a request that draws; another's is refused */
+
+static FAR struct host_app_s *
+host_open_from(FAR struct pnut_ui_server_s *server,
+               FAR const struct pnut_request_s *req, FAR struct host_s *h)
+{
+  FAR struct host_app_s *app = host_from(h, req);
+
+  if (app == NULL || app->state != HOST_OPEN)
+    {
+      pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
+                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not the open app");
+      return NULL;
+    }
+
+  return app;
+}
+
 static void host_show(FAR struct pnut_ui_server_s *server,
                       FAR const struct pnut_request_s *req,
                       FAR const pnut_ui_show_request_t *in, FAR void *arg)
 {
   FAR struct host_s *h = arg;
+  FAR struct host_app_s *app = host_open_from(server, req, h);
   int tmpl;
+  int ret;
 
-  if (!host_from_app(h, req))
+  if (app == NULL)
     {
-      pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
-                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not the open app");
       return;
     }
 
@@ -397,7 +653,7 @@ static void host_show(FAR struct pnut_ui_server_s *server,
       return;
     }
 
-  if (!manifest_allows(&h->app.manifest, tmpl))
+  if (!manifest_allows(&app->manifest, tmpl))
     {
       pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
                    PNUT_UI_ERROR_CODE_NOT_LISTED,
@@ -405,7 +661,18 @@ static void host_show(FAR struct pnut_ui_server_s *server,
       return;
     }
 
-  host_answer(server, req, pnut_ui_show_reply, app_show(h->ui, in));
+  ret = app_show(h->ui, in);
+  if (ret == 0 && !in->sheet)
+    {
+      app->drawn = true;
+      if (app->busy != NULL)
+        {
+          pnut_timer_cancel(h->loop, app->busy);
+          app->busy = NULL;
+        }
+    }
+
+  host_answer(server, req, pnut_ui_show_reply, ret);
 }
 
 static void host_update(FAR struct pnut_ui_server_s *server,
@@ -415,14 +682,11 @@ static void host_update(FAR struct pnut_ui_server_s *server,
 {
   FAR struct host_s *h = arg;
 
-  if (!host_from_app(h, req))
+  if (host_open_from(server, req, h) != NULL)
     {
-      pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
-                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not the open app");
-      return;
+      host_answer(server, req, pnut_ui_update_reply,
+                  app_update(h->ui, in));
     }
-
-  host_answer(server, req, pnut_ui_update_reply, app_update(h->ui, in));
 }
 
 static void host_rows(FAR struct pnut_ui_server_s *server,
@@ -431,15 +695,13 @@ static void host_rows(FAR struct pnut_ui_server_s *server,
 {
   FAR struct host_s *h = arg;
 
-  if (!host_from_app(h, req))
+  if (host_open_from(server, req, h) != NULL)
     {
-      pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
-                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not the open app");
-      return;
+      host_answer(server, req, pnut_ui_rows_reply, app_rows(h->ui, in));
     }
-
-  host_answer(server, req, pnut_ui_rows_reply, app_rows(h->ui, in));
 }
+
+/* Any app connected may leave: the open one's screen goes with it */
 
 static void host_leave(FAR struct pnut_ui_server_s *server,
                        FAR const struct pnut_request_s *req,
@@ -447,15 +709,16 @@ static void host_leave(FAR struct pnut_ui_server_s *server,
                        FAR void *arg)
 {
   FAR struct host_s *h = arg;
+  FAR struct host_app_s *app = host_from(h, req);
 
-  if (!host_from_app(h, req))
+  if (app == NULL)
     {
       pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
-                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not the open app");
+                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not an app's");
       return;
     }
 
-  host_drop(h, PNUT_STATUS_ENDED);
+  host_drop(app, PNUT_STATUS_ENDED);
   host_answer(server, req, pnut_ui_leave_reply, 0);
 }
 
@@ -468,6 +731,42 @@ static const struct pnut_ui_handlers_s g_host_handlers =
   .leave  = host_leave
 };
 
+/* Service states answered a Start: a failure frees the app's slot */
+
+/* Service states answered a Start, which may be late (it answers when
+ * NxInit does): a failure frees the slot of the app it started, found by
+ * its Start's number, if still opening and not connected
+ */
+
+static void host_started(FAR struct pnut_services_client_s *client,
+                         int status, FAR const pnut_services_reply_t *out,
+                         FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct host_s *h = (FAR struct host_s *)
+    ((FAR char *)client - offsetof(struct host_s, services));
+  uint32_t start = (uint32_t)(uintptr_t)arg;
+  FAR struct host_app_s *app;
+  int i;
+
+  if (status == PNUT_STATUS_OK)
+    {
+      return;
+    }
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      app = &h->slots[i];
+      if (app->start == start && app->state == HOST_OPENING &&
+          !app->connected)
+        {
+          pnut_log(&h->ui->module, PNUT_LOG_WARNING,
+                   "app %s not started: %d", app->id, status);
+          host_forget(app);
+          return;
+        }
+    }
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -477,11 +776,16 @@ int host_open(FAR struct host_s *h, FAR struct ui_s *ui,
               FAR const char *services)
 {
   int ret;
+  int i;
 
   memset(h, 0, sizeof(*h));
   h->ui   = ui;
   h->loop = loop;
   h->apps = apps;
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      h->slots[i].host = h;
+    }
 
   ret = pnut_services_connect(loop, services, NULL, NULL, &h->services);
   if (ret < 0)
@@ -505,14 +809,27 @@ int host_open(FAR struct host_s *h, FAR struct ui_s *ui,
 
 void host_close(FAR struct host_s *h)
 {
-  if (h->app.used)
+  int i;
+
+  if (h->retry != NULL)
     {
-      if (h->app.stream.open)
+      pnut_timer_cancel(h->loop, h->retry);
+      h->retry = NULL;
+    }
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      FAR struct host_app_s *app = &h->slots[i];
+
+      if (app->connected && app->stream.open)
         {
-          pnut_stream_end(&h->app.stream, PNUT_STATUS_UNAVAILABLE);
+          pnut_stream_end(&app->stream, PNUT_STATUS_UNAVAILABLE);
         }
 
-      host_forget(h);
+      if (app->state != HOST_FREE)
+        {
+          host_forget(app);
+        }
     }
 
   h->asking = false;
@@ -529,28 +846,198 @@ void host_close(FAR struct host_s *h)
     }
 }
 
-int host_event(FAR struct host_s *h, FAR const pnut_ui_event_t *ev)
+int host_start(FAR struct host_s *h, FAR const char *id)
 {
-  FAR struct host_app_s *app = &h->app;
+  FAR struct host_app_s *found = NULL;
+  FAR struct host_app_s *app;
+  struct manifest_s manifest;
+  pnut_services_name_request_t in;
+  pnut_ui_event_t ev;
+  bool stopping = false;
+  int ret;
+  int i;
 
-  if (!app->used)
+  if (!manifest_good_id(id))
+    {
+      return -EINVAL;
+    }
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      app = &h->slots[i];
+      if (app->state != HOST_FREE && strcmp(app->id, id) == 0)
+        {
+          if (app->state == HOST_STOPPING)
+            {
+              stopping = true;
+            }
+          else
+            {
+              found = app;
+            }
+        }
+    }
+
+  if (found != NULL && found->state != HOST_WARM)
+    {
+      return 0;                   /* Opening, or open already */
+    }
+
+  if (found == NULL)
+    {
+      if (stopping)
+        {
+          return -EBUSY;          /* Its task still exits */
+        }
+
+      ret = manifest_load(h->apps, id, &manifest);
+      if (ret < 0)
+        {
+          pnut_log(&h->ui->module, PNUT_LOG_WARNING,
+                   "app %s: no manifest: %d", id, ret);
+          return ret;
+        }
+    }
+
+  /* The newer tap wins: an app still opening, nothing drawn since its
+   * start, is cancelled
+   */
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      app = &h->slots[i];
+      if (app != found && !app->shell && !app->drawn &&
+          (app->state == HOST_OPENING || app->state == HOST_OPEN))
+        {
+          host_cancel(app);
+        }
+    }
+
+  /* A warm app is brought back: Shown, which it answers with Show of its
+   * current screen
+   */
+
+  if (found != NULL)
+    {
+      host_bring(found);
+      pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s shown", id);
+      memset(&ev, 0, sizeof(ev));
+      ev.which_kind = PNUT_UI_EVENT_SHOWN_TAG;
+      host_event_to(found, &ev);
+      return 0;
+    }
+
+  app = host_free_slot(h);
+  if (app == NULL)
+    {
+      return -EBUSY;
+    }
+
+  app->state    = HOST_OPENING;
+  app->manifest = manifest;
+  app->start    = ++h->starts;
+  strlcpy(app->id, id, sizeof(app->id));
+
+  memset(&in, 0, sizeof(in));
+  strlcpy(in.name, id, sizeof(in.name));
+  ret = pnut_services_start(&h->services, &in, 0, host_started,
+                            (FAR void *)(uintptr_t)app->start);
+  if (ret >= 0)
+    {
+      ret = pnut_timer_start(h->loop, h->ui->config.times.opening, 0,
+                             host_busy_due, app, &app->busy);
+    }
+
+  if (ret >= 0)
+    {
+      ret = pnut_timer_start(h->loop, h->ui->config.times.open, 0,
+                             host_open_due, app, &app->due);
+    }
+
+  if (ret < 0)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_WARNING, "app %s not started: %d",
+               id, ret);
+      host_stop_task(h, id);
+      host_forget(app);
+      return ret;
+    }
+
+  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s starting", id);
+  return 0;
+}
+
+void host_cancel(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+  pnut_ui_event_t ev;
+
+  if (app->state == HOST_FREE || app->state == HOST_STOPPING)
+    {
+      return;
+    }
+
+  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s cancelled", app->id);
+  if (!app->connected)
+    {
+      host_stop_task(h, app->id);
+      host_forget(app);
+      return;
+    }
+
+  /* It has opened: told to stop, its screen off; its slot is free when
+   * its connection closes
+   */
+
+  app_opening_gone(h->ui, app);
+  if (app->state == HOST_OPEN)
+    {
+      app_gone(h->ui);
+    }
+
+  app->state = HOST_STOPPING;
+  memset(&ev, 0, sizeof(ev));
+  ev.which_kind = PNUT_UI_EVENT_STOP_TAG;
+  host_event_to(app, &ev);
+}
+
+int host_event_to(FAR struct host_app_s *app, FAR const pnut_ui_event_t *ev)
+{
+  if (!app->connected)
     {
       return -ENOTCONN;
     }
 
   if (app->count == HOST_EVENTS)
     {
-      host_drop(h, PNUT_STATUS_BUSY);
+      host_drop(app, PNUT_STATUS_BUSY);
       return -ENOSPC;
     }
 
   app->queue[(app->head + app->count) % HOST_EVENTS] = *ev;
   app->count++;
-  host_flush(h);
+  host_flush(app);
   return 0;
+}
+
+int host_event(FAR struct host_s *h, FAR const pnut_ui_event_t *ev)
+{
+  FAR struct host_app_s *app = host_app(h);
+
+  return app != NULL ? host_event_to(app, ev) : -ENOTCONN;
 }
 
 FAR struct host_app_s *host_app(FAR struct host_s *h)
 {
-  return h->app.used ? &h->app : NULL;
+  int i;
+
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      if (h->slots[i].state == HOST_OPEN)
+        {
+          return &h->slots[i];
+        }
+    }
+
+  return NULL;
 }

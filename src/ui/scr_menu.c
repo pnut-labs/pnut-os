@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 
+#include "app.h"
 #include "apps.h"
 #include "blocks.h"
 #include "keymap.h"
@@ -130,8 +131,7 @@ static void menu_open(FAR struct screen_s *s)
     }
   else
     {
-      ui_push(s->ui, app->settings ? &g_scr_settings : &g_scr_unavailable,
-              app);
+      app_launch(s->ui, app);
     }
 }
 

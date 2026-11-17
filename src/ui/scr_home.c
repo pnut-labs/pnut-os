@@ -16,6 +16,7 @@
  * Included Files
  ****************************************************************************/
 
+#include "app.h"
 #include "apps.h"
 #include "blocks.h"
 #include "describe.h"
@@ -74,8 +75,7 @@ static void home_time(FAR struct screen_s *s)
 
 static void home_open(FAR struct screen_s *s, FAR const struct ui_app_s *app)
 {
-  ui_push(s->ui, app->settings ? &g_scr_settings : &g_scr_unavailable,
-          app);
+  app_launch(s->ui, app);
 }
 
 static void home_build(FAR struct screen_s *s)

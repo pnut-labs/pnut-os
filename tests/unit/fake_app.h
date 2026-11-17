@@ -122,6 +122,27 @@ static FAR struct pnut_publisher_s *g_tel;
 static enum who_e g_who;
 static char g_named[64];
 static int g_whos;
+
+/* Service states' Start and Stop, as the system UI asked them: how many,
+ * and the last name each
+ */
+
+static int g_starts;
+static int g_stops;
+static char g_started[64];
+static char g_stopped[64];
+
+/* The first Start fails after this many ms (0: it succeeds at once), as
+ * Service states answers when NxInit does; the name every manifest gives
+ */
+
+static int g_start_fail_first;
+static struct pnut_request_s g_start_req;
+static FAR const char *g_manifest_name;
+
+/* The apps' timings the UI runs with; all 0: the defaults */
+
+static struct ui_times_s g_times;
 static char g_dir[] = "/tmp/pnut-app-XXXXXX";
 static char g_apps[64];
 static struct app_s g_app;
@@ -183,9 +204,52 @@ static void fake_who(FAR struct pnut_services_server_s *server,
     }
 }
 
+static void fake_start_fail(FAR struct pnut_loop_s *loop,
+                            FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  pnut_services_fail(&g_services, &g_start_req, PNUT_STATUS_UNAVAILABLE,
+                     PNUT_SERVICES_ERROR_CODE_UNKNOWN_SERVICE,
+                     "late failure");
+}
+
+static void fake_start(FAR struct pnut_services_server_s *server,
+                       FAR const struct pnut_request_s *req,
+                       FAR const pnut_services_name_request_t *in,
+                       FAR void *arg)
+{
+  pnut_services_reply_t out;
+
+  g_starts++;
+  strlcpy(g_started, in->name, sizeof(g_started));
+  if (g_start_fail_first > 0 && g_starts == 1)
+    {
+      g_start_req = *req;
+      assert_int_equal(pnut_timer_start(g_loop, g_start_fail_first, 0,
+                                        fake_start_fail, NULL, NULL), 0);
+      return;
+    }
+  memset(&out, 0, sizeof(out));
+  pnut_services_start_reply(server, req, PNUT_STATUS_OK, &out);
+}
+
+static void fake_stop(FAR struct pnut_services_server_s *server,
+                      FAR const struct pnut_request_s *req,
+                      FAR const pnut_services_name_request_t *in,
+                      FAR void *arg)
+{
+  pnut_services_reply_t out;
+
+  g_stops++;
+  strlcpy(g_stopped, in->name, sizeof(g_stopped));
+  memset(&out, 0, sizeof(out));
+  pnut_services_stop_reply(server, req, PNUT_STATUS_OK, &out);
+}
+
 static const struct pnut_services_handlers_s g_fake_services =
 {
-  .who = fake_who
+  .start = fake_start,
+  .stop  = fake_stop,
+  .who   = fake_who
 };
 
 /* A manifest in the apps' folder */
@@ -202,7 +266,7 @@ static void write_manifest(FAR const char *id, FAR const char *icon,
 
   memset(&m, 0, sizeof(m));
   strlcpy(m.icon, icon, sizeof(m.icon));
-  strcpy(m.name, "Notes");
+  strlcpy(m.name, g_manifest_name, sizeof(m.name));
   m.templates_count = ntemplates;
   for (i = 0; i < ntemplates; i++)
     {
@@ -265,13 +329,27 @@ static void app_done(FAR struct pnut_ui_client_s *client, int status,
   app->code = err != NULL ? err->code : 0;
 }
 
-static void app_connect(FAR struct app_s *app)
+/* An app connected, as its task would be once started: one Service
+ * states names is started first, as Menu starts it
+ */
+
+static void app_connect_unstarted(FAR struct app_s *app)
 {
   memset(app, 0, sizeof(*app));
   app->opened = -1;
   app->ended  = -1;
   assert_int_equal(pnut_ui_connect(g_loop, HOST_SERVICE, app_state_changed,
                                    app, &app->client), 0);
+}
+
+static void app_connect(FAR struct app_s *app)
+{
+  if (g_who == WHO_NAMED)
+    {
+      host_start(&g_ui.host, g_named);
+    }
+
+  app_connect_unstarted(app);
 }
 
 static void app_open(FAR struct app_s *app, FAR const char *id,
@@ -462,6 +540,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   uconfig.now      = fake_now;
   uconfig.apps     = g_apps;
   uconfig.services = "services";
+  uconfig.times    = g_times;
   ui_init(&g_ui, &uconfig);
   assert_int_equal(pnut_module_add(g_loop, &g_ui.module), 0);
   assert_int_equal(pnut_module_add(g_loop, &g_input.module), 0);
@@ -491,6 +570,13 @@ static int fake_setup(void **state)
   g_who = WHO_NAMED;
   strcpy(g_named, FAKE_NOTES);
   g_whos = 0;
+  g_starts = 0;
+  g_stops = 0;
+  g_started[0] = '\0';
+  g_stopped[0] = '\0';
+  memset(&g_times, 0, sizeof(g_times));
+  g_start_fail_first = 0;
+  g_manifest_name = "Notes";
   memset(&g_app, 0, sizeof(g_app));
   memset(&g_app2, 0, sizeof(g_app2));
   return 0;

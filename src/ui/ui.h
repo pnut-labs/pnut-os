@@ -47,6 +47,20 @@
  * once; the long one (a line of up to 192 bytes)
  */
 
+/* The apps' timings (RFC 0037), in milliseconds, the defaults of
+ * struct ui_times_s
+ */
+
+#define UI_TIME_WHO       1000    /* Service states names an app */
+#define UI_TIME_OPENING   700     /* Nothing drawn, then "Opening" */
+#define UI_TIME_OPEN      10000   /* Open after a Start */
+#define UI_TIME_BUSY      3000    /* An answer owed, then Busy */
+#define UI_TIME_HUNG      10000   /* ... then "isn't responding" */
+#define UI_TIME_STALL     3000    /* Events that cannot be sent */
+#define UI_TIME_STOP      3000    /* Stop's deadline (RFC 0008) */
+#define UI_TIME_GATHER    1000    /* Updates nobody's key caused */
+#define UI_TIME_SPACING   2000    /* ... drawn at most this often */
+
 #define UI_TEXTS       4
 #define UI_TEXT_MAX    (64 * 4 + 1)
 #define UI_TEXT_LONG   (192 * 4 + 1)
@@ -63,6 +77,23 @@
 /****************************************************************************
  * Public Types
  ****************************************************************************/
+
+/* The apps' timings, in milliseconds (the UI_TIME_ defaults, which the
+ * tests shorten)
+ */
+
+struct ui_times_s
+{
+  uint32_t who;
+  uint32_t opening;
+  uint32_t open;
+  uint32_t busy;
+  uint32_t hung;
+  uint32_t stall;
+  uint32_t stop;
+  uint32_t gather;
+  uint32_t spacing;
+};
 
 struct ui_config_s
 {
@@ -95,6 +126,10 @@ struct ui_config_s
 
   FAR const char *apps;
   FAR const char *services;
+
+  /* The apps' timings; all 0: the defaults */
+
+  struct ui_times_s times;
 };
 
 /* The system UI (RFC 0019): its screens, on LVGL, on the program's loop.
@@ -198,12 +233,17 @@ extern const struct screen_class_s g_scr_join;
 extern const struct screen_class_s g_scr_cell;
 extern const struct screen_class_s g_scr_pin;
 extern const struct screen_class_s g_scr_app;     /* An app's (app.c) */
+extern const struct screen_class_s g_scr_opening; /* scr_opening.c */
 
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
 
 void ui_init(FAR struct ui_s *ui, FAR const struct ui_config_s *config);
+
+/* The UI_TIME_ defaults */
+
+void ui_times_default(FAR struct ui_times_s *t);
 
 /* Open a screen on top of the stack, with what it shows; take it off (not
  * Home)

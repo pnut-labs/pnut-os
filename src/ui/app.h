@@ -22,6 +22,9 @@
  ****************************************************************************/
 
 struct ui_s;
+struct host_app_s;
+struct screen_s;
+struct ui_app_s;
 
 /* The open app's screens (RFC 0037), as host.c hands them over once it
  * has checked who sends them.  0, or -EINVAL for a description that does
@@ -36,5 +39,20 @@ int app_rows(FAR struct ui_s *ui, FAR const pnut_ui_rows_request_t *in);
 /* The app is gone: its screen and its sheet off */
 
 void app_gone(FAR struct ui_s *ui);
+
+/* The UI's Busy while an app opens (scr_opening.c): drawn, taken off, and
+ * found (any app's for NULL)
+ */
+
+void app_opening(FAR struct ui_s *ui, FAR struct host_app_s *app);
+void app_opening_gone(FAR struct ui_s *ui, FAR const struct host_app_s *app);
+FAR struct screen_s *app_opening_screen(FAR struct ui_s *ui,
+                                        FAR const struct host_app_s *app);
+
+/* Open an app of Menu or Home: Settings, a native app (started through
+ * Service states), or the placeholder of one that is not there yet
+ */
+
+void app_launch(FAR struct ui_s *ui, FAR const struct ui_app_s *a);
 
 #endif /* __PNUT_OS_UI_APP_H */

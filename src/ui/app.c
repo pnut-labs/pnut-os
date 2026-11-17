@@ -24,6 +24,7 @@
 #include <pnut/log.h>
 
 #include "app.h"
+#include "apps.h"
 #include "apptpl.h"
 #include "blocks.h"
 #include "describe.h"
@@ -624,11 +625,17 @@ int app_show(FAR struct ui_s *ui, FAR const pnut_ui_show_request_t *in)
       return -EINVAL;
     }
 
-  /* The first screen goes on top; beneath the SIM PIN, which is the
-   * system's (RFC 0037, layer 5)
+  /* The first screen goes on top, or in place of the UI's Busy while
+   * the app opened; beneath the SIM PIN, which is the system's (RFC 0037,
+   * layer 5)
    */
 
   s = app_screen(ui);
+  if (s == NULL)
+    {
+      s = app_opening_screen(ui, host_app(&ui->host));
+    }
+
   if (s != NULL)
     {
       ret = ui_replace(ui, s, &g_scr_app, in);
@@ -734,6 +741,32 @@ int app_rows(FAR struct ui_s *ui, FAR const pnut_ui_rows_request_t *in)
     }
 
   return 0;                       /* Not the screen's: dropped */
+}
+
+void app_launch(FAR struct ui_s *ui, FAR const struct ui_app_s *a)
+{
+  int ret;
+
+  if (a->settings)
+    {
+      ui_push(ui, &g_scr_settings, a);
+    }
+  else if (a->id == NULL)
+    {
+      ui_push(ui, &g_scr_unavailable, a);
+    }
+  else
+    {
+      /* With no room, or while the app stops, the press does nothing;
+       * with no manifest, the app is not there
+       */
+
+      ret = host_start(&ui->host, a->id);
+      if (ret == -ENOENT || ret == -EINVAL)
+        {
+          ui_push(ui, &g_scr_unavailable, a);
+        }
+    }
 }
 
 void app_gone(FAR struct ui_s *ui)

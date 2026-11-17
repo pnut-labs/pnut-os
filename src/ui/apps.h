@@ -34,7 +34,8 @@
 struct ui_folder_s;
 
 /* An app of the system, as Menu shows it: the native apps that will ship
- * with it.  So far only Settings opens; the others are placeholders.
+ * with it.  Settings is the system UI's; a native app has its id (its
+ * service's name, RFC 0037); the others are placeholders.
  */
 
 struct ui_app_s
@@ -43,6 +44,7 @@ struct ui_app_s
   FAR const char *icon;                 /* icons.h's */
   FAR const struct ui_folder_s *folder; /* A folder: its apps */
   bool settings;                        /* Settings itself */
+  FAR const char *id;                   /* A native app's: its id */
 };
 
 struct ui_folder_s
