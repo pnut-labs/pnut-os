@@ -48,8 +48,8 @@ endif
 # Keys pressed and the screen read back, with the system UI (RFC 0027)
 
 ifneq ($(CONFIG_PNUT_UI),)
-PROGNAME += keys screen
-MAINSRC  += keys.c screen.c
+PROGNAME += keys screen uidemo
+MAINSRC  += keys.c screen.c uidemo.c
 endif
 
 # The interfaces' code, which libpnut compiles
