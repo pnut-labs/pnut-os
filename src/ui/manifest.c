@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -83,7 +84,7 @@ bool manifest_good_id(FAR const char *id)
 int manifest_load(FAR const char *dir, FAR const char *id,
                   FAR struct manifest_s *m)
 {
-  static uint8_t buf[MANIFEST_SIZE_MAX + 1];
+  FAR uint8_t *buf;
   pnut_app_manifest_t in;
   pb_istream_t stream;
   char path[128];
@@ -111,11 +112,20 @@ int manifest_load(FAR const char *dir, FAR const char *id,
       return -errno;
     }
 
-  /* One byte more than the most taken, to tell a file too long */
+  /* One byte more than the most taken, to tell a file too long; from the
+   * heap, which is external memory, not a static's internal memory
+   */
 
-  while (len < sizeof(buf))
+  buf = malloc(MANIFEST_SIZE_MAX + 1);
+  if (buf == NULL)
     {
-      n = read(fd, buf + len, sizeof(buf) - len);
+      close(fd);
+      return -ENOMEM;
+    }
+
+  while (len < MANIFEST_SIZE_MAX + 1)
+    {
+      n = read(fd, buf + len, MANIFEST_SIZE_MAX + 1 - len);
       if (n < 0)
         {
           if (errno == EINTR)
@@ -136,21 +146,25 @@ int manifest_load(FAR const char *dir, FAR const char *id,
     }
 
   close(fd);
+  if (ret == 0 && len > MANIFEST_SIZE_MAX)
+    {
+      ret = -EINVAL;
+    }
+
+  if (ret == 0)
+    {
+      memset(&in, 0, sizeof(in));
+      stream = pb_istream_from_buffer(buf, len);
+      if (!pb_decode(&stream, PNUT_APP_MANIFEST_FIELDS, &in))
+        {
+          ret = -EINVAL;
+        }
+    }
+
+  free(buf);
   if (ret < 0)
     {
       return ret;
-    }
-
-  if (len > MANIFEST_SIZE_MAX)
-    {
-      return -EINVAL;
-    }
-
-  memset(&in, 0, sizeof(in));
-  stream = pb_istream_from_buffer(buf, len);
-  if (!pb_decode(&stream, PNUT_APP_MANIFEST_FIELDS, &in))
-    {
-      return -EINVAL;
     }
 
   strlcpy(m->icon, in.icon, sizeof(m->icon));

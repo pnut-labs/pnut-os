@@ -42,6 +42,15 @@
 #define UI_DEPTH    8
 #define UI_OPTIONS  8
 
+/* Room for an app's text as drawn, every byte perhaps \xNN (app.c): the
+ * short texts (titles, lines, labels, values, up to 64 bytes), four at
+ * once; the long one (a line of up to 192 bytes)
+ */
+
+#define UI_TEXTS       4
+#define UI_TEXT_MAX    (64 * 4 + 1)
+#define UI_TEXT_LONG   (192 * 4 + 1)
+
 /* Told to a screen's status() beside status.h's: Wi-Fi's service came
  * (back), its state to read again; and all of it, as a screen comes back
  * on top
@@ -105,6 +114,7 @@ struct ui_options_s
   FAR lv_obj_t *shadow;
   FAR lv_obj_t *catcher;          /* Takes a tap outside them */
   FAR lv_obj_t *rows[UI_OPTIONS];
+  char letters[UI_OPTIONS];       /* An option's command letter, or 0 */
   uint8_t count;
   uint8_t focus;
 };
@@ -127,6 +137,13 @@ struct ui_s
   bool pin_skipped;               /* Skipped until the SIM asks anew */
   struct host_s host;             /* Apps' connections */
   bool host_open;
+
+  /* An app's text as drawn: a template draws from these, one screen at a
+   * time, and its labels keep their own copies
+   */
+
+  char texts[UI_TEXTS][UI_TEXT_MAX];
+  char text_long[UI_TEXT_LONG];
   struct pnut_board_client_s board;
   FAR struct pnut_timer_s *retry; /* Asking Board again, once */
   bool board_open;
@@ -180,6 +197,7 @@ extern const struct screen_class_s g_scr_wifi;
 extern const struct screen_class_s g_scr_join;
 extern const struct screen_class_s g_scr_cell;
 extern const struct screen_class_s g_scr_pin;
+extern const struct screen_class_s g_scr_app;     /* An app's (app.c) */
 
 /****************************************************************************
  * Public Function Prototypes
@@ -196,6 +214,23 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
 void ui_pop(FAR struct ui_s *ui);
 FAR struct screen_s *ui_top(FAR struct ui_s *ui);
 
+/* A screen of the stack replaced, in its place, by a new one of a class
+ * (shown if it is on top); a screen taken off wherever it is (not Home).
+ * -ENOENT for a screen not on the stack.
+ */
+
+int ui_replace(FAR struct ui_s *ui, FAR struct screen_s *old,
+               FAR const struct screen_class_s *cls, FAR const void *arg);
+void ui_remove(FAR struct ui_s *ui, FAR struct screen_s *s);
+
+/* A new screen of a class put at an index of the stack, under those
+ * above, and not shown (an app's screen beneath the SIM PIN); at the top,
+ * or past it, it is pushed
+ */
+
+int ui_insert(FAR struct ui_s *ui, int index,
+              FAR const struct screen_class_s *cls, FAR const void *arg);
+
 /* A screen's options, over it (Proto-Options): W and S move, E, Enter and
  * the middle softkey choose, Back, the options' keys and a tap outside
  * close them.  chosen is told the index.
@@ -204,7 +239,21 @@ FAR struct screen_s *ui_top(FAR struct ui_s *ui);
 int ui_options(FAR struct screen_s *s, FAR const char * const *items,
                uint8_t count,
                CODE void (*chosen)(FAR struct screen_s *s, int index));
+
+/* The same, each option with its command letter (lowercase, or 0 for
+ * none), drawn at its right; the letter's key chooses it (RFC 0037)
+ */
+
+int ui_options_lettered(FAR struct screen_s *s,
+                        FAR const char * const *items,
+                        FAR const char *letters, uint8_t count,
+                        CODE void (*chosen)(FAR struct screen_s *s,
+                                            int index));
 bool ui_options_open(FAR struct ui_s *ui);
+
+/* A screen's options closed, nothing chosen (a sheet comes over them) */
+
+void ui_options_shut(FAR struct ui_s *ui, FAR struct screen_s *s);
 
 /* Lay the top screen out after it changed outside its key and tap
  * handlers (an answer, a timer), so that a tap finds its blocks

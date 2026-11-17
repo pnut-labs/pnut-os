@@ -17,6 +17,8 @@
  *   Find held    W S A D steer, Q back, E the primary action, while typing
  *                too (Q leaves the field, its text kept); no cursor yet
  *   F1 F2 F3     the function keys: options, primary action, back
+ *   A letter     another, a command letter, lowercase (RFC 0037): the
+ *                options open choose by it
  *
  * The driver gives characters as printed, its layers already applied, and
  * reports Shift and Alt while they are in effect (RFC 0024); the letters
@@ -183,6 +185,14 @@ void keymap_key(FAR struct keymap_state_s *s, uint32_t code, bool special,
   else
     {
       keymap_steer(s, lower, out);
+
+      /* Another letter: a command letter of the options open (RFC 0037) */
+
+      if (out->action == UI_ACT_NONE && lower >= 'a' && lower <= 'z')
+        {
+          out->action = UI_ACT_CHAR;
+          out->ch     = lower;
+        }
     }
 }
 

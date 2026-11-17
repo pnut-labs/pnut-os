@@ -60,8 +60,8 @@ int main(int argc, FAR char *argv[])
   struct input_config_s iconfig;
   struct ui_config_s uconfig;
   FAR struct pnut_loop_s *loop;
-  static struct input_s input;
-  static struct ui_s ui;
+  FAR struct input_s *input;
+  FAR struct ui_s *ui;
   int ret;
 
   pnut_loop_defaults(&config);
@@ -71,32 +71,48 @@ int main(int argc, FAR char *argv[])
   config.jobs    = 0;
   config.budget  = UI_BUDGET_MS;
 
+  /* The program's state is large (the apps' requests among it): from the
+   * heap, in external memory, not in the internal memory statics take
+   */
+
+  ui    = calloc(1, sizeof(*ui));
+  input = calloc(1, sizeof(*input));
+  if (ui == NULL || input == NULL)
+    {
+      fprintf(stderr, "pnut_ui: no memory\n");
+      free(ui);
+      free(input);
+      return EXIT_FAILURE;
+    }
+
   ret = pnut_loop_create(&config, &loop);
   if (ret < 0)
     {
       fprintf(stderr, "pnut_ui: no loop: %d\n", ret);
+      free(ui);
+      free(input);
       return EXIT_FAILURE;
     }
 
   memset(&iconfig, 0, sizeof(iconfig));
-  iconfig.display = &ui.display;
-  input_init(&input, &iconfig);
+  iconfig.display = &ui->display;
+  input_init(input, &iconfig);
 
   memset(&uconfig, 0, sizeof(uconfig));
   uconfig.board       = UI_BOARD;
-  uconfig.input       = &input;
+  uconfig.input       = input;
   uconfig.open_screen = fb_open;
   uconfig.open_input  = input_dev_open;
   uconfig.apps        = UI_APPS;
   uconfig.services    = UI_SERVICES;
-  ui_init(&ui, &uconfig);
+  ui_init(ui, &uconfig);
 
   /* The UI first: it starts LVGL, which Input's devices belong to */
 
-  ret = pnut_module_add(loop, &ui.module);
+  ret = pnut_module_add(loop, &ui->module);
   if (ret >= 0)
     {
-      ret = pnut_module_add(loop, &input.module);
+      ret = pnut_module_add(loop, &input->module);
     }
 
   if (ret >= 0)
@@ -105,5 +121,7 @@ int main(int argc, FAR char *argv[])
     }
 
   pnut_loop_destroy(loop);
+  free(input);
+  free(ui);
   return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }

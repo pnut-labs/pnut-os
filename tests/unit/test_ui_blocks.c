@@ -335,6 +335,78 @@ static void test_blocks_rows(void **state)
   lv_deinit();
 }
 
+/* An app's row (Cat-Rows): initials or an icon as its lead, the title
+ * bold while unread whatever the focus, the value at the right in the
+ * meta's small mono, the trailer
+ */
+
+static void test_blocks_app_row(void **state)
+{
+  lv_obj_t *scr = start();
+  lv_obj_t *row;
+  lv_obj_t *lead;
+  lv_obj_t *value;
+  lv_obj_t *trailer;
+
+  row = block_app_row(scr, 3);
+  block_app_row_set(row, "OL", true, "Ola", "Are we still on for Thursday?",
+                    "13:52", true, BLOCK_TRAILER_NONE);
+  lead    = lv_obj_get_child(row, 0);
+  value   = lv_obj_get_child(row, 2);
+  trailer = lv_obj_get_child(row, 3);
+
+  assert_string_equal(lv_label_get_text(lead), "OL");
+  assert_ptr_equal(lv_obj_get_style_text_font(lead, 0), &g_ui_mono_bold_11);
+  assert_ptr_equal(lv_obj_get_style_text_font(block_row_title(row), 0),
+                   &g_ui_sans_bold_14);
+  assert_string_equal(lv_label_get_text(value), "13:52");
+  assert_ptr_equal(lv_obj_get_style_text_font(value, 0),
+                   &g_ui_mono_bold_10);
+  assert_true(lv_obj_has_flag(trailer, LV_OBJ_FLAG_HIDDEN));
+
+  /* Unread stays bold as the focus comes and goes; read is bold only
+   * while focused
+   */
+
+  block_focus(row, true);
+  block_focus(row, false);
+  assert_ptr_equal(lv_obj_get_style_text_font(block_row_title(row), 0),
+                   &g_ui_sans_bold_14);
+
+  block_app_row_set(row, UI_ICON_NOTES, false, "Shopping", NULL, "", false,
+                    BLOCK_TRAILER_CHEVRON);
+  assert_ptr_equal(lv_obj_get_style_text_font(lead, 0), &g_ui_icons_18);
+  assert_ptr_equal(lv_obj_get_style_text_font(block_row_title(row), 0),
+                   &g_ui_sans_14);
+  block_focus(row, true);
+  assert_ptr_equal(lv_obj_get_style_text_font(block_row_title(row), 0),
+                   &g_ui_sans_bold_14);
+  block_focus(row, false);
+  assert_ptr_equal(lv_obj_get_style_text_font(block_row_title(row), 0),
+                   &g_ui_sans_14);
+  assert_false(lv_obj_has_flag(trailer, LV_OBJ_FLAG_HIDDEN));
+  assert_string_equal(lv_label_get_text(trailer), UI_ICON_CHEVRON_RIGHT);
+  assert_true(lv_obj_has_flag(lv_obj_get_child(lv_obj_get_child(row, 1), 1),
+                              LV_OBJ_FLAG_HIDDEN));
+
+  /* No lead: none shown; a switch's trailer */
+
+  block_app_row_set(row, NULL, false, "Relay", NULL, NULL, false,
+                    BLOCK_TRAILER_ON);
+  assert_true(lv_obj_has_flag(lead, LV_OBJ_FLAG_HIDDEN));
+  assert_string_equal(lv_label_get_text(trailer), "On");
+  block_app_row_set(row, NULL, false, "Relay", NULL, NULL, false,
+                    BLOCK_TRAILER_OFF);
+  assert_string_equal(lv_label_get_text(trailer), "Off");
+
+  /* A tap: its id */
+
+  lv_obj_send_event(row, LV_EVENT_CLICKED, NULL);
+  assert_int_equal(g_nids, 1);
+  assert_int_equal(g_ids[0], 3);
+  lv_deinit();
+}
+
 static void test_blocks_list(void **state)
 {
   struct list_s l;
@@ -386,6 +458,7 @@ int main(void)
     cmocka_unit_test(test_blocks_header_same),
     cmocka_unit_test(test_blocks_field),
     cmocka_unit_test(test_blocks_rows),
+    cmocka_unit_test(test_blocks_app_row),
     cmocka_unit_test(test_blocks_list),
     cmocka_unit_test(test_blocks_softkeys_tapped),
   };

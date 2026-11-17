@@ -16,99 +16,24 @@
  * Included Files
  ****************************************************************************/
 
-#include <errno.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
 
 #include <cmocka.h>
 
-#include <pb_encode.h>
-
-#include <pnut/loop.h>
-#include <pnut/msg.h>
-#include <pnut/timer.h>
-
-#include "pnut/manifest.pb.h"
-#include "pnut/services.pnut.h"
-#include "pnut/ui.pnut.h"
-
-#include "host.h"
-#include "input.h"
-#include "ui.h"
+#include "fake_app.h"
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define WIDTH    240
-#define HEIGHT   320
-#define STRIDE   (WIDTH / 8)
-
-#define NOTES    "org.example.notes"
-#define EVENTS   40
-
-/****************************************************************************
- * Private Types
- ****************************************************************************/
-
-struct step_s
-{
-  uint32_t at;
-  CODE void (*run)(void);
-};
-
-/* What Service states answers Who: a service's name, the developer's
- * shell, not found, or nothing
- */
-
-enum who_e
-{
-  WHO_NAMED,
-  WHO_SHELL,
-  WHO_NOTFOUND,
-  WHO_SILENT
-};
-
-/* A fake app's connection, and what it saw */
-
-struct app_s
-{
-  struct pnut_ui_client_s client;
-  bool connected;
-  bool up;
-  uint16_t stream;
-  int opened;                     /* Open's status, or -1 before */
-  uint32_t code;                  /* The last error's UiError code */
-  int ended;                      /* The stream's end status, or -1 */
-  pnut_ui_event_t events[EVENTS];
-  int nevents;
-  int replies;
-  int status;                     /* The last answer's */
-};
+#define NOTES    FAKE_NOTES
 
 /****************************************************************************
  * Private Data
  ****************************************************************************/
 
-static uint8_t g_frame[STRIDE * HEIGHT];
-static struct ui_s g_ui;
-static struct input_s g_input;
-static FAR struct pnut_loop_s *g_loop;
-static struct pnut_services_server_s g_services;
-static enum who_e g_who;
-static char g_named[64];
-static int g_whos;
-static char g_dir[] = "/tmp/pnut-host-XXXXXX";
-static char g_apps[64];
-static struct app_s g_app;
-static struct app_s g_app2;
 static uint8_t g_depth;
 
 /* The host's state, kept by a step while the loop runs: once it stops,
@@ -124,161 +49,9 @@ static bool g_depth_kept;
  * Private Functions
  ****************************************************************************/
 
-static int fake_update(FAR void *arg, int16_t x, int16_t y, int16_t w,
-                       int16_t h, bool full)
-{
-  return 0;
-}
+/* A Show of a template with made-up content; NONE: no template */
 
-static const struct display_ops_s g_ops =
-{
-  fake_update
-};
-
-/* Service states' Who, as the test sets it */
-
-static void fake_who(FAR struct pnut_services_server_s *server,
-                     FAR const struct pnut_request_s *req,
-                     FAR const pnut_services_who_request_t *in,
-                     FAR void *arg)
-{
-  pnut_services_who_reply_t out;
-
-  g_whos++;
-  assert_int_equal(in->pid, getpid());
-  memset(&out, 0, sizeof(out));
-  switch (g_who)
-    {
-      case WHO_NAMED:
-        strlcpy(out.name, g_named, sizeof(out.name));
-        pnut_services_who_reply(server, req, PNUT_STATUS_OK, &out);
-        break;
-
-      case WHO_SHELL:
-        out.shell = true;
-        pnut_services_who_reply(server, req, PNUT_STATUS_OK, &out);
-        break;
-
-      case WHO_NOTFOUND:
-        pnut_services_fail(server, req, PNUT_STATUS_NOTFOUND,
-                           PNUT_SERVICES_ERROR_CODE_UNKNOWN_SERVICE,
-                           "no such task");
-        break;
-
-      default:
-        break;                    /* Never answered */
-    }
-}
-
-static const struct pnut_services_handlers_s g_services_handlers =
-{
-  .who = fake_who
-};
-
-/* A manifest in the apps' folder */
-
-static void write_manifest(FAR const char *id, int ntemplates,
-                           FAR const int *templates)
-{
-  pnut_app_manifest_t m;
-  uint8_t buf[256];
-  pb_ostream_t out = pb_ostream_from_buffer(buf, sizeof(buf));
-  char path[160];
-  FILE *f;
-  int i;
-
-  memset(&m, 0, sizeof(m));
-  strcpy(m.icon, "notes");
-  strcpy(m.name, "Notes");
-  m.templates_count = ntemplates;
-  for (i = 0; i < ntemplates; i++)
-    {
-      m.templates[i] = templates[i];
-    }
-
-  assert_true(pb_encode(&out, PNUT_APP_MANIFEST_FIELDS, &m));
-  snprintf(path, sizeof(path), "%s/%s.manifest", g_apps, id);
-  f = fopen(path, "wb");
-  assert_non_null(f);
-  assert_int_equal(fwrite(buf, 1, out.bytes_written, f),
-                   out.bytes_written);
-  fclose(f);
-}
-
-/* The fake app */
-
-static void app_state(FAR struct pnut_ui_client_s *client, bool connected,
-                      FAR void *arg)
-{
-  FAR struct app_s *app = arg;
-
-  app->connected = connected;
-}
-
-static void app_opened(FAR struct pnut_ui_client_s *client, int status,
-                       FAR const pnut_error_t *err, FAR void *arg)
-{
-  FAR struct app_s *app = arg;
-
-  app->opened = status;
-  app->code = err != NULL ? err->code : 0;
-  app->up = status == PNUT_STATUS_OK;
-}
-
-static void app_item(FAR struct pnut_ui_client_s *client, int status,
-                     FAR const pnut_ui_event_t *item, FAR void *arg)
-{
-  FAR struct app_s *app = arg;
-
-  if (item == NULL)
-    {
-      app->ended = status;
-      app->up = false;
-      return;
-    }
-
-  assert_true(app->nevents < EVENTS);
-  app->events[app->nevents++] = *item;
-}
-
-static void app_done(FAR struct pnut_ui_client_s *client, int status,
-                     FAR const pnut_ui_reply_t *out,
-                     FAR const pnut_error_t *err, FAR void *arg)
-{
-  FAR struct app_s *app = arg;
-
-  app->replies++;
-  app->status = status;
-  app->code = err != NULL ? err->code : 0;
-}
-
-static void app_connect(FAR struct app_s *app)
-{
-  memset(app, 0, sizeof(*app));
-  app->opened = -1;
-  app->ended  = -1;
-  assert_int_equal(pnut_ui_connect(g_loop, HOST_SERVICE, app_state, app,
-                                   &app->client), 0);
-}
-
-static void app_open(FAR struct app_s *app, FAR const char *id,
-                     uint16_t credit)
-{
-  pnut_ui_open_request_t in;
-
-  memset(&in, 0, sizeof(in));
-  if (id != NULL)
-    {
-      strlcpy(in.app, id, sizeof(in.app));
-    }
-
-  in.level = 1;
-  assert_int_equal(pnut_ui_open(&app->client, &in, credit, 3000,
-                                app_opened, app_item, app, &app->stream),
-                   0);
-}
-
-static void app_show(FAR struct app_s *app, uint32_t screen, int tmpl)
+static void show_template(FAR struct app_s *app, uint32_t screen, int tmpl)
 {
   static pnut_ui_show_request_t in;
 
@@ -307,17 +80,7 @@ static void app_show(FAR struct app_s *app, uint32_t screen, int tmpl)
         break;                    /* No template */
     }
 
-  assert_int_equal(pnut_ui_show(&app->client, &in, 3000, app_done, app),
-                   0);
-}
-
-static void app_leave(FAR struct app_s *app)
-{
-  pnut_ui_leave_request_t in;
-
-  memset(&in, 0, sizeof(in));
-  assert_int_equal(pnut_ui_leave(&app->client, &in, 3000, app_done, app),
-                   0);
+  app_send_show(app, &in);
 }
 
 /* An event from the system UI, as a screen would send it */
@@ -333,86 +96,9 @@ static int send_back(uint32_t screen)
   return host_event(&g_ui.host, &ev);
 }
 
-static void step_timer(FAR struct pnut_loop_s *loop,
-                       FAR struct pnut_timer_s *timer, FAR void *arg)
-{
-  FAR const struct step_s *step = arg;
-
-  if (step->run != NULL)
-    {
-      step->run();
-    }
-  else
-    {
-      pnut_loop_stop(loop, 0);
-    }
-}
-
-/* Run the steps with the ui module, Service states' fake and the apps'
- * folder, Who answering as set
- */
-
-static void run(FAR const struct step_s *steps, int nsteps)
-{
-  struct pnut_loop_config_s lconfig;
-  struct display_config_s screen;
-  struct input_config_s iconfig;
-  struct ui_config_s uconfig;
-  int i;
-
-  pnut_loop_defaults(&lconfig);
-  lconfig.rundir = g_dir;
-  assert_int_equal(pnut_loop_create(&lconfig, &g_loop), 0);
-  assert_int_equal(pnut_services_serve(g_loop, "services", 0,
-                                       &g_services_handlers, NULL,
-                                       &g_services), 0);
-
-  memset(g_frame, 0xff, sizeof(g_frame));
-  memset(&screen, 0, sizeof(screen));
-  screen.frame  = g_frame;
-  screen.stride = STRIDE;
-  screen.width  = WIDTH;
-  screen.height = HEIGHT;
-  screen.ops    = &g_ops;
-
-  memset(&iconfig, 0, sizeof(iconfig));
-  iconfig.display = &g_ui.display;
-  input_init(&g_input, &iconfig);
-
-  memset(&uconfig, 0, sizeof(uconfig));
-  uconfig.screen   = &screen;
-  uconfig.input    = &g_input;
-  uconfig.apps     = g_apps;
-  uconfig.services = "services";
-  ui_init(&g_ui, &uconfig);
-  assert_int_equal(pnut_module_add(g_loop, &g_ui.module), 0);
-  assert_int_equal(pnut_module_add(g_loop, &g_input.module), 0);
-
-  for (i = 0; i < nsteps; i++)
-    {
-      assert_int_equal(pnut_timer_start(g_loop, steps[i].at, 0,
-                                        step_timer, (FAR void *)&steps[i],
-                                        NULL), 0);
-    }
-
-  assert_int_equal(pnut_loop_run(g_loop), 0);
-  pnut_ui_disconnect(&g_app.client);
-  pnut_ui_disconnect(&g_app2.client);
-  pnut_services_close(&g_services);
-  pnut_loop_destroy(g_loop);
-}
-
 static int setup(void **state)
 {
-  strcpy(g_dir, "/tmp/pnut-host-XXXXXX");
-  assert_non_null(mkdtemp(g_dir));
-  snprintf(g_apps, sizeof(g_apps), "%s/apps", g_dir);
-  assert_int_equal(mkdir(g_apps, 0755), 0);
-  g_who = WHO_NAMED;
-  strcpy(g_named, NOTES);
-  g_whos = 0;
-  memset(&g_app, 0, sizeof(g_app));
-  memset(&g_app2, 0, sizeof(g_app2));
+  fake_setup(state);
   g_id[0] = '\0';
   g_shell = false;
   g_open = false;
@@ -422,11 +108,7 @@ static int setup(void **state)
 
 static int teardown(void **state)
 {
-  char cmd[64];
-
-  snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
-  assert_int_equal(system(cmd), 0);
-  return 0;
+  return fake_teardown(state);
 }
 
 static const int g_list[] =
@@ -455,7 +137,7 @@ static void open_app_no_credit(void)
 
 static void show_list(void)
 {
-  app_show(&g_app, 1, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
+  show_template(&g_app, 1, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
 }
 
 static void keep_depth(void)
@@ -498,7 +180,7 @@ static void test_open_named(void **state)
 
   FAR const pnut_ui_welcome_t *w;
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   run(steps, 3);
 
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
@@ -573,7 +255,7 @@ static void open_as_bad(void)
 
 static void show_detail(void)
 {
-  app_show(&g_app, 2, PNUT_UI_TEMPLATE_UI_TEMPLATE_DETAIL);
+  show_template(&g_app, 2, PNUT_UI_TEMPLATE_UI_TEMPLATE_DETAIL);
 }
 
 static void test_open_shell(void **state)
@@ -582,8 +264,16 @@ static void test_open_shell(void **state)
   {
     { 20, connect_app },
     { 60, open_as_demo },
-    { 200, show_detail },
+    { 200, show_list },
     { 300, keep_app },
+    { 400, NULL },
+  };
+
+  static const struct step_s limited[] =
+  {
+    { 20, connect_app },
+    { 60, open_as_demo },
+    { 200, show_detail },
     { 400, NULL },
   };
 
@@ -608,8 +298,8 @@ static void test_open_shell(void **state)
 
   /* With a manifest of its own: the templates it lists, no more */
 
-  write_manifest("org.pnut.demo", 1, g_list);
-  run(good, 5);
+  write_manifest("org.pnut.demo", "notes", 1, g_list);
+  run(limited, 4);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
   assert_int_equal(g_app.status, PNUT_STATUS_DENIED);
   assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_LISTED);
@@ -632,7 +322,7 @@ static void test_open_no_answer(void **state)
     { 60 + HOST_WHO_MS + 500, NULL },
   };
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   g_who = WHO_SILENT;
   run(steps, 3);
   assert_int_equal(g_app.opened, PNUT_STATUS_UNAVAILABLE);
@@ -667,7 +357,7 @@ static void test_open_second(void **state)
     { 400, NULL },
   };
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   run(steps, 5);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
   assert_int_equal(g_app2.opened, PNUT_STATUS_BUSY);
@@ -685,12 +375,12 @@ static void test_open_second(void **state)
 
 static void show_none(void)
 {
-  app_show(&g_app, 3, PNUT_UI_TEMPLATE_UI_TEMPLATE_NONE);
+  show_template(&g_app, 3, PNUT_UI_TEMPLATE_UI_TEMPLATE_NONE);
 }
 
 static void show_list_app2(void)
 {
-  app_show(&g_app2, 4, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
+  show_template(&g_app2, 4, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
 }
 
 static void test_show_denied(void **state)
@@ -716,7 +406,7 @@ static void test_show_denied(void **state)
     { 450, NULL },
   };
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   run(steps, 7);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
   assert_int_equal(g_app.replies, 1);
@@ -793,7 +483,7 @@ static void test_credit(void **state)
 
   int i;
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   run(flooded, 5);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
 
@@ -857,7 +547,7 @@ static void test_gone(void **state)
     { 700, NULL },
   };
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   run(steps, 10);
   assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
 }
@@ -889,7 +579,7 @@ static void test_leave(void **state)
     { 600, NULL },
   };
 
-  write_manifest(NOTES, 1, g_list);
+  write_manifest(NOTES, "notes", 1, g_list);
   run(steps, 9);
   assert_int_equal(g_app.replies, 2);       /* Show's, then Leave's */
   assert_int_equal(g_app.status, PNUT_STATUS_OK);

@@ -222,6 +222,10 @@ message UiItem {
   oneof value {
     string text = 3 [(nanopb).max_size = 65];
   }
+
+  // An icon of the system's set at the right of an item that opens, for
+  // what opening does (Cat-Detail: a call, an email)
+  string icon = 4 [(nanopb).max_size = 17];
 }
 
 message UiDetail {
@@ -243,11 +247,13 @@ message UiEmpty {
   string icon = 3 [(nanopb).max_size = 17];
 }
 
-// Waiting: what for, a line of how it goes; whether the owner may cancel
+// Waiting: what for, a line of how it goes; whether the owner may cancel;
+// how far, when the app knows (Cat-Busy's bar of ten steps)
 message UiBusy {
   string heading = 1 [(nanopb).max_size = 49];
   string text = 2 [(nanopb).max_size = 129];
   bool cancel = 3;
+  optional uint32 progress = 4;   // Percent done, 0 to 100; none: no bar
 }
 
 message UiShowRequest {
@@ -287,7 +293,7 @@ message UiUpdateRequest {
     string title = 2 [(nanopb).max_size = 49];
     UiRow row = 3;                // The row of that id, replaced
     UiMiddle middle = 4;
-    UiBusy busy = 5;              // A Busy's heading, text and cancel
+    UiBusy busy = 5;              // A Busy's: all of it, replaced
   }
 }
 

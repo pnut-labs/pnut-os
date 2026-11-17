@@ -221,7 +221,7 @@ static void keys_press(void)
   key('w', false);
   key('q', false);
   key(KEYMAP_F2, true);
-  key('x', false);                /* Means nothing */
+  key('x', false);                /* A command letter (RFC 0037) */
 
   input_key(&g_input, KEYMAP_ALT, true, true);
   key(KEYMAP_ENTER, true);
@@ -230,11 +230,12 @@ static void keys_press(void)
 
 static void keys_check(void)
 {
-  assert_int_equal(g_nkeys, 4);
+  assert_int_equal(g_nkeys, 5);
   assert_int_equal(g_keys[0], UI_KEY(UI_ACT_UP));
   assert_int_equal(g_keys[1], UI_KEY(UI_ACT_BACK));
   assert_int_equal(g_keys[2], UI_KEY(UI_ACT_SOFT_MIDDLE));
-  assert_int_equal(g_keys[3], UI_KEY(UI_ACT_OPTIONS));
+  assert_int_equal(g_keys[3], 'x');
+  assert_int_equal(g_keys[4], UI_KEY(UI_ACT_OPTIONS));
 }
 
 static void test_input_keys(void **state)

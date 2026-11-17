@@ -34,6 +34,7 @@
 #define BLOCK_PAGES_H    30
 #define BLOCK_ROW_H      40
 #define BLOCK_HEADING_H  20
+#define BLOCK_LEAD_W     24      /* A row's lead: an icon, or initials */
 
 /* A text field's text, at most, and as shown (a password's dots) */
 
@@ -149,6 +150,27 @@ void block_row_chevron(FAR lv_obj_t *row);  /* The value: an arrow */
 FAR lv_obj_t *block_row_title(FAR lv_obj_t *row);
 FAR const char *block_row_value(FAR lv_obj_t *row);
 
+/* A row of an app's list (Cat-Rows), 40 px: its lead, an icon's glyph
+ * (18 px) or up to two initials (11 px mono, no frame); the title, bold
+ * while unread or focused; the detail under it; the value at the right in
+ * the meta's 10 px mono (a time, a count); a trailer.  A part without text
+ * takes no room.  Child 0 is the lead, 2 the value, 3 the trailer.
+ */
+
+enum block_trailer_e
+{
+  BLOCK_TRAILER_NONE = 0,
+  BLOCK_TRAILER_CHEVRON,
+  BLOCK_TRAILER_ON,
+  BLOCK_TRAILER_OFF
+};
+
+FAR lv_obj_t *block_app_row(FAR lv_obj_t *parent, uint16_t id);
+void block_app_row_set(FAR lv_obj_t *row, FAR const char *lead,
+                       bool initials, FAR const char *title,
+                       FAR const char *detail, FAR const char *value,
+                       bool unread, int trailer);
+
 /* A switch: a row whose value says On or Off */
 
 FAR lv_obj_t *block_switch_row(FAR lv_obj_t *parent, uint16_t id,
@@ -164,6 +186,15 @@ void block_heading_set(FAR lv_obj_t *heading, FAR const char *text);
 FAR lv_obj_t *block_info(FAR lv_obj_t *parent, FAR const char *label,
                          FAR const char *value);
 void block_info_set(FAR lv_obj_t *info, FAR const char *value);
+
+/* An item of an app's detail (Cat-Detail), 40 px: a label in capitals
+ * over a value, an icon of the set at the right or NULL; it takes the
+ * focus and a tap when numbered (id not 0)
+ */
+
+FAR lv_obj_t *block_item(FAR lv_obj_t *parent, uint16_t id,
+                         FAR const char *label, FAR const char *value,
+                         FAR const char *icon);
 
 /* A text field's row: its title, the text in a box */
 
