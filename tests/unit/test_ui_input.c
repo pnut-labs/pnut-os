@@ -333,6 +333,64 @@ static void test_input_hold(void **state)
   run(steps, 7);
 }
 
+/* test_input_home: Alt and Backspace held 0.5 s is Home, once; let go
+ * sooner, Back; Alt let go first changes nothing
+ */
+
+static void home_press(void)
+{
+  input_key(&g_input, KEYMAP_ALT, true, true);
+  input_key(&g_input, KEYMAP_BACKSPACE, true, true);
+}
+
+static void home_bs_release(void)
+{
+  input_key(&g_input, KEYMAP_BACKSPACE, true, false);
+}
+
+static void home_release(void)
+{
+  input_key(&g_input, KEYMAP_BACKSPACE, true, false);
+  input_key(&g_input, KEYMAP_ALT, true, false);
+}
+
+static void home_alt_release(void)
+{
+  input_key(&g_input, KEYMAP_ALT, true, false);
+}
+
+static void home_none(void)
+{
+  assert_int_equal(g_nkeys, 0);           /* Nothing until held or let go */
+}
+
+static void home_check(void)
+{
+  assert_int_equal(count(UI_KEY(UI_ACT_HOME)), 2);
+  assert_int_equal(count(UI_KEY(UI_ACT_BACK)), 1);
+  assert_int_equal(g_nkeys, 3);
+}
+
+static void test_input_home(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, setup },
+    { 50, home_press },
+    { 400, home_none },
+    { 1200, home_release },               /* Home at 550, once */
+    { 1300, home_press },
+    { 1400, home_release },               /* Back */
+    { 1500, home_press },
+    { 1600, home_alt_release },
+    { 2200, home_bs_release },            /* Home at 2000 */
+    { 2300, home_check },
+    { 2320, NULL },
+  };
+
+  run(steps, 11);
+}
+
 /* test_input_touch */
 
 static void touch_tap(void)
@@ -582,6 +640,7 @@ int main(void)
     cmocka_unit_test(test_input_keys),
     cmocka_unit_test(test_input_typing),
     cmocka_unit_test(test_input_hold),
+    cmocka_unit_test(test_input_home),
     cmocka_unit_test(test_input_touch),
     cmocka_unit_test(test_input_gathers),
     cmocka_unit_test(test_input_no_reader),

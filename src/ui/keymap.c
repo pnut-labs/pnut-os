@@ -97,7 +97,12 @@ static void keymap_special(FAR struct keymap_state_s *s, uint32_t code,
         break;
 
       case KEYMAP_BACKSPACE:
-        keymap_set(out, s->typing ? UI_ACT_DELETE : UI_ACT_BACK, true);
+        keymap_set(out, s->typing ? UI_ACT_DELETE : UI_ACT_BACK, !s->alt);
+        if (s->alt)
+          {
+            out->hold = UI_ACT_HOME;  /* Home is always the system's */
+          }
+
         break;
     }
 }
@@ -223,15 +228,22 @@ uint32_t keymap_digit(FAR const char *layout, uint32_t ch)
 void keyrepeat_press(FAR struct keyrepeat_s *k, uint64_t now,
                      FAR const struct keymap_result_s *r)
 {
-  k->held   = r->repeats;
+  k->held   = r->repeats || r->hold != UI_ACT_NONE;
   k->action = r->action;
   k->ch     = r->ch;
+  k->hold   = r->hold;
+  k->owed   = r->hold != UI_ACT_NONE ? r->action : UI_ACT_NONE;
   k->due    = now + KEYMAP_DELAY_MS;
 }
 
-void keyrepeat_release(FAR struct keyrepeat_s *k)
+uint8_t keyrepeat_release(FAR struct keyrepeat_s *k)
 {
+  uint8_t owed = k->held ? k->owed : UI_ACT_NONE;
+
   k->held = false;
+  k->hold = UI_ACT_NONE;
+  k->owed = UI_ACT_NONE;
+  return owed;
 }
 
 bool keyrepeat_fire(FAR struct keyrepeat_s *k, uint64_t now)
@@ -239,6 +251,18 @@ bool keyrepeat_fire(FAR struct keyrepeat_s *k, uint64_t now)
   if (!k->held || now < k->due)
     {
       return false;
+    }
+
+  /* Held long enough: its hold action, once */
+
+  if (k->hold != UI_ACT_NONE)
+    {
+      k->action = k->hold;
+      k->ch     = 0;
+      k->held   = false;
+      k->hold   = UI_ACT_NONE;
+      k->owed   = UI_ACT_NONE;
+      return true;
     }
 
   /* Late (the loop was busy): no burst to catch up */

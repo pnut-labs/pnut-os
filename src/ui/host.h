@@ -42,12 +42,12 @@
 #define HOST_ROWS_KEPT  APPLIST_KEPT
 
 /* Apps connected at once: the open one, one kept warm, one being opened
- * (RFC 0037).  Events waiting for an app's credit, Welcome among them;
- * one more ends its stream.  How soon an event a full send buffer kept
- * back is tried again.
+ * (RFC 0037), and one stopping.  Events waiting for an app's credit,
+ * Welcome among them; one more ends its stream.  How soon an event a full
+ * send buffer kept back is tried again.
  */
 
-#define HOST_APPS       3
+#define HOST_APPS       4
 #define HOST_EVENTS     16
 #define HOST_RETRY_MS   50
 
@@ -79,7 +79,7 @@ struct host_app_s
   uint32_t order;                 /* When it was last open */
   uint32_t start;                 /* Its Start's, which its answer names */
   FAR struct pnut_timer_s *busy;  /* Nothing drawn: the UI's Busy */
-  FAR struct pnut_timer_s *due;   /* Its Open's deadline */
+  FAR struct pnut_timer_s *due;   /* Its Open's deadline, or its Stop's */
   char id[MANIFEST_ID_MAX + 1];
   struct manifest_s manifest;
   struct pnut_stream_s stream;    /* Open's: the events */
@@ -140,6 +140,12 @@ int host_start(FAR struct host_s *h, FAR const char *id);
  */
 
 void host_cancel(FAR struct host_app_s *app);
+
+/* Home: the open app kept warm (one warm at most: the one open longest
+ * ago is stopped), an app being opened cancelled
+ */
+
+void host_home(FAR struct host_s *h);
 
 /* An event for the open app, or for an app, sent as its credit allows.
  * -ENOTCONN when there is none, or it is not connected; -ENOSPC when

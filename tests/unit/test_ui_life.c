@@ -44,6 +44,7 @@
 
 #define T_OPENING  100
 #define T_OPEN     600
+#define T_STOP     200
 
 /****************************************************************************
  * Private Data
@@ -122,6 +123,7 @@ static void times_short(void)
   ui_times_default(&g_times);
   g_times.opening = T_OPENING;
   g_times.open    = T_OPEN;
+  g_times.stop    = T_STOP;
 }
 
 static void see(FAR char *top, FAR int *depth, FAR char *title)
@@ -747,6 +749,247 @@ static void test_opening_under_pin(void **state)
   assert_int_equal(g_depth2, g_depth);     /* The Busy replaced */
 }
 
+/****************************************************************************
+ * Name: test_home_keeps_warm
+ *
+ * Description:
+ *   Alt and Backspace held: Home, the open app kept warm, still connected,
+ *   never told to stop; its tile brings it back.
+ ****************************************************************************/
+
+static void home_down(void)
+{
+  input_key(&g_input, KEYMAP_ALT, true, true);
+  input_key(&g_input, KEYMAP_BACKSPACE, true, true);
+}
+
+static void home_up(void)
+{
+  input_key(&g_input, KEYMAP_BACKSPACE, true, false);
+  input_key(&g_input, KEYMAP_ALT, true, false);
+}
+
+static void test_home_keeps_warm(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, home_down },
+    { 700, home_up },
+    { 710, look },
+    { 720, keep_states },
+    { 800, tile_notes },
+    { 850, show_inbox },
+    { 900, look2 },
+    { 1000, NULL },
+  };
+
+  run(steps, 12);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_depth, 1);
+  assert_int_equal(g_states[0], HOST_WARM);
+  assert_int_equal(g_app.nevents, 2);     /* Welcome, Shown */
+  assert_int_equal(g_app.events[1].which_kind, PNUT_UI_EVENT_SHOWN_TAG);
+  assert_string_equal(g_top2, "app");
+  assert_int_equal(g_starts, 1);
+  assert_int_equal(g_stops, 0);
+}
+
+/****************************************************************************
+ * Name: test_one_warm
+ *
+ * Description:
+ *   Notes, Home, Todo, Home: two would be warm; the one open longest ago,
+ *   Notes, is told to stop, and, not stopping by its deadline, stopped by
+ *   Service states, its slot free.
+ ****************************************************************************/
+
+static void home_now(void)
+{
+  ui_home(&g_ui);
+}
+
+static void test_one_warm(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, home_now },
+    { 120, tile_todo },
+    { 130, connect_todo },
+    { 140, open_todo },
+    { 200, show_todo },
+    { 220, home_now },
+    { 240, keep_states },
+    { 260, look },
+    { 300 + T_STOP, look2 },
+    { 310 + T_STOP, keep_states },
+    { 400 + T_STOP, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 15);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_app.events[g_app.nevents - 1].which_kind,
+                   PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_app2.nevents, 1);    /* Todo: Welcome only */
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+  assert_int_equal(g_states[0], HOST_FREE);
+  assert_int_equal(g_states[1], HOST_WARM);
+}
+
+/****************************************************************************
+ * Name: test_stop_answered
+ *
+ * Description:
+ *   An app told to stop that leaves before its deadline: its slot free,
+ *   and Service states never asked.
+ ****************************************************************************/
+
+static void leave(void)
+{
+  app_leave(&g_app);
+}
+
+static void test_stop_answered(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, home_now },
+    { 120, tile_todo },
+    { 130, connect_todo },
+    { 140, open_todo },
+    { 200, show_todo },
+    { 220, home_now },
+    { 250, leave },
+    { 300 + T_STOP, keep_states },
+    { 400 + T_STOP, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 13);
+  assert_int_equal(g_stops, 0);
+  assert_int_equal(g_states[0], HOST_FREE);
+}
+
+/****************************************************************************
+ * Name: test_unstarted_deadline
+ *
+ * Description:
+ *   An app the system UI did not start, told to stop, that does not:
+ *   stopped by Service states at its deadline, its slot free.
+ ****************************************************************************/
+
+static void test_unstarted_deadline(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect },
+    { 30, open_app },
+    { 100, keep_states },
+    { 200 + T_STOP, look2 },
+    { 210 + T_STOP, keep_states },
+    { 300 + T_STOP, NULL },
+  };
+
+  run(steps, 6);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+  assert_int_equal(g_states[0], HOST_FREE);
+}
+
+/****************************************************************************
+ * Name: test_home_while_opening
+ *
+ * Description:
+ *   Home while an app opens, its Busy up: the app cancelled, Home on top.
+ ****************************************************************************/
+
+static void test_home_while_opening(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 60 + T_OPENING, home_now },
+    { 200, look },
+    { 210, keep_states },
+    { 300, NULL },
+  };
+
+  run(steps, 5);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_stops, 1);
+  assert_int_equal(g_states[0], HOST_FREE);
+}
+
+/****************************************************************************
+ * Name: test_home_under_pin
+ *
+ * Description:
+ *   Home while the SIM PIN is up does nothing: the PIN is answered first,
+ *   the app beneath it stays open.
+ ****************************************************************************/
+
+static void test_home_under_pin(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, sim_locked },
+    { 150, home_now },
+    { 200, look },
+    { 210, keep_states },
+    { 300, NULL },
+  };
+
+  run(steps, 9);
+  assert_string_equal(g_top, "pin");
+  assert_int_equal(g_states[0], HOST_OPEN);
+}
+
+/****************************************************************************
+ * Name: test_home_undrawn
+ *
+ * Description:
+ *   Home after the app opened but before it drew: it is told to stop, and
+ *   the UI's Busy never comes over Home.
+ ****************************************************************************/
+
+static void test_home_undrawn(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 60, home_now },
+    { 100 + T_OPENING, look },
+    { 110 + T_OPENING, keep_states },
+    { 200 + T_OPENING, NULL },
+  };
+
+  run(steps, 7);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_states[0], HOST_STOPPING);
+  assert_int_equal(g_app.events[g_app.nevents - 1].which_kind,
+                   PNUT_UI_EVENT_STOP_TAG);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -765,6 +1008,15 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_start_fails_late, setup, teardown),
     cmocka_unit_test_setup_teardown(test_opening_under_pin, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_home_keeps_warm, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_one_warm, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_stop_answered, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_unstarted_deadline, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_home_while_opening, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_home_under_pin, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_home_undrawn, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

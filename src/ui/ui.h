@@ -252,6 +252,13 @@ void ui_times_default(FAR struct ui_times_s *t);
 int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
             FAR const void *arg);
 void ui_pop(FAR struct ui_s *ui);
+
+/* Home (Alt and Backspace held, RFC 0037): every screen off down to Home,
+ * the open app kept warm, one opening cancelled; never past the SIM PIN,
+ * which is answered first
+ */
+
+void ui_home(FAR struct ui_s *ui);
 FAR struct screen_s *ui_top(FAR struct ui_s *ui);
 
 /* A screen of the stack replaced, in its place, by a new one of a class

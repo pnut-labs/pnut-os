@@ -283,6 +283,13 @@ static void ui_key_event(FAR lv_event_t *e)
       return;
     }
 
+  if (action == UI_ACT_HOME)
+    {
+      ui_home(s->ui);             /* Never the screen's, nor the app's */
+      ui_place(s->ui);
+      return;
+    }
+
   if (ui_options_open(s->ui))
     {
       ui_options_key(s->ui, action, action == UI_ACT_CHAR ? key : 0);
@@ -807,6 +814,28 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
     }
 
   return 0;
+}
+
+void ui_home(FAR struct ui_s *ui)
+{
+  if (ui_top(ui) != NULL && ui_top(ui)->cls == &g_scr_pin)
+    {
+      return;
+    }
+
+  ui_options_close(ui);
+  host_home(&ui->host);
+
+  /* The screens beneath the top go undrawn, then the top: Home is loaded
+   * once
+   */
+
+  while (ui->depth > 2)
+    {
+      ui_remove(ui, ui->stack[1]);
+    }
+
+  ui_pop(ui);
 }
 
 void ui_pop(FAR struct ui_s *ui)
