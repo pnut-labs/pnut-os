@@ -1273,6 +1273,405 @@ static void test_empty(void **state)
 }
 
 /****************************************************************************
+ * Name: test_confirm
+ *
+ * Description:
+ *   A Confirm sheet over the List (Cat-Confirm): Enter, or its left
+ *   softkey, confirms; Back, or Cancel, cancels; the sheet closes either
+ *   way and the List stays.  A Confirm as a whole screen, or a sheet of the
+ *   screen's own id, is invalid.
+ ****************************************************************************/
+
+#define SHEET      8
+
+static void show_confirm(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SHEET;
+  in.sheet  = true;
+  in.which_content = PNUT_UI_SHOW_REQUEST_CONFIRM_TAG;
+  strcpy(in.content.confirm.question, "Delete conversation with Ola?");
+  strcpy(in.content.confirm.detail,
+         "All 38 messages are removed from this phone. This can't be "
+         "undone.");
+  strcpy(in.content.confirm.confirm, "Delete");
+  app_send_show(&g_app, &in);
+}
+
+static void show_confirm_screen(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SHEET;
+  in.which_content = PNUT_UI_SHOW_REQUEST_CONFIRM_TAG;
+  strcpy(in.content.confirm.question, "Delete?");
+  app_send_show(&g_app, &in);
+}
+
+static void show_confirm_same_id(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  in.sheet  = true;
+  in.which_content = PNUT_UI_SHOW_REQUEST_CONFIRM_TAG;
+  strcpy(in.content.confirm.question, "Delete?");
+  app_send_show(&g_app, &in);
+}
+
+static bool g_sheet;              /* A sheet was open */
+
+static void look_sheet(void)
+{
+  FAR struct app_scr_s *st = ui_top(&g_ui)->state;
+
+  look();
+  g_sheet = st->sheet.box != NULL;
+}
+
+static void img_confirm(void)
+{
+  save("app-confirm");
+}
+
+static void soft_left(void)
+{
+  key(KEYMAP_F1, true);
+}
+
+static void soft_right(void)
+{
+  key(KEYMAP_F3, true);
+}
+
+static void test_confirm(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_inbox },
+    { 300, show_confirm },
+    { 400, look_sheet },
+    { 410, img_confirm },
+    { 420, mark },
+    { 430, enter },
+    { 500, look_after },
+    { 510, show_confirm },
+    { 600, soft_right },
+    { 700, show_confirm },
+    { 800, back },
+    { 900, show_confirm },
+    { 1000, soft_left },
+    { 1100, NULL },
+  };
+
+  FAR const pnut_ui_input_t *in;
+
+  write_manifest(FAKE_NOTES, "messages", 5, g_all);
+  run(steps, 16);
+  assert_true(g_sheet);
+  assert_string_equal(g_top, "app");
+  assert_string_equal(g_title, "Inbox");
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_CONFIRMED, &in), 2);
+  assert_int_equal(in->screen, SHEET);
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_CANCELLED, &in), 2);
+  assert_int_equal(in->screen, SHEET);
+
+  /* Never a back or an opened row while the sheet is open */
+
+  assert_int_equal(app_inputs(&g_app, g_from, PNUT_UI_INPUT_ACTION_BACK,
+                              &in), 0);
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_ROW_OPENED, &in), 0);
+}
+
+static void test_confirm_invalid(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_inbox },
+    { 300, show_confirm_screen },
+    { 400, keep_status },
+    { 410, show_confirm_same_id },
+    { 600, NULL },
+  };
+
+  write_manifest(FAKE_NOTES, "messages", 5, g_all);
+  run(steps, 7);
+  assert_int_equal(g_status1, PNUT_STATUS_INVALID);
+  assert_int_equal(g_app.status, PNUT_STATUS_INVALID);
+}
+
+/****************************************************************************
+ * Name: test_busy
+ *
+ * Description:
+ *   Busy as a screen (Cat-Busy) and as a sheet: with cancel, Back and the
+ *   Cancel softkey cancel; without, they do nothing; an Update changes its
+ *   text and progress; the app closes its Busy sheet with Show of the
+ *   screen beneath.
+ ****************************************************************************/
+
+#define SCAN       41
+
+static void show_busy_screen(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SCAN;
+  strcpy(in.title, "LoRa");
+  in.which_content = PNUT_UI_SHOW_REQUEST_BUSY_TAG;
+  strcpy(in.content.busy.heading, "Scanning for nodes");
+  strcpy(in.content.busy.text, "Started 14:07 \xc2\xb7 found 2 so far");
+  in.content.busy.cancel = true;
+  in.content.busy.has_progress = true;
+  in.content.busy.progress = 40;
+  app_send_show(&g_app, &in);
+}
+
+static void show_busy_sheet(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SHEET;
+  in.sheet  = true;
+  in.which_content = PNUT_UI_SHOW_REQUEST_BUSY_TAG;
+  strcpy(in.content.busy.heading, "Copying");
+  strcpy(in.content.busy.text, "3 of 12 files");
+  app_send_show(&g_app, &in);
+}
+
+static void update_busy(void)
+{
+  static pnut_ui_update_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SCAN;
+  in.which_change = PNUT_UI_UPDATE_REQUEST_BUSY_TAG;
+  strcpy(in.change.busy.heading, "Scanning for nodes");
+  strcpy(in.change.busy.text, "Started 14:07 \xc2\xb7 found 3 so far");
+  in.change.busy.cancel = true;
+  in.change.busy.has_progress = true;
+  in.change.busy.progress = 50;
+  app_send_update(&g_app, &in);
+}
+
+static void img_busy(void)
+{
+  save("app-busy");
+}
+
+static void img_busy_sheet(void)
+{
+  save("app-busy-sheet");
+}
+
+static void test_busy(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_busy_screen },
+    { 300, update_busy },
+    { 400, img_busy },
+    { 410, mark },
+    { 420, soft_right },
+    { 500, back },
+    { 600, show_inbox },
+    { 700, show_busy_sheet },
+    { 800, look_sheet },
+    { 810, img_busy_sheet },
+    { 820, back },
+    { 900, soft_right },
+    { 1000, show_inbox },
+    { 1100, look_after },
+    { 1200, NULL },
+  };
+
+  FAR const pnut_ui_input_t *in;
+
+  write_manifest(FAKE_NOTES, "messages", 5, g_all);
+  run(steps, 17);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_CANCELLED, &in), 2);
+  assert_int_equal(in->screen, SCAN);
+  assert_true(g_sheet);                   /* The Busy sheet was open */
+  assert_string_equal(g_top, "app");      /* ... and gone with the Show */
+  assert_true(g_drawn_top);
+}
+
+/****************************************************************************
+ * Name: test_sheet_rules
+ *
+ * Description:
+ *   A sheet closes as it is answered; a second sheet replaces the first;
+ *   options open when a sheet comes are closed; an Update of the screen's
+ *   primary action keeps the screen's softkeys under the sheet's; a Busy
+ *   sheet with cancel is cancelled with its own id, and updated by it, its
+ *   shadow following its frame; a progress over 100 is invalid; the app
+ *   going with a sheet open takes both.
+ ****************************************************************************/
+
+static bool g_closed;             /* The sheet closed after its answer */
+static bool g_keys_hidden;        /* The screen's softkeys under a sheet */
+static bool g_shadow_fits;
+static bool g_replaced;
+
+static void look_closed(void)
+{
+  FAR struct app_scr_s *st = ui_top(&g_ui)->state;
+
+  g_closed = st->sheet.screen == 0 && st->sheet.box == NULL &&
+             !lv_obj_has_flag(st->keys, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void show_busy_sheet_cancel(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SHEET + 1;
+  in.sheet  = true;
+  in.which_content = PNUT_UI_SHOW_REQUEST_BUSY_TAG;
+  strcpy(in.content.busy.heading, "Copying");
+  strcpy(in.content.busy.text, "1 of 12 files");
+  in.content.busy.cancel = true;
+  app_send_show(&g_app, &in);
+}
+
+static void look_replaced(void)
+{
+  FAR struct app_scr_s *st = ui_top(&g_ui)->state;
+
+  g_replaced = st->sheet.screen == SHEET + 1 && st->sheet.busy;
+}
+
+static void update_screen_middle(void)
+{
+  static pnut_ui_update_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  in.which_change = PNUT_UI_UPDATE_REQUEST_MIDDLE_TAG;
+  strcpy(in.change.middle.label, "Reply");
+  app_send_update(&g_app, &in);
+}
+
+static void update_sheet_long(void)
+{
+  static pnut_ui_update_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SHEET + 1;
+  in.which_change = PNUT_UI_UPDATE_REQUEST_BUSY_TAG;
+  strcpy(in.change.busy.heading, "Copying");
+  strcpy(in.change.busy.text, "2 of 12 files, the longest of them a video "
+         "of the whole trip, which takes a while to copy");
+  in.change.busy.cancel = true;
+  in.change.busy.has_progress = true;
+  in.change.busy.progress = 17;
+  app_send_update(&g_app, &in);
+}
+
+static void look_sheet_keys(void)
+{
+  FAR struct app_scr_s *st = ui_top(&g_ui)->state;
+  FAR struct app_sheet_s *sh = &st->sheet;
+
+  lv_obj_update_layout(st->sheet.box);
+  g_keys_hidden = lv_obj_has_flag(st->keys, LV_OBJ_FLAG_HIDDEN);
+  g_shadow_fits = lv_obj_get_height(sh->shadow) ==
+                  lv_obj_get_height(sh->box) &&
+                  lv_obj_get_y(sh->shadow) == lv_obj_get_y(sh->box) + 4;
+}
+
+static void show_busy_over(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = SHEET + 2;
+  in.sheet  = true;
+  in.which_content = PNUT_UI_SHOW_REQUEST_BUSY_TAG;
+  strcpy(in.content.busy.heading, "Too far");
+  in.content.busy.has_progress = true;
+  in.content.busy.progress = 101;
+  app_send_show(&g_app, &in);
+}
+
+static void test_sheet_rules(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_inbox },
+    { 300, show_confirm },
+    { 400, enter },
+    { 450, look_closed },
+    { 500, options },
+    { 550, show_confirm },
+    { 600, look_sheet },
+    { 610, show_busy_sheet_cancel },
+    { 700, look_replaced },
+    { 710, update_screen_middle },
+    { 800, update_sheet_long },
+    { 900, look_sheet_keys },
+    { 910, mark },
+    { 920, back },
+    { 1000, show_busy_over },
+    { 1100, NULL },
+  };
+
+  FAR const pnut_ui_input_t *in;
+
+  write_manifest(FAKE_NOTES, "messages", 5, g_all);
+  run(steps, 18);
+  assert_true(g_closed);
+  assert_true(g_sheet);
+  assert_false(g_options);        /* The options closed as it came */
+  assert_true(g_replaced);
+  assert_true(g_keys_hidden);
+  assert_true(g_shadow_fits);
+  assert_int_equal(app_inputs(&g_app, g_from,
+                              PNUT_UI_INPUT_ACTION_CANCELLED, &in), 1);
+  assert_int_equal(in->screen, SHEET + 1);
+  assert_int_equal(g_app.status, PNUT_STATUS_INVALID);
+}
+
+static void test_sheet_gone(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 200, show_inbox },
+    { 300, show_confirm },
+    { 400, disconnect_app },
+    { 500, look_after },
+    { 600, NULL },
+  };
+
+  write_manifest(FAKE_NOTES, "messages", 5, g_all);
+  run(steps, 7);
+  assert_string_equal(g_top, "home");
+  assert_true(g_drawn_top);
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -1310,6 +1709,14 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_detail_scrolls, fake_setup,
                                     fake_teardown),
     cmocka_unit_test_setup_teardown(test_empty, fake_setup, fake_teardown),
+    cmocka_unit_test_setup_teardown(test_confirm, fake_setup, fake_teardown),
+    cmocka_unit_test_setup_teardown(test_confirm_invalid, fake_setup,
+                                    fake_teardown),
+    cmocka_unit_test_setup_teardown(test_busy, fake_setup, fake_teardown),
+    cmocka_unit_test_setup_teardown(test_sheet_rules, fake_setup,
+                                    fake_teardown),
+    cmocka_unit_test_setup_teardown(test_sheet_gone, fake_setup,
+                                    fake_teardown),
   };
 
   return cmocka_run_group_tests_name("ui_app", tests, NULL, NULL);

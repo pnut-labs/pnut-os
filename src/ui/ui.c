@@ -944,6 +944,14 @@ int ui_options(FAR struct screen_s *s, FAR const char * const *items,
   return ui_options_lettered(s, items, NULL, count, chosen);
 }
 
+void ui_options_shut(FAR struct ui_s *ui, FAR struct screen_s *s)
+{
+  if (ui->options.box != NULL && ui->options.screen == s)
+    {
+      ui_options_close(ui);
+    }
+}
+
 int ui_options_lettered(FAR struct screen_s *s,
                         FAR const char * const *items,
                         FAR const char *letters, uint8_t count,

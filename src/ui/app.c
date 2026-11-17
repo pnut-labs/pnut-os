@@ -31,7 +31,24 @@
 #include "icons.h"
 #include "keymap.h"
 #include "text.h"
+#include "theme.h"
 #include "ui.h"
+
+/****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* The sheet's frame (Cat-Confirm): above the softkeys, 6 px from the
+ * left and 10 from the right, a 2 px border and the canvas's 4 px offset
+ * shadow; its parts in a column, 10 px in, 8 apart
+ */
+
+#define APP_SHEET_X       6
+#define APP_SHEET_W       (240 - APP_SHEET_X - 10)
+#define APP_SHEET_FOOT    40
+#define APP_SHEET_PAD     10
+#define APP_SHEET_GAP     8
+#define APP_SHEET_SHADOW  4
 
 /****************************************************************************
  * Private Types
@@ -82,6 +99,9 @@ app_template(FAR const pnut_ui_show_request_t *in)
 
       case PNUT_UI_SHOW_REQUEST_EMPTY_TAG:
         return &g_tpl_empty;
+
+      case PNUT_UI_SHOW_REQUEST_BUSY_TAG:
+        return &g_tpl_busy;
 
       default:
         return NULL;
@@ -172,8 +192,195 @@ static void app_softkeys(FAR struct screen_s *s)
       lv_obj_delete(st->keys);
     }
 
-  st->keys = block_softkeys(s->root, st->noptions > 0 ? UI_T_OPTIONS : "",
-                            st->middle_off ? "" : middle, UI_T_BACK);
+  /* A Busy screen has Cancel alone, when the app allows it (Cat-Busy) */
+
+  if (st->tpl == &g_tpl_busy)
+    {
+      st->keys = block_softkeys(s->root, "", "",
+                                st->cancel ? UI_T_CANCEL : "");
+    }
+  else
+    {
+      st->keys = block_softkeys(s->root,
+                                st->noptions > 0 ? UI_T_OPTIONS : "",
+                                st->middle_off ? "" : middle, UI_T_BACK);
+    }
+
+  /* Under an open sheet, whose own softkeys show */
+
+  if (st->sheet.screen != 0)
+    {
+      lv_obj_add_flag(st->keys, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* An event about one of the app's screens or its sheet */
+
+static void app_input_on(FAR struct screen_s *s, uint32_t screen,
+                         int action, uint32_t row, uint32_t option)
+{
+  pnut_ui_event_t ev;
+
+  memset(&ev, 0, sizeof(ev));
+  ev.which_kind = PNUT_UI_EVENT_INPUT_TAG;
+  ev.kind.input.screen = screen;
+  ev.kind.input.action = action;
+  ev.kind.input.row    = row;
+  ev.kind.input.option = option;
+  host_event(&s->ui->host, &ev);
+}
+
+/* The sheet's softkeys over the screen's: a Confirm's answer and Cancel;
+ * a Busy's Cancel, when the app allows it.  Made again on an Update (a
+ * request, never LVGL's handlers: deleted at once, as app_softkeys()).
+ */
+
+static void app_sheet_keys(FAR struct screen_s *s)
+{
+  FAR struct app_sheet_s *sh = &app_state(s)->sheet;
+
+  if (sh->keys != NULL)
+    {
+      lv_obj_delete(sh->keys);
+    }
+
+  sh->keys = block_softkeys(s->root, sh->busy ? "" : sh->confirm, "",
+                            !sh->busy || sh->cancel ? UI_T_CANCEL : "");
+}
+
+/* The sheet off, the screen's softkeys back.  Its objects go after LVGL
+ * is done with the tap that may have closed it.
+ */
+
+static void app_sheet_close(FAR struct screen_s *s)
+{
+  FAR struct app_scr_s *st = app_state(s);
+  FAR struct app_sheet_s *sh = &st->sheet;
+
+  if (sh->screen == 0)
+    {
+      return;
+    }
+
+  lv_obj_delete_async(sh->keys);
+  lv_obj_delete_async(sh->box);
+  lv_obj_delete_async(sh->shadow);
+  memset(sh, 0, sizeof(*sh));
+  if (st->keys != NULL)
+    {
+      lv_obj_remove_flag(st->keys, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* The shadow under the sheet's frame, as large as the frame is once laid
+ * out: a Busy's longer line grows the frame upwards
+ */
+
+static void app_sheet_shadow(FAR struct app_sheet_s *sh)
+{
+  lv_obj_update_layout(sh->box);
+  lv_obj_set_pos(sh->shadow, lv_obj_get_x(sh->box) + APP_SHEET_SHADOW,
+                 lv_obj_get_y(sh->box) + APP_SHEET_SHADOW);
+  lv_obj_set_size(sh->shadow, lv_obj_get_width(sh->box),
+                  lv_obj_get_height(sh->box));
+}
+
+/* A sheet over the screen (Cat-Confirm's frame): a Confirm's heading,
+ * question and what it means; a Busy's parts.  One at a time: a new one
+ * replaces the one open.
+ */
+
+static void app_sheet_open(FAR struct screen_s *s,
+                           FAR const pnut_ui_show_request_t *in)
+{
+  static char text[APP_TEXT_LONG];
+  FAR struct app_scr_s *st = app_state(s);
+  FAR struct app_sheet_s *sh = &st->sheet;
+  FAR const pnut_ui_confirm_t *c = &in->content.confirm;
+  FAR lv_obj_t *label;
+
+  app_sheet_close(s);
+  ui_options_shut(s->ui, s);
+
+  sh->screen = in->screen;
+  sh->busy   = in->which_content == PNUT_UI_SHOW_REQUEST_BUSY_TAG;
+  sh->cancel = sh->busy && in->content.busy.cancel;
+  strlcpy(sh->confirm, !sh->busy && c->confirm[0] != '\0' ?
+                       app_text(c->confirm, text, sizeof(sh->confirm)) :
+                       UI_T_OK, sizeof(sh->confirm));
+
+  sh->shadow = lv_obj_create(s->root);
+  theme_box(sh->shadow);
+  lv_obj_set_style_bg_color(sh->shadow, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(sh->shadow, LV_OPA_COVER, 0);
+
+  sh->box = lv_obj_create(s->root);
+  theme_box(sh->box);
+  lv_obj_set_size(sh->box, APP_SHEET_W, LV_SIZE_CONTENT);
+  lv_obj_set_style_bg_color(sh->box, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(sh->box, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(sh->box, 2, 0);
+  lv_obj_set_style_border_color(sh->box, lv_color_black(), 0);
+  lv_obj_set_style_pad_all(sh->box, APP_SHEET_PAD, 0);
+  lv_obj_set_style_pad_bottom(sh->box, APP_SHEET_PAD + 2, 0);
+  lv_obj_set_style_pad_row(sh->box, APP_SHEET_GAP, 0);
+  lv_obj_set_flex_flow(sh->box, LV_FLEX_FLOW_COLUMN);
+  lv_obj_add_flag(sh->box, LV_OBJ_FLAG_CLICKABLE);    /* Taps stop here */
+  lv_obj_align(sh->box, LV_ALIGN_BOTTOM_LEFT, APP_SHEET_X, -APP_SHEET_FOOT);
+
+  if (sh->busy)
+    {
+      tpl_busy_parts(&sh->parts, sh->box, &in->content.busy);
+    }
+  else
+    {
+      label = lv_label_create(sh->box);
+      theme_label(label, &g_ui_mono_bold_10);
+      lv_label_set_text(label, UI_T_CONFIRM_HEAD);
+
+      label = lv_label_create(sh->box);
+      theme_label(label, &g_ui_sans_bold_16);
+      lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+      lv_obj_set_width(label, lv_pct(100));
+      lv_label_set_text(label, app_text(c->question, text, sizeof(text)));
+
+      label = lv_label_create(sh->box);
+      theme_label(label, &g_ui_sans_12);
+      lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+      lv_obj_set_width(label, lv_pct(100));
+      lv_label_set_text(label, app_text(c->detail, text, sizeof(text)));
+    }
+
+  app_sheet_shadow(sh);
+
+  if (st->keys != NULL)
+    {
+      lv_obj_add_flag(st->keys, LV_OBJ_FLAG_HIDDEN);
+    }
+
+  app_sheet_keys(s);
+}
+
+/* A key while the sheet is open: its own.  A Confirm is answered by its
+ * left softkey, Enter or E, and cancelled by Cancel or Back; a Busy is
+ * cancelled, when the app allows it; the sheet closes as it is answered.
+ */
+
+static void app_sheet_key(FAR struct screen_s *s, uint8_t action)
+{
+  FAR struct app_sheet_s *sh = &app_state(s)->sheet;
+  uint32_t screen = sh->screen;
+  bool cancel = action == UI_ACT_BACK || action == UI_ACT_SOFT_RIGHT;
+  bool confirm = !sh->busy && (action == UI_ACT_OPEN ||
+                               action == UI_ACT_SOFT_LEFT);
+
+  if (confirm || (cancel && (!sh->busy || sh->cancel)))
+    {
+      app_sheet_close(s);
+      app_input_on(s, screen, confirm ? PNUT_UI_INPUT_ACTION_CONFIRMED :
+                                        PNUT_UI_INPUT_ACTION_CANCELLED,
+                   0, 0);
+    }
 }
 
 /* The screen from a Show that holds together */
@@ -237,6 +444,25 @@ static bool app_key(FAR struct screen_s *s, uint8_t action, uint32_t ch)
   FAR const char *items[APP_OPTIONS];
   int i;
 
+  if (st->sheet.screen != 0)
+    {
+      app_sheet_key(s, action);
+      return true;
+    }
+
+  /* A Busy screen: Cancel or Back cancels, when the app allows it */
+
+  if (st->tpl == &g_tpl_busy)
+    {
+      if (st->cancel &&
+          (action == UI_ACT_BACK || action == UI_ACT_SOFT_RIGHT))
+        {
+          app_input(s, PNUT_UI_INPUT_ACTION_CANCELLED, 0, 0);
+        }
+
+      return true;
+    }
+
   switch (action)
     {
       case UI_ACT_BACK:
@@ -273,7 +499,7 @@ static void app_event(FAR struct screen_s *s, uint16_t id)
 {
   FAR struct app_scr_s *st = app_state(s);
 
-  if (st->tpl != NULL && st->tpl->event != NULL)
+  if (st->sheet.screen == 0 && st->tpl != NULL && st->tpl->event != NULL)
     {
       st->tpl->event(s, id);
     }
@@ -311,15 +537,7 @@ const struct screen_class_s g_scr_app =
 void app_input(FAR struct screen_s *s, int action, uint32_t row,
                uint32_t option)
 {
-  pnut_ui_event_t ev;
-
-  memset(&ev, 0, sizeof(ev));
-  ev.which_kind = PNUT_UI_EVENT_INPUT_TAG;
-  ev.kind.input.screen = app_state(s)->screen;
-  ev.kind.input.action = action;
-  ev.kind.input.row    = row;
-  ev.kind.input.option = option;
-  host_event(&s->ui->host, &ev);
+  app_input_on(s, app_state(s)->screen, action, row, option);
 }
 
 void app_page_needed(FAR struct screen_s *s, uint32_t first)
@@ -366,8 +584,42 @@ int app_show(FAR struct ui_s *ui, FAR const pnut_ui_show_request_t *in)
   FAR struct screen_s *s;
   int ret;
 
-  if (tpl == NULL || in->screen == 0 || in->sheet ||
-      tpl->check(in) < 0)
+  /* A sheet: a Confirm or a Busy over the app's screen, with an id of its
+   * own
+   */
+
+  if (in->sheet)
+    {
+      switch (in->which_content)
+        {
+          case PNUT_UI_SHOW_REQUEST_CONFIRM_TAG:
+            break;
+
+          case PNUT_UI_SHOW_REQUEST_BUSY_TAG:
+            if (g_tpl_busy.check(in) < 0)
+              {
+                return -EINVAL;
+              }
+
+            break;
+
+          default:
+            return -EINVAL;       /* Not a sheet's template */
+        }
+
+      s = app_screen(ui);
+      if (in->screen == 0 || s == NULL ||
+          app_state(s)->screen == in->screen)
+        {
+          return -EINVAL;
+        }
+
+      app_sheet_open(s, in);
+      ui_place(ui);
+      return 0;
+    }
+
+  if (tpl == NULL || in->screen == 0 || tpl->check(in) < 0)
     {
       return -EINVAL;
     }
@@ -408,12 +660,36 @@ int app_update(FAR struct ui_s *ui, FAR const pnut_ui_update_request_t *in)
   FAR struct screen_s *s = app_screen(ui);
   FAR struct app_scr_s *st;
 
-  if (s == NULL || app_state(s)->screen != in->screen)
+  if (s == NULL)
+    {
+      return 0;
+    }
+
+  /* The sheet's: a Busy's text, progress and cancel */
+
+  st = app_state(s);
+  if (st->sheet.screen != 0 && st->sheet.screen == in->screen)
+    {
+      if (in->which_change != PNUT_UI_UPDATE_REQUEST_BUSY_TAG ||
+          !st->sheet.busy ||
+          (in->change.busy.has_progress && in->change.busy.progress > 100))
+        {
+          return -EINVAL;
+        }
+
+      tpl_busy_set(&st->sheet.parts, &in->change.busy);
+      st->sheet.cancel = in->change.busy.cancel;
+      app_sheet_shadow(&st->sheet);
+      app_sheet_keys(s);
+      ui_place(ui);
+      return 0;
+    }
+
+  if (st->screen != in->screen)
     {
       return 0;                   /* Another screen's: dropped */
     }
 
-  st = app_state(s);
   switch (in->which_change)
     {
       case PNUT_UI_UPDATE_REQUEST_TITLE_TAG:
@@ -432,6 +708,11 @@ int app_update(FAR struct ui_s *ui, FAR const pnut_ui_update_request_t *in)
             st->tpl->update(s, in) < 0)
           {
             return -EINVAL;
+          }
+
+        if (st->tpl == &g_tpl_busy)
+          {
+            app_softkeys(s);      /* Cancel may come or go */
           }
 
         break;

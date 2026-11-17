@@ -65,6 +65,37 @@ struct tpl_detail_s
   uint32_t ids[TPL_DETAIL_ITEMS];
 };
 
+/* A Busy's parts, on its screen or its sheet: the heading, the bar of
+ * TPL_BUSY_STEPS steps (hidden without progress), the line
+ */
+
+#define TPL_BUSY_STEPS  10
+
+struct tpl_busy_s
+{
+  FAR lv_obj_t *heading;
+  FAR lv_obj_t *bar;
+  FAR lv_obj_t *steps[TPL_BUSY_STEPS];
+  FAR lv_obj_t *text;
+};
+
+/* The one sheet over the app's screen (RFC 0037, layer 3): a Confirm or
+ * a Busy, with its own screen id; the screen's softkeys hidden under its
+ * own
+ */
+
+struct app_sheet_s
+{
+  uint32_t screen;                /* Its id; 0: none open */
+  bool busy;                      /* A Busy, else a Confirm */
+  bool cancel;                    /* A Busy the owner may cancel */
+  char confirm[sizeof(((FAR pnut_ui_confirm_t *)0)->confirm)];
+  FAR lv_obj_t *shadow;
+  FAR lv_obj_t *box;
+  FAR lv_obj_t *keys;
+  struct tpl_busy_s parts;        /* A Busy's */
+};
+
 /* The open app's screen (RFC 0037): the screen on top of its own stack, as
  * its last Show described it; the template draws its content
  */
@@ -82,11 +113,14 @@ struct app_scr_s
   char options[APP_OPTIONS][sizeof(((FAR pnut_ui_option_t *)0)->label)];
   char letters[APP_OPTIONS];      /* '\0': none */
   FAR lv_obj_t *keys;             /* The softkeys */
+  bool cancel;                    /* A Busy screen the owner may cancel */
+  struct app_sheet_s sheet;
 
   union
     {
       struct tpl_list_s list;
       struct tpl_detail_s detail;
+      struct tpl_busy_s busy;
     } t;
 };
 
@@ -118,6 +152,7 @@ struct app_tpl_s
 extern const struct app_tpl_s g_tpl_list;
 extern const struct app_tpl_s g_tpl_detail;
 extern const struct app_tpl_s g_tpl_empty;
+extern const struct app_tpl_s g_tpl_busy;
 
 /****************************************************************************
  * Public Function Prototypes
@@ -134,5 +169,14 @@ void app_page_needed(FAR struct screen_s *s, uint32_t first);
 bool app_primary_on(FAR struct screen_s *s);
 FAR const char *app_text(FAR const char *in, FAR char *out, size_t size);
 FAR const char *app_icon(FAR const char *name);
+
+/* A Busy's parts made in a column (its screen's, or its sheet's), and set
+ * from the app's description: the progress, 0 to 100, lights a step for
+ * each tenth
+ */
+
+void tpl_busy_parts(FAR struct tpl_busy_s *t, FAR lv_obj_t *parent,
+                    FAR const pnut_ui_busy_t *busy);
+void tpl_busy_set(FAR struct tpl_busy_s *t, FAR const pnut_ui_busy_t *busy);
 
 #endif /* __PNUT_OS_UI_APPTPL_H */

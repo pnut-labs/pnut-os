@@ -235,6 +235,10 @@ int ui_options_lettered(FAR struct screen_s *s,
                                             int index));
 bool ui_options_open(FAR struct ui_s *ui);
 
+/* A screen's options closed, nothing chosen (a sheet comes over them) */
+
+void ui_options_shut(FAR struct ui_s *ui, FAR struct screen_s *s);
+
 /* Lay the top screen out after it changed outside its key and tap
  * handlers (an answer, a timer), so that a tap finds its blocks
  */

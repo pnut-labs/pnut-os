@@ -81,10 +81,12 @@
 #define UI_T_BACK             N_("Back")
 #define UI_T_OPTIONS          N_("Options")
 #define UI_T_MENU             N_("Menu")
+#define UI_T_CANCEL           N_("Cancel")
 
-/* The options' heading */
+/* The options' heading; an app's Confirm's (Cat-Confirm) */
 
 #define UI_T_OPTIONS_HEAD     N_("OPTIONS")
+#define UI_T_CONFIRM_HEAD     N_("CONFIRM")
 
 /* Settings (Proto-Settings) */
 
