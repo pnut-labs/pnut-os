@@ -80,8 +80,8 @@ static int tpl_detail_check(FAR const pnut_ui_show_request_t *in)
 static int tpl_detail_build(FAR struct screen_s *s,
                             FAR const pnut_ui_show_request_t *in)
 {
-  static char label[APP_TEXT_MAX];
-  static char value[APP_TEXT_MAX];
+  FAR char *label = s->ui->texts[0];
+  FAR char *value = s->ui->texts[1];
   FAR struct tpl_detail_s *t = tpl_detail_of(s);
   FAR const pnut_ui_detail_t *d = &in->content.detail;
   FAR const pnut_ui_item_t *item;
@@ -94,10 +94,9 @@ static int tpl_detail_build(FAR struct screen_s *s,
       item = &d->items[i];
       t->ids[i] = item->id;
       row = block_item(t->list.box, item->id != 0 ? i + 1 : 0,
-                       app_text(item->label, label, sizeof(label)),
+                       app_text(item->label, label, UI_TEXT_MAX),
                        item->which_value == PNUT_UI_ITEM_TEXT_TAG ?
-                       app_text(item->value.text, value, sizeof(value)) :
-                       "",
+                       app_text(item->value.text, value, UI_TEXT_MAX) : "",
                        item->id != 0 ? app_icon(item->icon) : NULL);
       if (in->focus != 0 && item->id == in->focus)
         {

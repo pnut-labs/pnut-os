@@ -42,7 +42,7 @@ static int tpl_empty_check(FAR const pnut_ui_show_request_t *in)
 static int tpl_empty_build(FAR struct screen_s *s,
                            FAR const pnut_ui_show_request_t *in)
 {
-  static char text[APP_TEXT_LONG];
+  FAR char *text = s->ui->text_long;
   FAR const pnut_ui_empty_t *e = &in->content.empty;
   FAR const char *icon = app_icon(e->icon);
   FAR lv_obj_t *box;
@@ -69,13 +69,13 @@ static int tpl_empty_build(FAR struct screen_s *s,
   theme_label(label, &g_ui_sans_bold_16);
   lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(label, lv_pct(100));
-  lv_label_set_text(label, app_text(e->heading, text, sizeof(text)));
+  lv_label_set_text(label, app_text(e->heading, text, UI_TEXT_LONG));
 
   label = lv_label_create(box);
   theme_label(label, &g_ui_sans_12);
   lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(label, lv_pct(100));
-  lv_label_set_text(label, app_text(e->text, text, sizeof(text)));
+  lv_label_set_text(label, app_text(e->text, text, UI_TEXT_LONG));
   return 0;
 }
 

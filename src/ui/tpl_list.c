@@ -77,24 +77,25 @@ static FAR const char *tpl_list_initials(FAR const char *in, FAR char *out,
 
 /* A row's block from the app's row: every text as drawn */
 
-static void tpl_list_fill(FAR lv_obj_t *block, FAR const pnut_ui_row_t *row)
+static void tpl_list_fill(FAR struct screen_s *s, FAR lv_obj_t *block,
+                          FAR const pnut_ui_row_t *row)
 {
   char two[sizeof(row->lead)];
-  static char lead[APP_TEXT_MAX];
-  static char title[APP_TEXT_MAX];
-  static char detail[APP_TEXT_MAX];
-  static char value[APP_TEXT_MAX];
+  FAR char *lead = s->ui->texts[0];
+  FAR char *title = s->ui->texts[1];
+  FAR char *detail = s->ui->texts[2];
+  FAR char *value = s->ui->texts[3];
 
   block_app_row_set(block,
                     row->initials ?
                     app_text(tpl_list_initials(row->lead, two, sizeof(two)),
-                             lead, sizeof(lead)) :
+                             lead, UI_TEXT_MAX) :
                     app_icon(row->lead),
                     row->initials,
-                    app_text(row->title, title, sizeof(title)),
-                    app_text(row->detail, detail, sizeof(detail)),
+                    app_text(row->title, title, UI_TEXT_MAX),
+                    app_text(row->detail, detail, UI_TEXT_MAX),
                     row->which_value == PNUT_UI_ROW_TEXT_TAG ?
-                    app_text(row->value.text, value, sizeof(value)) : NULL,
+                    app_text(row->value.text, value, UI_TEXT_MAX) : NULL,
                     row->unread, tpl_list_trailer(row->trailer));
 }
 
@@ -114,7 +115,7 @@ static void tpl_list_draw(FAR struct screen_s *s)
     {
       if (first + i < l->loaded)
         {
-          tpl_list_fill(t->rows[i], &l->rows[first + i]);
+          tpl_list_fill(s, t->rows[i], &l->rows[first + i]);
           block_focus(t->rows[i], first + i == l->focus);
           lv_obj_remove_flag(t->rows[i], LV_OBJ_FLAG_HIDDEN);
         }

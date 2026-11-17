@@ -52,8 +52,8 @@ struct manifest_s
 
 /* Read <dir>/<id>.manifest, an encoded pnut.AppManifest.  -ENOENT when
  * there is none; -EINVAL for an id that is not one, a file over
- * MANIFEST_SIZE_MAX, or one that does not decode; another negated errno
- * value when it cannot be read.
+ * MANIFEST_SIZE_MAX, or one that does not decode; -ENOMEM; another
+ * negated errno value when it cannot be read.
  */
 
 int manifest_load(FAR const char *dir, FAR const char *id,

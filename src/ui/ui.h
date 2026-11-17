@@ -42,6 +42,15 @@
 #define UI_DEPTH    8
 #define UI_OPTIONS  8
 
+/* Room for an app's text as drawn, every byte perhaps \xNN (app.c): the
+ * short texts (titles, lines, labels, values, up to 64 bytes), four at
+ * once; the long one (a line of up to 192 bytes)
+ */
+
+#define UI_TEXTS       4
+#define UI_TEXT_MAX    (64 * 4 + 1)
+#define UI_TEXT_LONG   (192 * 4 + 1)
+
 /* Told to a screen's status() beside status.h's: Wi-Fi's service came
  * (back), its state to read again; and all of it, as a screen comes back
  * on top
@@ -128,6 +137,13 @@ struct ui_s
   bool pin_skipped;               /* Skipped until the SIM asks anew */
   struct host_s host;             /* Apps' connections */
   bool host_open;
+
+  /* An app's text as drawn: a template draws from these, one screen at a
+   * time, and its labels keep their own copies
+   */
+
+  char texts[UI_TEXTS][UI_TEXT_MAX];
+  char text_long[UI_TEXT_LONG];
   struct pnut_board_client_s board;
   FAR struct pnut_timer_s *retry; /* Asking Board again, once */
   bool board_open;

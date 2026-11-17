@@ -29,15 +29,11 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* An app's options, at most (ui.proto); room for an app's text as drawn,
- * every byte perhaps \xNN (describe_name()): APP_TEXT_MAX for the short
- * ones (titles, lines, labels, values, up to 64 bytes), APP_TEXT_LONG for
- * the long (an Empty's or a Busy's line, a Confirm's detail)
+/* An app's options, at most (ui.proto); its texts as drawn go in ui.h's
+ * UI_TEXT_MAX and UI_TEXT_LONG
  */
 
 #define APP_OPTIONS    8
-#define APP_TEXT_MAX   (64 * 4 + 1)
-#define APP_TEXT_LONG  (192 * 4 + 1)
 
 /****************************************************************************
  * Public Types
@@ -175,8 +171,9 @@ FAR const char *app_icon(FAR const char *name);
  * each tenth
  */
 
-void tpl_busy_parts(FAR struct tpl_busy_s *t, FAR lv_obj_t *parent,
-                    FAR const pnut_ui_busy_t *busy);
-void tpl_busy_set(FAR struct tpl_busy_s *t, FAR const pnut_ui_busy_t *busy);
+void tpl_busy_parts(FAR struct screen_s *s, FAR struct tpl_busy_s *t,
+                    FAR lv_obj_t *parent, FAR const pnut_ui_busy_t *busy);
+void tpl_busy_set(FAR struct screen_s *s, FAR struct tpl_busy_s *t,
+                  FAR const pnut_ui_busy_t *busy);
 
 #endif /* __PNUT_OS_UI_APPTPL_H */

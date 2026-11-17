@@ -79,7 +79,7 @@ static uint8_t g_depth_after;
 static bool g_drawn_top;          /* LVGL shows the top screen's root */
 static bool g_options;
 static char g_letters[APP_OPTIONS];
-static char g_row_title[APP_TEXT_MAX];
+static char g_row_title[UI_TEXT_MAX];
 
 /****************************************************************************
  * Private Functions
@@ -536,7 +536,7 @@ static void test_list_text(void **state)
     { 500, NULL },
   };
 
-  char want[APP_TEXT_MAX];
+  char want[UI_TEXT_MAX];
 
   write_manifest(FAKE_NOTES, "messages", 5, g_all);
   run(steps, 5);

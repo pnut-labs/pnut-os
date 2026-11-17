@@ -61,7 +61,7 @@ static int tpl_busy_build(FAR struct screen_s *s,
   lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
                         LV_FLEX_ALIGN_START);
-  tpl_busy_parts(&st->t.busy, box, &in->content.busy);
+  tpl_busy_parts(s, &st->t.busy, box, &in->content.busy);
   st->cancel = in->content.busy.cancel;
   return 0;
 }
@@ -77,7 +77,7 @@ static int tpl_busy_update(FAR struct screen_s *s,
       return -EINVAL;
     }
 
-  tpl_busy_set(&st->t.busy, &in->change.busy);
+  tpl_busy_set(s, &st->t.busy, &in->change.busy);
   st->cancel = in->change.busy.cancel;
   return 0;
 }
@@ -86,8 +86,8 @@ static int tpl_busy_update(FAR struct screen_s *s,
  * Public Functions
  ****************************************************************************/
 
-void tpl_busy_parts(FAR struct tpl_busy_s *t, FAR lv_obj_t *parent,
-                    FAR const pnut_ui_busy_t *busy)
+void tpl_busy_parts(FAR struct screen_s *s, FAR struct tpl_busy_s *t,
+                    FAR lv_obj_t *parent, FAR const pnut_ui_busy_t *busy)
 {
   FAR lv_obj_t *step;
   int i;
@@ -121,18 +121,19 @@ void tpl_busy_parts(FAR struct tpl_busy_s *t, FAR lv_obj_t *parent,
   lv_label_set_long_mode(t->text, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(t->text, lv_pct(100));
 
-  tpl_busy_set(t, busy);
+  tpl_busy_set(s, t, busy);
 }
 
-void tpl_busy_set(FAR struct tpl_busy_s *t, FAR const pnut_ui_busy_t *busy)
+void tpl_busy_set(FAR struct screen_s *s, FAR struct tpl_busy_s *t,
+                  FAR const pnut_ui_busy_t *busy)
 {
-  static char text[APP_TEXT_LONG];
+  FAR char *text = s->ui->text_long;
   int lit = busy->has_progress ?
             (int)(busy->progress * TPL_BUSY_STEPS) / 100 : 0;
   int i;
 
-  block_set_text(t->heading, app_text(busy->heading, text, sizeof(text)));
-  block_set_text(t->text, app_text(busy->text, text, sizeof(text)));
+  block_set_text(t->heading, app_text(busy->heading, text, UI_TEXT_LONG));
+  block_set_text(t->text, app_text(busy->text, text, UI_TEXT_LONG));
   if (busy->has_progress)
     {
       lv_obj_remove_flag(t->bar, LV_OBJ_FLAG_HIDDEN);

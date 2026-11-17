@@ -293,7 +293,7 @@ static void app_sheet_shadow(FAR struct app_sheet_s *sh)
 static void app_sheet_open(FAR struct screen_s *s,
                            FAR const pnut_ui_show_request_t *in)
 {
-  static char text[APP_TEXT_LONG];
+  FAR char *text = s->ui->text_long;
   FAR struct app_scr_s *st = app_state(s);
   FAR struct app_sheet_s *sh = &st->sheet;
   FAR const pnut_ui_confirm_t *c = &in->content.confirm;
@@ -330,7 +330,7 @@ static void app_sheet_open(FAR struct screen_s *s,
 
   if (sh->busy)
     {
-      tpl_busy_parts(&sh->parts, sh->box, &in->content.busy);
+      tpl_busy_parts(s, &sh->parts, sh->box, &in->content.busy);
     }
   else
     {
@@ -342,13 +342,13 @@ static void app_sheet_open(FAR struct screen_s *s,
       theme_label(label, &g_ui_sans_bold_16);
       lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
       lv_obj_set_width(label, lv_pct(100));
-      lv_label_set_text(label, app_text(c->question, text, sizeof(text)));
+      lv_label_set_text(label, app_text(c->question, text, UI_TEXT_LONG));
 
       label = lv_label_create(sh->box);
       theme_label(label, &g_ui_sans_12);
       lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
       lv_obj_set_width(label, lv_pct(100));
-      lv_label_set_text(label, app_text(c->detail, text, sizeof(text)));
+      lv_label_set_text(label, app_text(c->detail, text, UI_TEXT_LONG));
     }
 
   app_sheet_shadow(sh);
@@ -388,7 +388,7 @@ static void app_sheet_key(FAR struct screen_s *s, uint8_t action)
 static void app_build_from(FAR struct screen_s *s,
                            FAR const pnut_ui_show_request_t *in)
 {
-  static char title[APP_TEXT_MAX];
+  FAR char *title = s->ui->texts[0];
   FAR struct app_scr_s *st = app_state(s);
   FAR struct host_app_s *app = host_app(&s->ui->host);
 
@@ -399,7 +399,7 @@ static void app_build_from(FAR struct screen_s *s,
   app_options(s, in);
 
   ui_header(s, app != NULL ? app_icon(app->manifest.icon) : NULL,
-            app_text(in->title, title, sizeof(title)));
+            app_text(in->title, title, UI_TEXT_MAX));
   if (st->tpl->build(s, in) < 0)
     {
       st->tpl = NULL;             /* No memory: nothing to keep */
@@ -656,7 +656,6 @@ int app_show(FAR struct ui_s *ui, FAR const pnut_ui_show_request_t *in)
 
 int app_update(FAR struct ui_s *ui, FAR const pnut_ui_update_request_t *in)
 {
-  static char title[APP_TEXT_MAX];
   FAR struct screen_s *s = app_screen(ui);
   FAR struct app_scr_s *st;
 
@@ -677,7 +676,7 @@ int app_update(FAR struct ui_s *ui, FAR const pnut_ui_update_request_t *in)
           return -EINVAL;
         }
 
-      tpl_busy_set(&st->sheet.parts, &in->change.busy);
+      tpl_busy_set(s, &st->sheet.parts, &in->change.busy);
       st->sheet.cancel = in->change.busy.cancel;
       app_sheet_shadow(&st->sheet);
       app_sheet_keys(s);
@@ -693,8 +692,9 @@ int app_update(FAR struct ui_s *ui, FAR const pnut_ui_update_request_t *in)
   switch (in->which_change)
     {
       case PNUT_UI_UPDATE_REQUEST_TITLE_TAG:
-        block_header_title(s->header, app_text(in->change.title, title,
-                                                 sizeof(title)));
+        block_header_title(s->header,
+                           app_text(in->change.title, ui->texts[0],
+                                    UI_TEXT_MAX));
         break;
 
       case PNUT_UI_UPDATE_REQUEST_MIDDLE_TAG:
