@@ -295,6 +295,12 @@ message UiShowRequest {
     UiEmpty empty = 11;
     UiBusy busy = 12;
   }
+
+  // On e-paper (RFC 0037), a Show nobody's key caused is gathered for 1 s
+  // and the app's screen drawn at most every 2 s: now draws it at once,
+  // quiet with the next redraw anything causes
+  bool now = 13;
+  bool quiet = 14;
 }
 
 // The primary action's label, or whether it is off
@@ -312,6 +318,10 @@ message UiUpdateRequest {
     UiMiddle middle = 4;
     UiBusy busy = 5;              // A Busy's: all of it, replaced
   }
+
+  // As a Show's (e-paper)
+  bool now = 6;
+  bool quiet = 7;
 }
 
 message UiRowsRequest {

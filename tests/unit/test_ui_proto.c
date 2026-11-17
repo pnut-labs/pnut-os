@@ -69,6 +69,8 @@ static void fill_screen(FAR pnut_ui_show_request_t *in)
   in->focus = 0xffffffff;
   FILL(in->middle, 'M');
   in->middle_off = true;
+  in->now = true;
+  in->quiet = true;
 
   in->options_count = sizeof(in->options) / sizeof(in->options[0]);
   for (i = 0; i < in->options_count; i++)

@@ -76,6 +76,10 @@ struct display_s
   bool sent;                      /* An update went out in this draw */
   bool tried;                     /* One was tried in this draw */
   bool drawing;
+  bool app;                       /* Changes now are an app's (how) */
+  uint8_t how;                    /* A redraw_app_e */
+  uint32_t gather;                /* ... gathered this long */
+  uint32_t spacing;               /* ... the app's screen spaced so */
 };
 
 /****************************************************************************
@@ -99,6 +103,19 @@ void display_screen(FAR struct display_s *d);
 /* A text field has the keys, or no longer */
 
 void display_typing(FAR struct display_s *d, bool typing);
+
+/* What changes between display_app() and display_app_end() is an app's,
+ * nobody's key's: drawn as how says (redraw_app(), RFC 0037 E-paper),
+ * LVGL's layout done before the end so all of it is counted
+ */
+
+void display_app(FAR struct display_s *d, int how, uint32_t gather,
+                 uint32_t spacing);
+void display_app_end(FAR struct display_s *d);
+
+/* Apps switched, or Home: the next redraw is a full one */
+
+void display_switch(FAR struct display_s *d);
 
 /* Draw what is pending now, not when the rule says: before the frame is
  * read back (the screen command, tests)

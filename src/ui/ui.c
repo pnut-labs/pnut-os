@@ -825,6 +825,10 @@ void ui_home(FAR struct ui_s *ui)
 
   ui_options_close(ui);
   host_home(&ui->host);
+  if (ui->depth > 1)
+    {
+      display_switch(&ui->display);  /* Home: a full refresh */
+    }
 
   /* The screens beneath the top go undrawn, then the top: Home is loaded
    * once

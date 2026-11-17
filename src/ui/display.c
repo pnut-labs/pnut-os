@@ -72,7 +72,16 @@ static void display_request(FAR lv_event_t *e)
   lv_timer_pause(lv_display_get_refr_timer(d->disp));
   if (!d->drawing)
     {
-      redraw_changed(&d->redraw, glue_now());
+      if (d->app)
+        {
+          redraw_app(&d->redraw, glue_now(), d->how, d->gather,
+                     d->spacing);
+        }
+      else
+        {
+          redraw_changed(&d->redraw, glue_now());
+        }
+
       display_schedule(d);
     }
 }
@@ -303,6 +312,30 @@ void display_screen(FAR struct display_s *d)
 void display_typing(FAR struct display_s *d, bool typing)
 {
   redraw_typing(&d->redraw, typing);
+}
+
+void display_app(FAR struct display_s *d, int how, uint32_t gather,
+                 uint32_t spacing)
+{
+  d->app     = true;
+  d->how     = how;
+  d->gather  = gather;
+  d->spacing = spacing;
+}
+
+void display_app_end(FAR struct display_s *d)
+{
+  if (d->disp != NULL)
+    {
+      lv_obj_update_layout(lv_display_get_screen_active(d->disp));
+    }
+
+  d->app = false;
+}
+
+void display_switch(FAR struct display_s *d)
+{
+  redraw_switch(&d->redraw);
 }
 
 void display_draw_now(FAR struct display_s *d)

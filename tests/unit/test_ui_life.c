@@ -48,6 +48,8 @@
 #define T_BUSY     300
 #define T_HUNG     600
 #define T_STALL    250
+#define T_GATHER   300
+#define T_SPACING  800
 
 /****************************************************************************
  * Private Data
@@ -131,6 +133,8 @@ static void times_short(void)
   g_times.busy    = T_BUSY;
   g_times.hung    = T_HUNG;
   g_times.stall   = T_STALL;
+  g_times.gather  = T_GATHER;
+  g_times.spacing = T_SPACING;
 }
 
 static void see(FAR char *top, FAR int *depth, FAR char *title)
@@ -1601,6 +1605,120 @@ static void test_resume_on_stop(void **state)
                       7);
 }
 
+/****************************************************************************
+ * Name: test_updates_gathered
+ *
+ * Description:
+ *   The e-paper rule for an app's updates nobody's key caused: gathered
+ *   for 1 s, the app's screen drawn at most every 2 s; now at once; quiet
+ *   with the next redraw.
+ ****************************************************************************/
+
+static int g_marks[8];
+static int g_nmarks;
+
+static void mark(void)
+{
+  g_marks[g_nmarks++] = g_updates;
+}
+
+static void update_title(bool now, bool quiet)
+{
+  static pnut_ui_update_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  in.which_change = PNUT_UI_UPDATE_REQUEST_TITLE_TAG;
+  snprintf(in.change.title, sizeof(in.change.title), "Inbox %d",
+           g_updates);
+  in.now = now;
+  in.quiet = quiet;
+  app_send_update(&g_app, &in);
+}
+
+static void update(void)
+{
+  update_title(false, false);
+}
+
+static void update_now(void)
+{
+  update_title(true, false);
+}
+
+static void update_quiet(void)
+{
+  update_title(false, true);
+}
+
+static void test_updates_gathered(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },                   /* In the tile's key window */
+    { 700, mark },                        /* 0 */
+    { 800, update },
+    { 850, update },
+    { 1050, mark },                       /* 1: not yet */
+    { 1150, mark },                       /* 2: one, at 1100 */
+    { 1200, update },
+    { 1800, mark },                       /* 3: spaced to 1900 */
+    { 2000, mark },                       /* 4: one */
+    { 2100, update_now },
+    { 2120, mark },                       /* 5: at once */
+    { 2200, update_quiet },
+    { 2900, mark },                       /* 6: waits */
+    { 3000, NULL },
+  };
+
+  g_nmarks = 0;
+  run(steps, 17);
+  assert_int_equal(g_marks[1], g_marks[0]);
+  assert_int_equal(g_marks[2], g_marks[0] + 1);
+  assert_int_equal(g_marks[3], g_marks[2]);
+  assert_int_equal(g_marks[4], g_marks[2] + 1);
+  assert_int_equal(g_marks[5], g_marks[4] + 1);
+  assert_int_equal(g_marks[6], g_marks[5]);
+}
+
+/****************************************************************************
+ * Name: test_switch_full
+ *
+ * Description:
+ *   Switching to an app, and going Home, take a full refresh.
+ ****************************************************************************/
+
+static int g_fulls_at[4];
+
+static void mark_fulls(void)
+{
+  g_fulls_at[g_nmarks++] = g_fulls;
+}
+
+static void test_switch_full(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, mark_fulls },
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },                   /* Drawn with the tile's key */
+    { 700, mark_fulls },
+    { 800, home_now },
+    { 1000, mark_fulls },
+    { 1100, NULL },
+  };
+
+  g_nmarks = 0;
+  run(steps, 9);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0] + 1);
+  assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -1645,6 +1763,9 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_crashes, setup, teardown),
     cmocka_unit_test_setup_teardown(test_crashes_reset, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_updates_gathered, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_switch_full, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

@@ -153,9 +153,16 @@ static time_t g_now = FAKE_NOW;
  * Inline Functions
  ****************************************************************************/
 
+/* Updates sent to the screen, and the full ones among them */
+
+static int g_updates;
+static int g_fulls;
+
 static int fake_update(FAR void *arg, int16_t x, int16_t y, int16_t w,
                        int16_t h, bool full)
 {
+  g_updates++;
+  g_fulls += full ? 1 : 0;
   return 0;
 }
 
@@ -587,6 +594,8 @@ static int fake_setup(void **state)
   g_stopped[0] = '\0';
   memset(&g_times, 0, sizeof(g_times));
   g_start_fail_first = 0;
+  g_updates = 0;
+  g_fulls = 0;
   g_manifest_name = "Notes";
   memset(&g_app, 0, sizeof(g_app));
   memset(&g_app2, 0, sizeof(g_app2));

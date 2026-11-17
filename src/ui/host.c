@@ -678,6 +678,7 @@ static void host_bring(FAR struct host_app_s *app)
 
   app->state = HOST_OPEN;
   app->order = ++h->orders;
+  display_switch(&h->ui->display);  /* Switching apps: a full refresh */
   host_one_warm(h);
 }
 
@@ -1046,6 +1047,28 @@ static void host_answer(FAR struct pnut_ui_server_s *server,
     }
 }
 
+/* How an app's change is drawn on e-paper (RFC 0037): an answer owed (to
+ * a key, Shown, its first screen) at once, so a late one costs one more
+ * redraw, not a gathering; otherwise as it asks: at once, quietly, or
+ * gathered.  In a key's window it joins that redraw (redraw.c).
+ */
+
+static void host_draw_begin(FAR struct host_app_s *app, bool now, bool quiet)
+{
+  FAR struct ui_s *ui = app->host->ui;
+  int how;
+
+  how = app->owe != NULL || app->wait != HOST_WAIT_NONE || now ?
+        REDRAW_APP_NOW : quiet ? REDRAW_APP_QUIET : REDRAW_APP_GATHER;
+  display_app(&ui->display, how, ui->config.times.gather,
+              ui->config.times.spacing);
+}
+
+static void host_draw_end(FAR struct host_app_s *app)
+{
+  display_app_end(&app->host->ui->display);
+}
+
 /* The open app's, a request that draws; another's is refused */
 
 static FAR struct host_app_s *
@@ -1098,8 +1121,10 @@ static void host_show(FAR struct pnut_ui_server_s *server,
       return;
     }
 
+  host_draw_begin(app, in->now, in->quiet);
   host_unowe(app);                /* Answered */
   ret = app_show(h->ui, in);
+  host_draw_end(app);
   if (ret == 0 && !in->sheet)
     {
       app->drawn = true;
@@ -1120,11 +1145,15 @@ static void host_update(FAR struct pnut_ui_server_s *server,
                         FAR void *arg)
 {
   FAR struct host_s *h = arg;
+  FAR struct host_app_s *app = host_open_from(server, req, h);
+  int ret;
 
-  if (host_open_from(server, req, h) != NULL)
+  if (app != NULL)
     {
-      host_answer(server, req, pnut_ui_update_reply,
-                  app_update(h->ui, in));
+      host_draw_begin(app, in->now, in->quiet);
+      ret = app_update(h->ui, in);
+      host_draw_end(app);
+      host_answer(server, req, pnut_ui_update_reply, ret);
     }
 }
 
@@ -1134,11 +1163,15 @@ static void host_rows(FAR struct pnut_ui_server_s *server,
 {
   FAR struct host_s *h = arg;
   FAR struct host_app_s *app = host_open_from(server, req, h);
+  int ret;
 
   if (app != NULL)
     {
+      host_draw_begin(app, false, false);
       host_unowe(app);            /* Answered */
-      host_answer(server, req, pnut_ui_rows_reply, app_rows(h->ui, in));
+      ret = app_rows(h->ui, in);
+      host_draw_end(app);
+      host_answer(server, req, pnut_ui_rows_reply, ret);
     }
 }
 
