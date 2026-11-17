@@ -758,13 +758,18 @@ void app_launch(FAR struct ui_s *ui, FAR const struct ui_app_s *a)
   else
     {
       /* With no room, or while the app stops, the press does nothing;
-       * with no manifest, the app is not there
+       * with no manifest, the app is not there; disabled, the owner is
+       * asked to try again
        */
 
       ret = host_start(&ui->host, a->id);
       if (ret == -ENOENT || ret == -EINVAL)
         {
           ui_push(ui, &g_scr_unavailable, a);
+        }
+      else if (ret == -EACCES)
+        {
+          ui_push(ui, &g_scr_stopped, a);
         }
     }
 }

@@ -388,6 +388,17 @@ static void app_send_rows(FAR struct app_s *app,
   assert_int_equal(pnut_ui_rows(&app->client, in, 3000, app_done, app), 0);
 }
 
+static void app_resume(FAR struct app_s *app, FAR const char *token)
+{
+  pnut_ui_resume_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.token.size = strlen(token);
+  memcpy(in.token.bytes, token, in.token.size);
+  assert_int_equal(pnut_ui_resume(&app->client, &in, 3000, app_done, app),
+                   0);
+}
+
 static void app_leave(FAR struct app_s *app)
 {
   pnut_ui_leave_request_t in;

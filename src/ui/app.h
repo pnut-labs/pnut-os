@@ -40,11 +40,13 @@ int app_rows(FAR struct ui_s *ui, FAR const pnut_ui_rows_request_t *in);
 
 void app_gone(FAR struct ui_s *ui);
 
-/* The UI's Busy while an app opens (scr_opening.c): drawn, taken off, and
- * found (any app's for NULL)
+/* The UI's Busy over an app (scr_opening.c), saying what its wait is:
+ * drawn, drawn again as the wait changes (or drawn), taken off, and found
+ * (any app's for NULL)
  */
 
 void app_opening(FAR struct ui_s *ui, FAR struct host_app_s *app);
+void app_opening_mode(FAR struct ui_s *ui, FAR struct host_app_s *app);
 void app_opening_gone(FAR struct ui_s *ui, FAR const struct host_app_s *app);
 FAR struct screen_s *app_opening_screen(FAR struct ui_s *ui,
                                         FAR const struct host_app_s *app);

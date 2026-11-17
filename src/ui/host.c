@@ -39,6 +39,9 @@
  ****************************************************************************/
 
 static void host_flush(FAR struct host_app_s *app);
+static void host_owe(FAR struct host_app_s *app);
+static void host_unowe(FAR struct host_app_s *app);
+static void host_resume_forget(FAR struct host_s *h, FAR const char *id);
 
 /* The app whose connection a request comes from, or NULL */
 
@@ -113,6 +116,16 @@ static void host_forget(FAR struct host_app_s *app)
       pnut_timer_cancel(h->loop, app->due);
     }
 
+  if (app->owe != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->owe);
+    }
+
+  if (app->stall != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->stall);
+    }
+
   if (app->connected && app->stream.open)
     {
       pnut_stream_end(&app->stream, PNUT_STATUS_UNAVAILABLE);
@@ -167,10 +180,88 @@ static void host_busy_due(FAR struct pnut_loop_s *loop,
   FAR struct host_app_s *app = arg;
 
   app->busy = NULL;
-  if (!app->drawn &&
+  if (!app->drawn && app->wait == HOST_WAIT_NONE &&
       (app->state == HOST_OPENING || app->state == HOST_OPEN))
     {
+      app->wait = HOST_WAIT_OPENING;
       app_opening(app->host->ui, app);
+    }
+}
+
+/* An answer owed for 10 s: "<app> isn't responding", Wait or Close */
+
+static void host_owe_hung(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct host_app_s *app = arg;
+
+  app->owe = NULL;
+  if (app->state == HOST_OPEN)
+    {
+      pnut_log(&app->host->ui->module, PNUT_LOG_WARNING,
+               "app %s not responding", app->id);
+      app->wait = HOST_WAIT_HUNG;
+      app_opening_mode(app->host->ui, app);
+    }
+}
+
+/* An answer owed for 3 s: "Waiting for <app>…", unless its Opening Busy
+ * is up; then the 10 s
+ */
+
+static void host_owe_busy(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct host_app_s *app = arg;
+  FAR struct host_s *h = app->host;
+  FAR const struct ui_times_s *t = &h->ui->config.times;
+
+  app->owe = NULL;
+  if (app->state != HOST_OPEN)
+    {
+      return;
+    }
+
+  if (app->wait == HOST_WAIT_NONE)
+    {
+      app->wait = HOST_WAIT_WAITING;
+      app_opening_mode(h->ui, app);
+    }
+
+  pnut_timer_start(h->loop, t->hung > t->busy ? t->hung - t->busy : 0, 0,
+                   host_owe_hung, app, &app->owe);
+}
+
+/* The open app owes an answer: the times run from the first one owed */
+
+static void host_owe(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+
+  if (app->owe == NULL &&
+      pnut_timer_start(h->loop, h->ui->config.times.busy, 0, host_owe_busy,
+                       app, &app->owe) < 0)
+    {
+      app->owe = NULL;            /* No timer: nothing drawn for it */
+    }
+}
+
+/* Answered, or no longer open: the times stop, the Busy they drew off */
+
+static void host_unowe(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+
+  if (app->owe != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->owe);
+      app->owe = NULL;
+    }
+
+  if (app->wait == HOST_WAIT_WAITING || app->wait == HOST_WAIT_HUNG)
+    {
+      app->wait = HOST_WAIT_NONE;
+      app_opening_gone(h->ui, app);
     }
 }
 
@@ -247,6 +338,7 @@ static void host_stop(FAR struct host_app_s *app)
       app->due = NULL;
     }
 
+  host_unowe(app);
   app_opening_gone(h->ui, app);
   if (app->state == HOST_OPEN)
     {
@@ -354,6 +446,31 @@ static void host_retry(FAR struct pnut_loop_s *loop,
     }
 }
 
+/* No event read for the times' stall while one waits: the app stopped
+ * reading (RFC 0037, Failures; RFC 0004: a client that stays behind is
+ * disconnected).  Its stream ended, its task stopped, its screen off.
+ */
+
+static void host_stall_due(FAR struct pnut_loop_s *loop,
+                           FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct host_app_s *app = arg;
+  FAR struct host_s *h = app->host;
+
+  app->stall = NULL;
+  if (app->state == HOST_FREE || app->count == 0)
+    {
+      return;
+    }
+
+  if (!app->shell && host_twin(app) == NULL)
+    {
+      host_stop_task(h, app->id);
+    }
+
+  host_drop(app, PNUT_STATUS_BUSY);
+}
+
 /* Send what waits, as credit allows */
 
 static void host_flush(FAR struct host_app_s *app)
@@ -367,7 +484,16 @@ static void host_flush(FAR struct host_app_s *app)
                               &app->queue[app->head]);
       if (ret == -EAGAIN)
         {
-          return;                 /* No credit: ready comes with it */
+          /* No credit: ready comes with it, or the stall's time ends */
+
+          if (app->stall == NULL &&
+              pnut_timer_start(h->loop, h->ui->config.times.stall, 0,
+                               host_stall_due, app, &app->stall) < 0)
+            {
+              app->stall = NULL;
+            }
+
+          return;
         }
 
       if (ret == -EBUSY)
@@ -398,6 +524,16 @@ static void host_flush(FAR struct host_app_s *app)
 
       app->head = (app->head + 1) % HOST_EVENTS;
       app->count--;
+
+      /* An event read: the stall's time starts again at the next one
+       * that waits
+       */
+
+      if (app->stall != NULL)
+        {
+          pnut_timer_cancel(h->loop, app->stall);
+          app->stall = NULL;
+        }
     }
 }
 
@@ -406,19 +542,113 @@ static void host_ready(FAR struct pnut_stream_s *stream, FAR void *arg)
   host_flush(arg);
 }
 
-/* The app ended its stream, or its connection went */
+/* An app's crash count, or NULL; made when make is set (in place of one
+ * not disabled, when the table is full)
+ */
+
+static FAR struct host_crash_s *host_crash(FAR struct host_s *h,
+                                           FAR const char *id, bool make)
+{
+  FAR struct host_crash_s *c = NULL;
+  int i;
+
+  for (i = 0; i < HOST_CRASHES; i++)
+    {
+      if (h->crashes[i].id[0] != '\0' && strcmp(h->crashes[i].id, id) == 0)
+        {
+          return &h->crashes[i];
+        }
+    }
+
+  if (!make)
+    {
+      return NULL;
+    }
+
+  /* A free entry, else the one not disabled with the fewest crashes;
+   * never a disabled one: with every one disabled, none
+   */
+
+  for (i = 0; c == NULL && i < HOST_CRASHES; i++)
+    {
+      if (h->crashes[i].id[0] == '\0')
+        {
+          c = &h->crashes[i];
+        }
+    }
+
+  for (i = 0; i < HOST_CRASHES; i++)
+    {
+      if (h->crashes[i].count < HOST_CRASHED &&
+          (c == NULL || (c->id[0] != '\0' &&
+                         h->crashes[i].count < c->count)))
+        {
+          c = &h->crashes[i];
+        }
+    }
+
+  if (c == NULL)
+    {
+      return NULL;
+    }
+
+  strlcpy(c->id, id, sizeof(c->id));
+  c->count = 0;
+  return c;
+}
+
+/* The app ended well (it left, or exited after Stop): its count anew */
+
+static void host_crash_clear(FAR struct host_s *h, FAR const char *id)
+{
+  FAR struct host_crash_s *c = host_crash(h, id, false);
+
+  if (c != NULL)
+    {
+      memset(c, 0, sizeof(*c));
+    }
+}
+
+/* The app ended its stream, or its connection went: told to stop, it
+ * ended well; otherwise it crashed (a shell's program never counts), and
+ * HOST_CRASHED crashes in a row disable it
+ */
 
 static void host_closed(FAR struct pnut_stream_s *stream, int status,
                         FAR void *arg)
 {
   FAR struct host_app_s *app = arg;
+  FAR struct host_s *h = app->host;
+  FAR struct host_crash_s *c;
 
-  if (app->state != HOST_FREE)
+  if (app->state == HOST_FREE)
     {
-      pnut_log(&app->host->ui->module, PNUT_LOG_INFO, "app %s gone",
-               app->id);
-      host_forget(app);
+      return;
     }
+
+  if (app->state == HOST_STOPPING || app->shell)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s gone", app->id);
+      if (!app->shell)
+        {
+          host_crash_clear(h, app->id);
+        }
+    }
+  else
+    {
+      c = host_crash(h, app->id, true);
+      if (c != NULL)
+        {
+          c->count++;
+        }
+
+      pnut_log(&h->ui->module, PNUT_LOG_WARNING, "app %s crashed (%u)%s",
+               app->id, c != NULL ? c->count : 0,
+               c != NULL && c->count >= HOST_CRASHED ? ": disabled" : "");
+      host_resume_forget(h, app->id);
+    }
+
+  host_forget(app);
 }
 
 static void host_refuse(FAR struct host_s *h, int status, uint32_t code,
@@ -440,6 +670,7 @@ static void host_bring(FAR struct host_app_s *app)
     {
       if (&h->slots[i] != app && h->slots[i].state == HOST_OPEN)
         {
+          host_unowe(&h->slots[i]);
           h->slots[i].state = HOST_WARM;
           app_gone(h->ui);
         }
@@ -450,8 +681,75 @@ static void host_bring(FAR struct host_app_s *app)
   host_one_warm(h);
 }
 
+/* An app's kept resume token, or NULL */
+
+static FAR struct host_resume_s *host_resume_find(FAR struct host_s *h,
+                                                 FAR const char *id)
+{
+  int i;
+
+  for (i = 0; i < HOST_RESUMES; i++)
+    {
+      if (h->resumes[i].id[0] != '\0' && strcmp(h->resumes[i].id, id) == 0)
+        {
+          return &h->resumes[i];
+        }
+    }
+
+  return NULL;
+}
+
+/* An app is done (it left, was closed, or failed): its token forgotten */
+
+static void host_resume_forget(FAR struct host_s *h, FAR const char *id)
+{
+  FAR struct host_resume_s *r = host_resume_find(h, id);
+
+  if (r != NULL)
+    {
+      memset(r, 0, sizeof(*r));
+    }
+}
+
+/* Keep an app's token, in place of the one given longest ago when the
+ * table is full
+ */
+
+static void host_resume_keep(FAR struct host_s *h, FAR const char *id,
+                             FAR const uint8_t *token, uint16_t len)
+{
+  FAR struct host_resume_s *r = host_resume_find(h, id);
+  int i;
+
+  for (i = 0; r == NULL && i < HOST_RESUMES; i++)
+    {
+      if (h->resumes[i].id[0] == '\0')
+        {
+          r = &h->resumes[i];
+        }
+    }
+
+  if (r == NULL)
+    {
+      r = &h->resumes[0];
+      for (i = 1; i < HOST_RESUMES; i++)
+        {
+          if (h->resumes[i].order < r->order)
+            {
+              r = &h->resumes[i];
+            }
+        }
+    }
+
+  strlcpy(r->id, id, sizeof(r->id));
+  r->order = ++h->resume_orders;
+  r->len = len;
+  memcpy(r->token, token, len);
+}
+
 static void host_welcome(FAR struct host_app_s *app)
 {
+  FAR struct host_resume_s *r;
   pnut_ui_event_t ev;
 
   memset(&ev, 0, sizeof(ev));
@@ -468,6 +766,18 @@ static void host_welcome(FAR struct host_app_s *app)
           sizeof(ev.kind.welcome.languages[0]));
   ev.kind.welcome.clock24 = true;
   ev.kind.welcome.reason = PNUT_UI_WELCOME_REASON_OPENED;
+
+  /* Started again after it was stopped behind: its token, given once */
+
+  r = app->shell ? NULL : host_resume_find(app->host, app->id);
+  if (r != NULL)
+    {
+      ev.kind.welcome.reason = PNUT_UI_WELCOME_REASON_RESUMED;
+      ev.kind.welcome.token.size = r->len;
+      memcpy(ev.kind.welcome.token.bytes, r->token, r->len);
+      memset(r, 0, sizeof(*r));
+    }
+
   host_event_to(app, &ev);
 }
 
@@ -768,6 +1078,10 @@ static void host_show(FAR struct pnut_ui_server_s *server,
       return;
     }
 
+  /* A Show refused here answers nothing owed: the app may send another,
+   * in an older template
+   */
+
   tmpl = host_template(in);
   if (tmpl == PNUT_UI_TEMPLATE_UI_TEMPLATE_NONE)
     {
@@ -784,10 +1098,12 @@ static void host_show(FAR struct pnut_ui_server_s *server,
       return;
     }
 
+  host_unowe(app);                /* Answered */
   ret = app_show(h->ui, in);
   if (ret == 0 && !in->sheet)
     {
       app->drawn = true;
+      app->wait  = HOST_WAIT_NONE;  /* Its Busy replaced */
       if (app->busy != NULL)
         {
           pnut_timer_cancel(h->loop, app->busy);
@@ -817,9 +1133,11 @@ static void host_rows(FAR struct pnut_ui_server_s *server,
                       FAR const pnut_ui_rows_request_t *in, FAR void *arg)
 {
   FAR struct host_s *h = arg;
+  FAR struct host_app_s *app = host_open_from(server, req, h);
 
-  if (host_open_from(server, req, h) != NULL)
+  if (app != NULL)
     {
+      host_unowe(app);            /* Answered */
       host_answer(server, req, pnut_ui_rows_reply, app_rows(h->ui, in));
     }
 }
@@ -841,8 +1159,53 @@ static void host_leave(FAR struct pnut_ui_server_s *server,
       return;
     }
 
+  /* Leaving of itself, the app is done; told to stop, it will be back */
+
+  if (app->state != HOST_STOPPING)
+    {
+      host_resume_forget(h, app->id);
+    }
+
+  host_crash_clear(h, app->id);
   host_drop(app, PNUT_STATUS_ENDED);
   host_answer(server, req, pnut_ui_leave_reply, 0);
+}
+
+/* The app's place: kept, or forgotten when empty; from any app connected,
+ * one told to stop too (Stop is when it saves), unless the owner closed it
+ */
+
+static void host_resume(FAR struct pnut_ui_server_s *server,
+                        FAR const struct pnut_request_s *req,
+                        FAR const pnut_ui_resume_request_t *in,
+                        FAR void *arg)
+{
+  FAR struct host_s *h = arg;
+  FAR struct host_app_s *app = host_from(h, req);
+
+  if (app == NULL)
+    {
+      pnut_ui_fail(server, req, PNUT_STATUS_DENIED,
+                   PNUT_UI_ERROR_CODE_NOT_OPEN, "not an app's");
+      return;
+    }
+
+  if (app->closed)
+    {
+      host_answer(server, req, pnut_ui_resume_reply, 0);
+      return;                     /* Done with: nothing to come back to */
+    }
+
+  if (in->token.size == 0)
+    {
+      host_resume_forget(h, app->id);
+    }
+  else
+    {
+      host_resume_keep(h, app->id, in->token.bytes, in->token.size);
+    }
+
+  host_answer(server, req, pnut_ui_resume_reply, 0);
 }
 
 static const struct pnut_ui_handlers_s g_host_handlers =
@@ -851,7 +1214,8 @@ static const struct pnut_ui_handlers_s g_host_handlers =
   .show   = host_show,
   .update = host_update,
   .rows   = host_rows,
-  .leave  = host_leave
+  .leave  = host_leave,
+  .resume = host_resume
 };
 
 /* Service states answered a Start: a failure frees the app's slot */
@@ -973,6 +1337,7 @@ int host_start(FAR struct host_s *h, FAR const char *id)
 {
   FAR struct host_app_s *found = NULL;
   FAR struct host_app_s *app;
+  FAR struct host_crash_s *c;
   struct manifest_s manifest;
   pnut_services_name_request_t in;
   pnut_ui_event_t ev;
@@ -1011,6 +1376,12 @@ int host_start(FAR struct host_s *h, FAR const char *id)
       if (stopping)
         {
           return -EBUSY;          /* Its task still exits */
+        }
+
+      c = host_crash(h, id, false);
+      if (c != NULL && c->count >= HOST_CRASHED)
+        {
+          return -EACCES;         /* The owner turns it on again */
         }
 
       ret = manifest_load(h->apps, id, &manifest);
@@ -1110,6 +1481,48 @@ void host_cancel(FAR struct host_app_s *app)
   host_stop(app);                 /* It has opened */
 }
 
+void host_wait(FAR struct host_app_s *app)
+{
+  FAR struct host_s *h = app->host;
+
+  if (app->state != HOST_OPEN || app->wait != HOST_WAIT_HUNG)
+    {
+      return;
+    }
+
+  if (app->owe != NULL)
+    {
+      pnut_timer_cancel(h->loop, app->owe);
+    }
+
+  app->wait = HOST_WAIT_WAITING;
+  app_opening_mode(h->ui, app);
+  if (pnut_timer_start(h->loop, h->ui->config.times.hung, 0, host_owe_hung,
+                       app, &app->owe) < 0)
+    {
+      app->owe = NULL;
+    }
+}
+
+void host_enable(FAR struct host_s *h, FAR const char *id)
+{
+  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s on again", id);
+  host_crash_clear(h, id);
+}
+
+void host_close_app(FAR struct host_app_s *app)
+{
+  app->closed = true;
+  host_resume_forget(app->host, app->id);
+  host_cancel(app);
+}
+
+FAR const struct host_resume_s *host_token(FAR struct host_s *h,
+                                           FAR const char *id)
+{
+  return host_resume_find(h, id);
+}
+
 void host_home(FAR struct host_s *h)
 {
   FAR struct host_app_s *app;
@@ -1121,6 +1534,7 @@ void host_home(FAR struct host_s *h)
       if (app->state == HOST_OPEN && (app->drawn || app->shell))
         {
           pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s warm", app->id);
+          host_unowe(app);
           app->state = HOST_WARM;
           app_gone(h->ui);
         }
@@ -1148,6 +1562,19 @@ int host_event_to(FAR struct host_app_s *app, FAR const pnut_ui_event_t *ev)
 
   app->queue[(app->head + app->count) % HOST_EVENTS] = *ev;
   app->count++;
+
+  /* An answer owed to what the open app is sent */
+
+  if (app->state == HOST_OPEN &&
+      (ev->which_kind == PNUT_UI_EVENT_WELCOME_TAG ||
+       ev->which_kind == PNUT_UI_EVENT_SHOWN_TAG ||
+       ev->which_kind == PNUT_UI_EVENT_PAGE_TAG ||
+       (ev->which_kind == PNUT_UI_EVENT_INPUT_TAG &&
+        ev->kind.input.action == PNUT_UI_INPUT_ACTION_BACK)))
+    {
+      host_owe(app);
+    }
+
   host_flush(app);
   return 0;
 }

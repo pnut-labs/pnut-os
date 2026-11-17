@@ -45,6 +45,9 @@
 #define T_OPENING  100
 #define T_OPEN     600
 #define T_STOP     200
+#define T_BUSY     300
+#define T_HUNG     600
+#define T_STALL    250
 
 /****************************************************************************
  * Private Data
@@ -104,6 +107,7 @@ static const struct ui_folder_s g_four_menu =
 /* The slots' states, kept by a step: Notes', Todo's, Reminders' */
 
 static int g_states[3];
+static char g_open_id[64];              /* The open app's */
 
 /* What a step saw, kept while the loop runs */
 
@@ -124,6 +128,9 @@ static void times_short(void)
   g_times.opening = T_OPENING;
   g_times.open    = T_OPEN;
   g_times.stop    = T_STOP;
+  g_times.busy    = T_BUSY;
+  g_times.hung    = T_HUNG;
+  g_times.stall   = T_STALL;
 }
 
 static void see(FAR char *top, FAR int *depth, FAR char *title)
@@ -222,6 +229,7 @@ static int setup(void **state)
   g_top2[0] = '\0';
   g_title[0] = '\0';
   g_busy[0] = '\0';
+  g_open_id[0] = '\0';
   g_depth = 0;
   g_depth2 = 0;
   write_manifest(NOTES, "notes", 1, g_list);
@@ -476,7 +484,7 @@ static void keep_states(void)
 {
   FAR struct host_app_s *app = host_app(&g_ui.host);
 
-  strlcpy(g_busy, app != NULL ? app->id : "", sizeof(g_busy));
+  strlcpy(g_open_id, app != NULL ? app->id : "", sizeof(g_open_id));
   g_states[0] = slot_state(NOTES);
   g_states[1] = slot_state(TODO);
   g_states[2] = slot_state(REMINDERS);
@@ -555,7 +563,7 @@ static void test_warm_reopen(void **state)
   assert_int_equal(g_app.events[1].which_kind, PNUT_UI_EVENT_SHOWN_TAG);
   assert_true(g_app2.up);                 /* Todo warm */
   assert_int_equal(g_states[1], HOST_WARM);
-  assert_string_equal(g_busy, NOTES);
+  assert_string_equal(g_open_id, NOTES);
   assert_string_equal(g_top, "app");
   assert_string_equal(g_title, "Inbox");
 }
@@ -990,6 +998,609 @@ static void test_home_undrawn(void **state)
                    PNUT_UI_EVENT_STOP_TAG);
 }
 
+/****************************************************************************
+ * Name: test_resume_kept
+ *
+ * Description:
+ *   Notes gives its resume token, goes warm, and is stopped behind (Todo
+ *   warm after it); it exits.  Its tile starts it again, welcomed as
+ *   resumed with its token.
+ ****************************************************************************/
+
+static void resume_inbox(void)
+{
+  app_resume(&g_app, "inbox/3");
+}
+
+static void notes_exits(void)
+{
+  pnut_ui_disconnect(&g_app.client);
+}
+
+static void test_resume_kept(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 90, resume_inbox },
+    { 100, home_now },
+    { 120, tile_todo },
+    { 130, connect_todo },
+    { 140, open_todo },
+    { 200, show_todo },
+    { 220, home_now },                    /* Notes stopped */
+    { 260, notes_exits },
+    { 300, named_notes },
+    { 310, tile_notes },
+    { 320, connect },
+    { 330, open_app },
+    { 400, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 17);
+  assert_int_equal(g_starts, 3);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  assert_int_equal(g_app.events[0].kind.welcome.reason,
+                   PNUT_UI_WELCOME_REASON_RESUMED);
+  assert_int_equal(g_app.events[0].kind.welcome.token.size, 7);
+  assert_memory_equal(g_app.events[0].kind.welcome.token.bytes, "inbox/3",
+                      7);
+}
+
+/****************************************************************************
+ * Name: test_resume_left
+ *
+ * Description:
+ *   An app that leaves of itself is done: its token forgotten, its next
+ *   start an ordinary opening.  So is an empty token.
+ ****************************************************************************/
+
+static void leave_and_exit(void)
+{
+  app_leave(&g_app);
+}
+
+static void resume_empty(void)
+{
+  app_resume(&g_app, "");
+}
+
+static int g_reason;
+
+static void keep_reason(void)
+{
+  g_reason = g_app.events[0].kind.welcome.reason;
+}
+
+static void test_resume_left(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 90, resume_inbox },
+    { 100, leave_and_exit },
+    { 150, notes_exits },
+    { 200, tile_notes },
+    { 210, connect },
+    { 220, open_app },
+    { 250, keep_reason },
+    { 300, show_inbox },
+    { 310, resume_inbox },
+    { 320, resume_empty },
+    { 330, home_now },
+    { 340, tile_todo },
+    { 350, connect_todo },
+    { 360, open_todo },
+    { 400, show_todo },
+    { 410, home_now },                    /* Notes stopped */
+    { 450, notes_exits },
+    { 460, named_notes },
+    { 470, tile_notes },
+    { 480, connect },
+    { 490, open_app },
+    { 600, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 26);
+  assert_int_equal(g_reason, PNUT_UI_WELCOME_REASON_OPENED);
+  assert_int_equal(g_app.events[0].kind.welcome.reason,
+                   PNUT_UI_WELCOME_REASON_OPENED);
+  assert_int_equal(g_app.events[0].kind.welcome.token.size, 0);
+}
+
+/****************************************************************************
+ * Name: test_back_waiting
+ *
+ * Description:
+ *   Back asked of the app, unanswered by 3 s: the UI's Busy "Waiting for
+ *   Notes…"; the app's Show then takes it off, its screen on top.
+ ****************************************************************************/
+
+static void key_back(void)
+{
+  key(KEYMAP_BACKSPACE, true);
+}
+
+static void soft_left(void)
+{
+  key(KEYMAP_F1, true);
+}
+
+static void soft_right(void)
+{
+  key(KEYMAP_F3, true);
+}
+
+static void img_waiting(void)
+{
+  save("app-waiting");
+}
+
+static void img_hung(void)
+{
+  save("app-hung");
+}
+
+static void test_back_waiting(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, key_back },
+    { 150 + T_BUSY, look_busy },
+    { 160 + T_BUSY, img_waiting },
+    { 200 + T_BUSY, show_inbox },
+    { 300 + T_BUSY, look2 },
+    { 400 + T_BUSY, NULL },
+  };
+
+  run(steps, 10);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Waiting for Notes\xe2\x80\xa6");
+  assert_string_equal(g_top2, "app");
+  assert_int_equal(g_depth2, g_depth - 1);
+}
+
+/****************************************************************************
+ * Name: test_hung_close
+ *
+ * Description:
+ *   Unanswered by 10 s: "Notes isn't responding", Wait or Close; Close
+ *   tells the app to stop, its screen off, and forgets its token.
+ ****************************************************************************/
+
+static void test_hung_close(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 90, resume_inbox },
+    { 100, key_back },
+    { 150 + T_HUNG, look_busy },
+    { 160 + T_HUNG, img_hung },
+    { 170 + T_HUNG, soft_right },
+    { 180 + T_HUNG, resume_inbox },       /* Saving as it stops */
+    { 200 + T_HUNG, look2 },
+    { 210 + T_HUNG, keep_states },
+    { 300 + T_HUNG, NULL },
+  };
+
+  run(steps, 13);
+  assert_string_equal(g_busy, "Notes isn\xe2\x80\x99t responding");
+  assert_string_equal(g_top2, "menu");
+  assert_int_equal(g_states[0], HOST_STOPPING);
+  assert_int_equal(g_app.events[g_app.nevents - 1].which_kind,
+                   PNUT_UI_EVENT_STOP_TAG);
+  assert_null(host_token(&g_ui.host, NOTES));
+}
+
+/****************************************************************************
+ * Name: test_hung_wait
+ *
+ * Description:
+ *   Wait: "Waiting" again, and another 10 s before asking again.
+ ****************************************************************************/
+
+static char g_busy2[64];
+
+static void look_busy2(void)
+{
+  look_busy();
+  strlcpy(g_busy2, g_busy, sizeof(g_busy2));
+}
+
+static void test_hung_wait(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, key_back },
+    { 150 + T_HUNG, soft_left },
+    { 200 + T_HUNG, look_busy2 },
+    { 200 + 2 * T_HUNG, look_busy },
+    { 300 + 2 * T_HUNG, NULL },
+  };
+
+  run(steps, 9);
+  assert_string_equal(g_busy2, "Waiting for Notes\xe2\x80\xa6");
+  assert_string_equal(g_busy, "Notes isn\xe2\x80\x99t responding");
+  assert_int_equal(g_stops, 0);
+}
+
+/****************************************************************************
+ * Name: test_home_clears_owed
+ *
+ * Description:
+ *   Back, then Home before the app answers: nothing comes over Home later.
+ ****************************************************************************/
+
+static void test_home_clears_owed(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, key_back },
+    { 150, home_now },
+    { 200 + T_HUNG, look },
+    { 300 + T_HUNG, NULL },
+  };
+
+  run(steps, 8);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_depth, 1);
+}
+
+/****************************************************************************
+ * Name: test_first_screen_hung
+ *
+ * Description:
+ *   An app that opens and never draws: its Opening Busy, then "isn't
+ *   responding" at 10 s; a late first screen still takes its place.
+ ****************************************************************************/
+
+static void test_first_screen_hung(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 150 + T_HUNG, look_busy },
+    { 200 + T_HUNG, show_inbox },
+    { 300 + T_HUNG, look2 },
+    { 400 + T_HUNG, NULL },
+  };
+
+  run(steps, 7);
+  assert_string_equal(g_busy, "Notes isn\xe2\x80\x99t responding");
+  assert_string_equal(g_top2, "app");
+  assert_int_equal(g_depth2, 3);          /* Home, Menu, the app */
+}
+
+/****************************************************************************
+ * Name: test_shown_waiting
+ *
+ * Description:
+ *   A warm app brought back that does not answer Shown: "Waiting".
+ ****************************************************************************/
+
+static void test_shown_waiting(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, home_now },
+    { 120, tile_notes },
+    { 170 + T_BUSY, look_busy },
+    { 250 + T_BUSY, NULL },
+  };
+
+  run(steps, 8);
+  assert_string_equal(g_busy, "Waiting for Notes\xe2\x80\xa6");
+}
+
+/****************************************************************************
+ * Name: test_owed_afresh
+ *
+ * Description:
+ *   Back, Home, then the app brought back: its 3 s run from Shown, not
+ *   from the Back before Home.
+ ****************************************************************************/
+
+static void test_owed_afresh(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, key_back },
+    { 150, home_now },
+    { 250, tile_notes },
+    { 150 + T_BUSY, look2 },              /* 3 s after Back, not Shown */
+    { 300 + T_BUSY, look_busy },          /* ... after Shown */
+    { 400 + T_BUSY, NULL },
+  };
+
+  run(steps, 10);
+  assert_string_equal(g_top2, "menu");
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Waiting for Notes\xe2\x80\xa6");
+}
+
+/****************************************************************************
+ * Name: test_stall
+ *
+ * Description:
+ *   An app that reads no events for 3 s (no credit, Welcome waiting) is
+ *   closed: its stream ended, its task stopped by Service states, its Busy
+ *   off.  Credit given in time keeps it.
+ ****************************************************************************/
+
+static void open_no_credit(void)
+{
+  app_open(&g_app, NULL, 0);
+}
+
+static void credit(void)
+{
+  assert_int_equal(pnut_ui_open_credit(&g_app.client, g_app.stream, 8), 0);
+}
+
+static void test_stall(void **state)
+{
+  static const struct step_s stalled[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_no_credit },
+    { 100 + T_STALL, keep_states },
+    { 110 + T_STALL, look },
+    { 200 + T_STALL, NULL },
+  };
+
+  static const struct step_s paced[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_no_credit },
+    { 50 + T_STALL / 2, credit },
+    { 100 + T_STALL, keep_states },
+    { 200 + T_STALL, NULL },
+  };
+
+  run(stalled, 6);
+  assert_int_equal(g_app.ended, PNUT_STATUS_BUSY);
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+  assert_int_equal(g_states[0], HOST_FREE);
+  assert_string_equal(g_top, "menu");
+
+  g_stops = 0;
+  run(paced, 6);
+  assert_int_equal(g_app.nevents, 1);     /* Welcome */
+  assert_int_equal(g_stops, 0);
+  assert_int_equal(g_states[0], HOST_OPEN);
+}
+
+/****************************************************************************
+ * Name: test_crashes
+ *
+ * Description:
+ *   An app whose connection closes three times in a row, never told to
+ *   stop and never leaving, is disabled: its tile asks "Notes stopped
+ *   working", and Try again starts it.  Its resume token goes with the
+ *   first crash.
+ ****************************************************************************/
+
+static void crash_cycle(void)
+{
+  tile(0);
+  app_connect_unstarted(&g_app);
+}
+
+static void crash(void)
+{
+  pnut_ui_disconnect(&g_app.client);
+}
+
+static void look_stopped(void)
+{
+  FAR struct screen_s *s = ui_top(&g_ui);
+  FAR struct tpl_busy_s *t = s->state;
+
+  look();
+  if (strcmp(g_top, "stopped") == 0)
+    {
+      strlcpy(g_busy, lv_label_get_text(t->heading), sizeof(g_busy));
+    }
+}
+
+static void img_stopped(void)
+{
+  save("app-stopped");
+}
+
+static void test_crashes(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, crash_cycle },
+    { 30, open_app },
+    { 80, show_inbox },
+    { 90, resume_inbox },
+    { 100, crash },
+    { 120, crash_cycle },
+    { 130, open_app },
+    { 180, keep_reason },
+    { 200, crash },
+    { 220, crash_cycle },
+    { 230, open_app },
+    { 300, crash },
+    { 320, tile_notes },
+    { 340, look_stopped },
+    { 345, img_stopped },
+    { 350, enter },
+    { 400, look2 },
+    { 500, NULL },
+  };
+
+  run(steps, 18);
+  assert_int_equal(g_reason, PNUT_UI_WELCOME_REASON_OPENED);
+  assert_string_equal(g_top, "stopped");
+  assert_string_equal(g_busy, "Notes stopped working");
+  assert_int_equal(g_starts, 4);          /* Three, then Try again */
+  assert_string_equal(g_top2, "menu");
+}
+
+/****************************************************************************
+ * Name: test_crashes_reset
+ *
+ * Description:
+ *   A Leave between crashes starts the count again.
+ ****************************************************************************/
+
+static void test_crashes_reset(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, crash_cycle },
+    { 30, open_app },
+    { 80, crash },
+    { 100, crash_cycle },
+    { 110, open_app },
+    { 160, crash },
+    { 180, crash_cycle },
+    { 190, open_app },
+    { 240, leave_and_exit },
+    { 260, crash },
+    { 280, crash_cycle },
+    { 290, open_app },
+    { 340, crash },
+    { 360, tile_notes },
+    { 380, look },
+    { 500, NULL },
+  };
+
+  run(steps, 16);
+  assert_int_equal(g_starts, 5);
+  assert_string_equal(g_top, "menu");
+}
+
+/****************************************************************************
+ * Name: test_stall_slow_reader
+ *
+ * Description:
+ *   An app that reads slowly, one event at a time, but keeps reading, is
+ *   kept: the stall is no event read for 3 s, not events waiting.
+ ****************************************************************************/
+
+static void backs(void)
+{
+  key(KEYMAP_BACKSPACE, true);
+  key(KEYMAP_BACKSPACE, true);
+  key(KEYMAP_BACKSPACE, true);
+}
+
+static void credit1(void)
+{
+  assert_int_equal(pnut_ui_open_credit(&g_app.client, g_app.stream, 1), 0);
+}
+
+static void test_stall_slow_reader(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_no_credit },
+    { 60, show_inbox },
+    { 70, backs },
+    { 100, credit1 },
+    { 180, credit1 },
+    { 260, credit1 },
+    { 340, credit1 },
+    { 400, keep_states },
+    { 450, NULL },
+  };
+
+  run(steps, 11);
+  assert_int_equal(g_app.nevents, 4);     /* Welcome, three Backs */
+  assert_int_equal(g_app.ended, -1);
+  assert_int_equal(g_stops, 0);
+  assert_int_equal(g_states[0], HOST_OPEN);
+}
+
+/****************************************************************************
+ * Name: test_resume_on_stop
+ *
+ * Description:
+ *   An app told to stop behind saves its place as it stops: the token it
+ *   gives then is kept, and given back when it is started again.
+ ****************************************************************************/
+
+static void resume_draft(void)
+{
+  app_resume(&g_app, "draft/9");
+}
+
+static void test_resume_on_stop(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, home_now },
+    { 120, tile_todo },
+    { 130, connect_todo },
+    { 140, open_todo },
+    { 200, show_todo },
+    { 220, home_now },                    /* Notes stopped */
+    { 230, resume_draft },
+    { 260, notes_exits },
+    { 300, named_notes },
+    { 310, tile_notes },
+    { 320, connect },
+    { 330, open_app },
+    { 400, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 17);
+  assert_int_equal(g_app.events[0].kind.welcome.reason,
+                   PNUT_UI_WELCOME_REASON_RESUMED);
+  assert_int_equal(g_app.events[0].kind.welcome.token.size, 7);
+  assert_memory_equal(g_app.events[0].kind.welcome.token.bytes, "draft/9",
+                      7);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -1017,6 +1628,23 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_home_under_pin, setup, teardown),
     cmocka_unit_test_setup_teardown(test_home_undrawn, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_resume_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_resume_left, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_resume_on_stop, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_back_waiting, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_hung_close, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_hung_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_home_clears_owed, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_first_screen_hung, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_shown_waiting, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_owed_afresh, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_stall, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_stall_slow_reader, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_crashes, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_crashes_reset, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

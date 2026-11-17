@@ -50,6 +50,13 @@
 
 #define UI_BUDGET_MS  250
 
+/* Timers at once: the UI's own, its clients' and services', and up to
+ * four for each of the apps' HOST_APPS slots (its Busy, a deadline, an
+ * answer owed, events waiting); from the heap
+ */
+
+#define UI_TIMERS     48
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -70,6 +77,7 @@ int main(int argc, FAR char *argv[])
   config.workers = 0;
   config.jobs    = 0;
   config.budget  = UI_BUDGET_MS;
+  config.timers  = UI_TIMERS;
 
   /* The program's state is large (the apps' requests among it): from the
    * heap, in external memory, not in the internal memory statics take

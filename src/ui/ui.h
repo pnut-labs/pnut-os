@@ -234,6 +234,7 @@ extern const struct screen_class_s g_scr_cell;
 extern const struct screen_class_s g_scr_pin;
 extern const struct screen_class_s g_scr_app;     /* An app's (app.c) */
 extern const struct screen_class_s g_scr_opening; /* scr_opening.c */
+extern const struct screen_class_s g_scr_stopped; /* scr_opening.c */
 
 /****************************************************************************
  * Public Function Prototypes
