@@ -20,3 +20,8 @@ __pycache__/
 
 # Made by the top-level Makefile
 /build/
+
+# tools/device/uiscreen.py's pictures, under its default name and its
+# example's: they can show what the phone holds
+/screen.png
+/shot*.png

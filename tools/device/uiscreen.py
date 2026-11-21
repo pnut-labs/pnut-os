@@ -7,9 +7,12 @@
 
 Each argument is an NSH command run first (normally `keys ...`); then the
 `screen` command prints the framebuffer as a base64 PBM, which is saved as
-a PNG at twice the size.  Needs pyserial, as nsh.py.  Close any serial
+a PNG at twice the size.  A line starting with `keys:` or `nsh:` in a
+command's output (an error) ends the run there with exit status 1: no
+picture is taken.  It reads the output as nsh.py does (see its note on
+"nsh> " in an output), and needs pyserial as it does.  Close any serial
 monitor first.  Screenshots stay on this computer: they can show
-neighbours' network names.
+neighbours' network names and real messages.
 """
 import argparse
 import base64
@@ -20,12 +23,16 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from nsh import (GONE, PORT_HELP, PORT_WAIT_HELP, PROMPT,  # noqa: E402
-                 PortGone, body, open_port, read_until, send_line, show)
+from nsh import (GONE, PACE_HELP, PORT_HELP, PORT_WAIT_HELP,  # noqa: E402
+                 PROMPT, PortGone, body, open_port, read_until, send_line,
+                 show)
+
+FAILED = ("keys:", "nsh:")
 
 
-def run(ser, cmd, timeout=10.0):
-    send_line(ser, cmd)
+def run(ser, cmd, timeout, pace=0):
+    """Run `cmd`; its output, without the echoed line and the prompt."""
+    send_line(ser, cmd, pace)
     try:
         out, ok = read_until(ser, PROMPT, timeout)
     except PortGone as e:
@@ -34,7 +41,7 @@ def run(ser, cmd, timeout=10.0):
         sys.exit(GONE)
     if not ok:
         sys.exit(f"'{cmd}': no prompt back")
-    return out.decode("utf-8", "replace").replace("\r", "")
+    return body(cmd, out)
 
 
 def png(pbm, out, scale=2):
@@ -87,22 +94,29 @@ def main():
     ap.add_argument("--settle", type=float, default=1.5,
                     help="seconds between the last command and the capture "
                          "(default: %(default)s)")
+    ap.add_argument("--timeout", type=float, default=10.0,
+                    help="seconds to wait for the first prompt, and for "
+                         "each command before the capture to finish "
+                         "(default: %(default)s)")
+    ap.add_argument("--pace", type=int, default=0, help=PACE_HELP)
     a = ap.parse_args()
 
     ser = open_port(a.port, 115200, a.port_wait)
     try:
         send_line(ser, "")
         try:
-            _, ok = read_until(ser, PROMPT, 5.0)
+            _, ok = read_until(ser, PROMPT, a.timeout)
         except PortGone:
             sys.exit(GONE)
         if not ok:
-            sys.exit("no 'nsh> ' prompt")
+            sys.exit(f"no 'nsh> ' prompt within {a.timeout}s")
         for cmd in a.commands:
-            sys.stdout.write(run(ser, cmd).split("\n", 1)[-1].replace(
-                "nsh> ", ""))
+            out = run(ser, cmd, a.timeout, a.pace)
+            show(out)
+            if any(ln.startswith(FAILED) for ln in out.split("\n")):
+                sys.exit(f"'{cmd}' failed: no picture taken")
         time.sleep(a.settle)
-        text = run(ser, "screen", 20.0)
+        text = run(ser, "screen", 20.0, a.pace)
     finally:
         ser.close()
 

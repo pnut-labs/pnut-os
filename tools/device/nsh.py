@@ -4,12 +4,19 @@
 """Run NuttShell commands on the T-Deck Max over its USB serial console.
 
     python3 tools/device/nsh.py "uname -a" "free" "ls /dev"
-    python3 tools/device/nsh.py --boot-wait 5   # just show what it prints
+    python3 tools/device/nsh.py --boot-wait 5  # did the board reach the shell?
 
 Each command is sent, then the output is read until the next "nsh> "
-prompt.  The exit status is 1 when the board cannot be reached, or a
-command's prompt does not come back within --timeout; a command that
-fails on the device does not change it.
+prompt.  With no commands, it shows what the board prints and checks
+for the prompt.  The exit status is 1 when the board cannot be reached
+or gives no prompt within --timeout; when a command's prompt does not
+come back within it, nsh.py stops there with status 1 and lists the
+commands not run.  A command that fails on the device does not change
+the status.
+
+A command's output that holds "nsh> " and pauses right after it is taken
+as finished there: the next command is typed while it still runs, and
+the rest of its output shows under that one.
 
 Needs pyserial: `apt install python3-serial` on Debian or Ubuntu, or
 `pip install pyserial` in a virtual environment; ESP-IDF's Python has it.
@@ -17,6 +24,7 @@ Needs pyserial: `apt install python3-serial` on Debian or Ubuntu, or
 import argparse
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -33,6 +41,9 @@ GONE = "the port went away (board reset? cable pulled?)"
 PORT_HELP = "serial port (default: $ESPTOOL_PORT, else /dev/ttyACM0)"
 PORT_WAIT_HELP = ("seconds to wait for the port to (re)appear "
                   "(default: %(default)s)")
+PACE_HELP = ("type long lines N bytes at a time, 50 ms apart (the console "
+             "drops characters of a fast long line; default: %(default)s, "
+             "off)")
 
 
 class PortGone(Exception):
@@ -129,13 +140,11 @@ def main():
                     help="seconds to capture output before the first command "
                          "(default: %(default)s)")
     ap.add_argument("--timeout", type=float, default=10.0,
-                    help="seconds to wait for each command to finish "
-                         "(default: %(default)s)")
+                    help="seconds to wait for the first prompt, and for "
+                         "each command to finish (default: %(default)s)")
     ap.add_argument("--port-wait", type=float, default=15.0,
                     help=PORT_WAIT_HELP)
-    ap.add_argument("--pace", type=int, default=0,
-                    help="type long lines N bytes at a time, 50 ms apart "
-                         "(the console drops characters of a fast long line)")
+    ap.add_argument("--pace", type=int, default=0, help=PACE_HELP)
     args = ap.parse_args()
 
     ser = open_port(args.port, args.baud, args.port_wait)
@@ -145,21 +154,23 @@ def main():
         show(boot.decode("utf-8", "replace"))
 
         send_line(ser, "")
-        out, ok = read_until(ser, PROMPT, 5.0)
+        out, ok = read_until(ser, PROMPT, args.timeout)
         show(tidy(out).strip("\n"))
         if not ok:
-            sys.exit("no 'nsh> ' prompt (is the board running NuttX?)")
+            sys.exit(f"no 'nsh> ' prompt within {args.timeout}s "
+                     "(is the board running NuttX?)")
 
-        rc = 0
-        for cmd in args.commands:
+        for i, cmd in enumerate(args.commands):
             print(f"nsh> {cmd}")
             send_line(ser, cmd, args.pace)
             out, ok = read_until(ser, PROMPT, args.timeout)
             show(body(cmd, out))
             if not ok:
                 print(f"[timed out after {args.timeout}s]")
-                rc = 1
-        sys.exit(rc)
+                rest = args.commands[i + 1:]
+                if rest:
+                    print(f"[not run: {shlex.join(rest)}]")
+                sys.exit(1)
     except PortGone as e:
         out = e.args[0]
         show(tidy(out) if cmd is None else body(cmd, out))
