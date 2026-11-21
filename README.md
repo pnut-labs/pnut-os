@@ -173,6 +173,7 @@ after each restart, and the screen's prompt come with the system UI.
 | `tests/screens/` | the system UI's screens as its tests draw them, compared by `make test` |
 | `tests/proto/` | interfaces for the tests |
 | `tools/` | the build's own tools: `configure-target.sh` configures NuttX for a target; `sim-test.py` runs programs in the simulator; `protoc-gen-pnut`, protoc's plugin for the interfaces' clients, servers, topics, settings and references, run with nanopb's by `generate.sh`; `stage-etc.sh` stages `/etc`, with `board-description`, which compiles a target's `board.toml`, and `settings-defaults`, which compiles its `defaults.toml`; `gen-zones` writes the time zones' table from the tz database, kept in the source; `screens.py` compares the system UI's screens, as its tests draw them, with the images kept in `tests/screens` (`make screens` keeps new ones); `mkfont.py` and `mkicons.py` make the system UI's fonts and icons, with the packages of `requirements.txt` (`make ... UI_PYTHON=`) |
+| `tools/device/` | for working with the device over its USB serial console, with pyserial (on Debian or Ubuntu: `apt install python3-serial`): `nsh.py` runs shell commands and prints their output, stopping at the first that does not finish in time (its exit status does not tell whether a command succeeded on the device); `uiscreen.py` presses keys (`keys ...`) and saves what the screen shows as a PNG, none when a command printed a `keys:` or `nsh:` error |
 
 As the code arrives:
 
