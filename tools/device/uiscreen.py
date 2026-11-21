@@ -96,8 +96,9 @@ def main():
                          "(default: %(default)s)")
     ap.add_argument("--timeout", type=float, default=10.0,
                     help="seconds to wait for the first prompt, and for "
-                         "each command before the capture to finish "
-                         "(default: %(default)s)")
+                         "each command before the capture to finish; the "
+                         "capture itself waits this long or 20 seconds, "
+                         "whichever is longer (default: %(default)s)")
     ap.add_argument("--pace", type=int, default=0, help=PACE_HELP)
     a = ap.parse_args()
 
@@ -116,7 +117,7 @@ def main():
             if any(ln.startswith(FAILED) for ln in out.split("\n")):
                 sys.exit(f"'{cmd}' failed: no picture taken")
         time.sleep(a.settle)
-        text = run(ser, "screen", 20.0, a.pace)
+        text = run(ser, "screen", max(a.timeout, 20.0), a.pace)
     finally:
         ser.close()
 
