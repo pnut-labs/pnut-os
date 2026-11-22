@@ -4347,6 +4347,35 @@ static void test_get_stale(void **state)
   assert_true(g_opening_left);
 }
 
+/****************************************************************************
+ * Name: test_exiting_remarked
+ *
+ * Description:
+ *   The app waiting for its old task, whose late Open is told to stop in
+ *   a slot of its own: when that slot's deadline passes too, the app is
+ *   marked anew, and Service states is asked again about it, as the topic
+ *   may have missed its STOPPED.
+ ****************************************************************************/
+
+static void test_exiting_remarked(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 30, connect },
+    { 40, home_now },                     /* Its deadline 240: Get */
+    { 50, tile_notes },                   /* Waits */
+    { 300, open_app },                    /* Late: told, deadline 500 */
+    { 350, notes_exits_missed },          /* No message after it */
+    { 600, keep_starts },                 /* Marked anew at 500 */
+    { 700, NULL },
+  };
+
+  g_stop_stays = true;
+  run(steps, 8);
+  assert_int_equal(g_starts_kept, 2);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -4450,6 +4479,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_exiting_gone, setup, teardown),
     cmocka_unit_test_setup_teardown(test_exiting_full, setup, teardown),
     cmocka_unit_test_setup_teardown(test_get_stale, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_exiting_remarked, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

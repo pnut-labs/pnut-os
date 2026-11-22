@@ -186,6 +186,13 @@ static void host_exiting_mark(FAR struct host_s *h, FAR const char *id)
 
   strlcpy(e->id, id, sizeof(e->id));
   e->order = ++h->exiting_orders;
+
+  /* Marked anew for the app waiting: Service states is asked again */
+
+  if (strcmp(h->next.id, id) == 0)
+    {
+      h->getting = false;
+    }
 }
 
 /* An app waiting to start tries again, from the loop: a slot is free, or

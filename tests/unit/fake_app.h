@@ -321,6 +321,24 @@ static void fake_state(FAR const char *name, int state, int32_t pid)
   e->pid   = pid;
 }
 
+/* A service's state as the fake last set it, or -1 for none */
+
+static int fake_state_of(FAR const char *name)
+{
+  int i;
+
+  for (i = 0; i < FAKE_SERVICES; i++)
+    {
+      if (g_svc_states[i].name[0] != '\0' &&
+          strcmp(g_svc_states[i].name, name) == 0)
+        {
+          return g_svc_states[i].state;
+        }
+    }
+
+  return -1;
+}
+
 /* A service's change on the services topic */
 
 static void publish_service(FAR const char *name, int state, int32_t pid)
@@ -468,7 +486,7 @@ static void fake_stop(FAR struct pnut_services_server_s *server,
     {
       task_exits(in->name);
     }
-  else
+  else if (fake_state_of(in->name) != PNUT_SERVICE_STATE_STATE_STOPPED)
     {
       fake_state(in->name, PNUT_SERVICE_STATE_STATE_STOPPING, 0);
     }
