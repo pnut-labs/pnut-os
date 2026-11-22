@@ -2322,7 +2322,7 @@ static void test_shell_tables(void **state)
     { 100, key_back },
     { 150 + T_HUNG, soft_right },         /* Close */
     { 200 + T_HUNG, keep_dev },
-    { 250 + T_HUNG, NULL },
+    { 250 + T_HUNG + T_STOP, NULL },      /* Its deadline passed */
   };
 
   run(steps, 8);
@@ -2337,6 +2337,7 @@ static void test_shell_tables(void **state)
   assert_int_equal(g_app.events[g_app.nevents - 1].which_kind,
                    PNUT_UI_EVENT_STOP_TAG);
   assert_non_null(g_dev_token);
+  assert_int_equal(g_stops, 0);           /* Never stopped by its name */
 }
 
 /****************************************************************************
@@ -2720,6 +2721,507 @@ static void test_wait_no_slot(void **state)
   assert_int_equal(g_states[2], HOST_FREE);
 }
 
+/****************************************************************************
+ * Name: test_twin_not_stopped
+ *
+ * Description:
+ *   Another task of an app open (one Service states names Notes, which the
+ *   UI did not start) is told to stop; at its deadline, or taken off for
+ *   events it never reads, Service states is not asked to stop Notes by
+ *   name, which would stop the open one.  Two tasks told to stop are no
+ *   twins of each other: the first's deadline stops the name.
+ ****************************************************************************/
+
+static void second_task(void)
+{
+  app_connect_unstarted(&g_app2);
+}
+
+static void second_opens(void)
+{
+  app_open(&g_app2, NULL, 4);
+}
+
+static void second_opens_stuck(void)
+{
+  app_open(&g_app2, NULL, 0);
+}
+
+static int g_stops_kept;
+
+static void keep_stops(void)
+{
+  g_stops_kept = g_stops;
+}
+
+static void test_twin_not_stopped(void **state)
+{
+  static const struct step_s deadline[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, second_task },
+    { 110, second_opens },                /* Told to stop */
+    { 200 + T_STOP, keep_states },
+    { 250 + T_STOP, NULL },
+  };
+
+  static const struct step_s stalled[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, second_task },
+    { 110, second_opens_stuck },          /* Its Stop never read */
+    { 200 + T_STALL, keep_states },
+    { 250 + T_STALL, NULL },
+  };
+
+  static const struct step_s both[] =
+  {
+    { 20, connect },
+    { 30, open_app },                     /* Not started here */
+    { 100, second_task },
+    { 110, second_opens },                /* Nor this one */
+    { 60 + T_STOP, keep_stops },          /* The first's deadline */
+    { 200 + T_STOP, NULL },
+  };
+
+  run(deadline, 8);
+  assert_int_equal(g_app2.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_stops, 0);
+  assert_int_equal(g_states[0], HOST_OPEN);
+
+  g_times.stop = 5000;
+  run(stalled, 8);
+  assert_int_equal(g_app2.ended, PNUT_STATUS_BUSY);
+  assert_int_equal(g_stops, 0);
+  assert_int_equal(g_states[0], HOST_OPEN);
+
+  g_times.stop = T_STOP;
+  g_stop_stays = true;
+  run(both, 6);
+  assert_int_equal(g_stops_kept, 1);
+  assert_string_equal(g_stopped, NOTES);
+}
+
+/****************************************************************************
+ * Name: test_shell_kept
+ *
+ * Description:
+ *   A shell's program is the developer's: a newer tap does not cancel it
+ *   while it has drawn nothing, Home keeps it warm undrawn, and its
+ *   connection closing is no crash.
+ ****************************************************************************/
+
+static int g_dev_state;
+
+static void keep_dev_state(void)
+{
+  int i;
+
+  g_dev_state = HOST_FREE;
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      if (g_ui.host.slots[i].state != HOST_FREE &&
+          strcmp(g_ui.host.slots[i].id, DEV) == 0)
+        {
+          g_dev_state = g_ui.host.slots[i].state;
+        }
+    }
+
+  g_dev_crashes = crash_count(DEV);
+}
+
+static void test_shell_kept(void **state)
+{
+  static const struct step_s tapped[] =
+  {
+    { 20, connect },
+    { 30, shell_dev },                    /* Open, nothing drawn */
+    { 70, tile_todo },
+    { 150, keep_dev_state },
+    { 200, NULL },
+  };
+
+  static const struct step_s home[] =
+  {
+    { 20, connect },
+    { 30, shell_dev },
+    { 60, home_now },
+    { 100, keep_dev_state },
+    { 150, NULL },
+  };
+
+  static const struct step_s closed[] =
+  {
+    { 10, plant },
+    { 20, connect },
+    { 30, shell_dev },
+    { 80, show_dev },
+    { 100, drop_connection },
+    { 150, keep_dev_state },
+    { 200, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(tapped, 5);
+  assert_int_equal(g_app.nevents, 1);     /* Welcome: never Stop */
+  assert_int_equal(g_dev_state, HOST_OPEN);
+
+  run(home, 5);
+  assert_int_equal(g_app.nevents, 1);
+  assert_int_equal(g_dev_state, HOST_WARM);
+
+  run(closed, 7);
+  assert_int_equal(g_dev_state, HOST_FREE);
+  assert_int_equal(g_dev_crashes, 2);     /* As planted */
+}
+
+/****************************************************************************
+ * Name: test_resume_leave_stop
+ *
+ * Description:
+ *   An app told to stop behind that answers with Leave is coming back:
+ *   its token is kept, and given back when it is started again.
+ ****************************************************************************/
+
+static void test_resume_leave_stop(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 90, resume_inbox },
+    { 100, home_now },
+    { 120, tile_todo },
+    { 130, connect_todo },
+    { 140, open_todo },
+    { 200, show_todo },
+    { 220, home_now },                    /* Notes stopped */
+    { 240, leave },                       /* Its answer, then it exits */
+    { 260, notes_exits },
+    { 300, named_notes },
+    { 310, tile_notes },
+    { 320, connect },
+    { 330, open_app },
+    { 400, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 18);
+  assert_int_equal(g_app.events[0].kind.welcome.reason,
+                   PNUT_UI_WELCOME_REASON_RESUMED);
+  assert_int_equal(g_app.events[0].kind.welcome.token.size, 7);
+  assert_memory_equal(g_app.events[0].kind.welcome.token.bytes, "inbox/3",
+                      7);
+}
+
+/****************************************************************************
+ * Name: test_owed_drawn_now
+ *
+ * Description:
+ *   An answer owed (here to Back), coming after the key's window, is
+ *   drawn at once: not gathered as an app's change nobody's key caused.
+ ****************************************************************************/
+
+static void show_archive(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX + 1;
+  strcpy(in.title, "Archive");
+  in.which_content = PNUT_UI_SHOW_REQUEST_LIST_TAG;
+  in.content.list.count = 1;
+  in.content.list.rows_count = 1;
+  in.content.list.rows[0].id = 1;
+  strcpy(in.content.list.rows[0].title, "Old");
+  app_send_show(&g_app, &in);
+}
+
+static void test_owed_drawn_now(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 1000, key_back },                   /* Its window ends at 1500 */
+    { 1600, mark },                       /* 0 */
+    { 1700, show_archive },               /* Late, but owed */
+    { 1800, mark },                       /* 1: drawn */
+    { 1900, NULL },
+  };
+
+  times_long();
+  g_nmarks = 0;
+  run(steps, 9);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_int_equal(g_marks[1], g_marks[0] + 1);
+}
+
+/****************************************************************************
+ * Name: test_page_owed
+ *
+ * Description:
+ *   A page of rows the UI asked for is owed: unanswered by 3 s, "Waiting
+ *   for Notes…"; answered with Rows in time, nothing.
+ ****************************************************************************/
+
+static void show_long(void)
+{
+  static pnut_ui_show_request_t in;
+  int i;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  strcpy(in.title, "Inbox");
+  in.which_content = PNUT_UI_SHOW_REQUEST_LIST_TAG;
+  in.content.list.count = 40;
+  in.content.list.rows_count = 20;
+  for (i = 0; i < 20; i++)
+    {
+      in.content.list.rows[i].id = i + 1;
+      snprintf(in.content.list.rows[i].title,
+               sizeof(in.content.list.rows[i].title), "Row %d", i);
+    }
+
+  app_send_show(&g_app, &in);
+}
+
+static void down14(void)
+{
+  int i;
+
+  for (i = 0; i < 14; i++)
+    {
+      key('s', false);
+    }
+}
+
+static void rows_page(void)
+{
+  static pnut_ui_rows_request_t in;
+  int i;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  in.first = 20;
+  in.rows_count = 20;
+  for (i = 0; i < 20; i++)
+    {
+      in.rows[i].id = 21 + i;
+      snprintf(in.rows[i].title, sizeof(in.rows[i].title), "Row %d",
+               20 + i);
+    }
+
+  app_send_rows(&g_app, &in);
+}
+
+static void test_page_owed(void **state)
+{
+  static const struct step_s unanswered[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_long },
+    { 700, down14 },                      /* A page asked for */
+    { 750 + T_BUSY, look_busy },
+    { 800 + T_BUSY, NULL },
+  };
+
+  static const struct step_s answered[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_long },
+    { 700, down14 },
+    { 800, rows_page },
+    { 750 + T_BUSY, look },
+    { 800 + T_BUSY, NULL },
+  };
+
+  run(unanswered, 7);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Waiting for Notes\xe2\x80\xa6");
+
+  run(answered, 8);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_string_equal(g_top, "app");
+}
+
+/****************************************************************************
+ * Name: test_crash_table_full
+ *
+ * Description:
+ *   With every crash count held by a disabled app, another app's crash
+ *   is not counted: a disabled app is never forgotten to make room.
+ ****************************************************************************/
+
+static void plant_disabled(void)
+{
+  static const char *ids[HOST_CRASHES] =
+  {
+    NOTES, "org.example.a", "org.example.b", "org.example.c"
+  };
+
+  FAR struct host_s *h = &g_ui.host;
+  int i;
+
+  for (i = 0; i < HOST_CRASHES; i++)
+    {
+      strlcpy(h->crashes[i].id, ids[i], sizeof(h->crashes[i].id));
+      h->crashes[i].count = HOST_CRASHED;
+    }
+}
+
+static void todo_crashes(void)
+{
+  pnut_ui_disconnect(&g_app2.client);
+  task_exits(TODO);
+}
+
+static int g_todo_crashes;
+
+static void keep_todo_crashes(void)
+{
+  g_todo_crashes = crash_count(TODO);
+}
+
+static void test_crash_table_full(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, plant_disabled },
+    { 20, tile_todo },
+    { 30, connect_todo },
+    { 40, open_todo },
+    { 80, show_todo },
+    { 100, todo_crashes },
+    { 150, keep_todo_crashes },
+    { 200, tile_notes },
+    { 250, look_stopped },
+    { 300, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  run(steps, 10);
+  assert_int_equal(g_todo_crashes, 0);
+  assert_string_equal(g_top, "stopped");
+}
+
+/****************************************************************************
+ * Name: test_resume_table_full
+ *
+ * Description:
+ *   With every token kept, a new one takes the place of the one given
+ *   longest ago.
+ ****************************************************************************/
+
+static FAR const char *g_resume_ids[HOST_RESUMES] =
+{
+  "org.example.a", "org.example.b", "org.example.c", "org.example.d"
+};
+
+static bool g_kept[HOST_RESUMES + 1];
+
+static void plant_tokens(void)
+{
+  FAR struct host_s *h = &g_ui.host;
+  int i;
+
+  for (i = 0; i < HOST_RESUMES; i++)
+    {
+      strlcpy(h->resumes[i].id, g_resume_ids[i], sizeof(h->resumes[i].id));
+      h->resumes[i].len = 1;
+      h->resumes[i].token[0] = 'x';
+      h->resumes[i].order = ++h->resume_orders;
+    }
+}
+
+static void keep_tokens(void)
+{
+  int i;
+
+  for (i = 0; i < HOST_RESUMES; i++)
+    {
+      g_kept[i] = host_token(&g_ui.host, g_resume_ids[i]) != NULL;
+    }
+
+  g_kept[HOST_RESUMES] = host_token(&g_ui.host, NOTES) != NULL;
+}
+
+static void test_resume_table_full(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, plant_tokens },
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 90, resume_inbox },
+    { 150, keep_tokens },
+    { 200, NULL },
+  };
+
+  run(steps, 8);
+  assert_false(g_kept[0]);                /* Given longest ago */
+  assert_true(g_kept[1]);
+  assert_true(g_kept[2]);
+  assert_true(g_kept[3]);
+  assert_true(g_kept[HOST_RESUMES]);
+}
+
+/****************************************************************************
+ * Name: test_home_closes_options
+ *
+ * Description:
+ *   Home with the app's options open closes them with its screen.
+ ****************************************************************************/
+
+static bool g_options_were;
+static bool g_options_are;
+
+static void keep_options_were(void)
+{
+  g_options_were = ui_options_open(&g_ui);
+}
+
+static void keep_options_are(void)
+{
+  g_options_are = ui_options_open(&g_ui);
+}
+
+static void test_home_closes_options(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox_options },
+    { 700, options_key },
+    { 750, keep_options_were },
+    { 800, home_now },
+    { 850, keep_options_are },
+    { 900, NULL },
+  };
+
+  run(steps, 9);
+  assert_true(g_options_were);
+  assert_false(g_options_are);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -2782,6 +3284,19 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_wait_stopping, setup, teardown),
     cmocka_unit_test_setup_teardown(test_wait_no_slot, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_twin_not_stopped, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_shell_kept, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_resume_leave_stop, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_owed_drawn_now, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_page_owed, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_crash_table_full, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_resume_table_full, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_home_closes_options, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
