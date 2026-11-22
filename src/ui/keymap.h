@@ -74,7 +74,8 @@ enum ui_action_e
   UI_ACT_DELETE,
   UI_ACT_CONFIRM,                 /* Enter in a one-line field */
   UI_ACT_LEAVE_FIELD,             /* Find and Q: its text kept */
-  UI_ACT_HOME                     /* Alt and Backspace held (RFC 0037) */
+  UI_ACT_HOME                     /* Alt and Backspace held outside a
+                                   * text field (RFC 0037) */
 };
 
 /* The modifiers in effect, Find held, and whether a text field has the

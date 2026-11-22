@@ -11,6 +11,8 @@
  *   W S A D      up, down, left, right; repeat when held
  *   Q, E         back, the primary action
  *   Backspace    back; while typing, deletes (never back)
+ *   Alt Bksp     held, Home (RFC 0037); let go sooner, back; while
+ *                typing, deletes as Backspace alone does
  *   Enter        the primary action; while typing, confirms the field
  *   Alt Enter    the options, while typing too
  *   Space        the next page; with Shift, the previous one
@@ -97,10 +99,16 @@ static void keymap_special(FAR struct keymap_state_s *s, uint32_t code,
         break;
 
       case KEYMAP_BACKSPACE:
-        keymap_set(out, s->typing ? UI_ACT_DELETE : UI_ACT_BACK, !s->alt);
-        if (s->alt)
+
+        /* With Alt held, Home (always the system's) outside a text field;
+         * in one, Delete as ever
+         */
+
+        keymap_set(out, s->typing ? UI_ACT_DELETE : UI_ACT_BACK,
+                   s->typing || !s->alt);
+        if (s->alt && !s->typing)
           {
-            out->hold = UI_ACT_HOME;  /* Home is always the system's */
+            out->hold = UI_ACT_HOME;
           }
 
         break;

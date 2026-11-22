@@ -391,6 +391,38 @@ static void test_input_home(void **state)
   run(steps, 11);
 }
 
+/* test_input_home_typing: in a text field, Alt and Backspace held 700 ms
+ * is Delete at once and repeating, never Home
+ */
+
+static void home_typing_check(void)
+{
+  assert_int_equal(count(UI_KEY(UI_ACT_HOME)), 0);
+  assert_int_equal(count(UI_KEY(UI_ACT_BACK)), 0);
+  assert_true(count(UI_KEY(UI_ACT_DELETE)) >= 3);
+  assert_int_equal(g_keys[0], UI_KEY(UI_ACT_DELETE));
+}
+
+static void typing_on(void)
+{
+  input_typing(&g_input, true);
+}
+
+static void test_input_home_typing(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, setup },
+    { 20, typing_on },
+    { 50, home_press },
+    { 750, home_release },
+    { 800, home_typing_check },
+    { 820, NULL },
+  };
+
+  run(steps, 6);
+}
+
 /* test_input_touch */
 
 static void touch_tap(void)
@@ -641,6 +673,7 @@ int main(void)
     cmocka_unit_test(test_input_typing),
     cmocka_unit_test(test_input_hold),
     cmocka_unit_test(test_input_home),
+    cmocka_unit_test(test_input_home_typing),
     cmocka_unit_test(test_input_touch),
     cmocka_unit_test(test_input_gathers),
     cmocka_unit_test(test_input_no_reader),

@@ -223,9 +223,10 @@ static void test_repeat(void **state)
   assert_false(keyrepeat_fire(&k, 3000));
 }
 
-/* Home is Alt and Backspace held (RFC 0037): Back, or Delete in a field,
+/* Home is Alt and Backspace held (RFC 0037), outside a text field: Back
  * on a short press, sent when the key is let go; Home once held 0.5 s,
- * once; Backspace alone is unchanged
+ * once; Backspace alone is unchanged.  In a text field Alt and Backspace
+ * is Delete, repeating, never Home (the owner, 2026-11-22).
  */
 
 static void test_home_chord(void **state)
@@ -268,7 +269,8 @@ static void test_home_chord(void **state)
   s.typing = true;
   keymap_key(&s, KEYMAP_BACKSPACE, true, true, &r);
   assert_int_equal(r.action, UI_ACT_DELETE);
-  assert_int_equal(r.hold, UI_ACT_HOME);
+  assert_int_equal(r.hold, UI_ACT_NONE);
+  assert_true(r.repeats);
   hold(&s, KEYMAP_ALT, false);
 
   /* A repeating key owes nothing when let go */
