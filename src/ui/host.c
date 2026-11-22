@@ -28,6 +28,7 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -1569,7 +1570,8 @@ static void host_service_change(FAR struct pnut_service_change_reader_s
   if (h->seq != 0 && msg->seq != h->seq + 1)
     {
       pnut_log(&h->ui->module, PNUT_LOG_INFO,
-               "services' changes missed: %u to %u", h->seq, msg->seq);
+               "services' changes missed: %" PRIu32 " to %" PRIu32,
+               h->seq, msg->seq);
     }
 
   h->seq = msg->seq;
