@@ -25,6 +25,7 @@
  ****************************************************************************/
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -208,11 +209,13 @@ struct fake_get_s
 static uint32_t g_get_late;
 static struct fake_get_s g_get_waiting[FAKE_GETS];
 
-/* Steps due while an app's connection is asked for and not up yet wait,
- * in order, until it is: its client connects from the loop, after the
- * steps already due, and on a loaded computer those can be the next ones
- * (its Open, then sent unconnected).  Checked each ms, for FAKE_HOLD ms
- * at most.
+/* A step due waits, and those after it with it, in order, while an
+ * app's connection is asked for and not up yet, or while the loop has
+ * work of its own ready (a descriptor to read, a timer due other than
+ * the steps'): its client connects from the loop, after the steps already
+ * due, and on a loaded computer those can be the next ones (its Open,
+ * then sent unconnected); and a step sees what came before it handled, as
+ * on an idle computer.  Checked each ms; a step held FAKE_HOLD ms runs.
  */
 
 #define FAKE_STEPS    64
@@ -220,8 +223,8 @@ static struct fake_get_s g_get_waiting[FAKE_GETS];
 
 static FAR const struct step_s *g_held[FAKE_STEPS];
 static int g_nheld;
+static uint64_t g_head_at;        /* When the first step held was */
 static FAR struct pnut_timer_s *g_holding;
-static uint64_t g_connect_at;
 
 /* Whether the loop runs: a test that fails inside it leaves it running,
  * and its teardown ends the run
@@ -630,7 +633,6 @@ static void app_connect_unstarted(FAR struct app_s *app)
   app->opened = -1;
   app->ended  = -1;
   app->connecting = true;
-  g_connect_at = pnut_now();
   assert_int_equal(pnut_ui_connect(g_loop, HOST_SERVICE, app_state_changed,
                                    app, &app->client), 0);
 }
@@ -761,14 +763,52 @@ static void save(FAR const char *name)
   fclose(f);
 }
 
-/* Whether the steps due wait: an app's connection asked for, not up yet,
- * and not for too long
+static void step_timer(FAR struct pnut_loop_s *loop,
+                       FAR struct pnut_timer_s *timer, FAR void *arg);
+static void steps_release(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg);
+
+/* Whether the steps due wait: an app's connection asked for and not up
+ * yet, or the loop's own work ready
  */
 
 static bool steps_wait(void)
 {
-  return (g_app.connecting || g_app2.connecting) &&
-         pnut_now() - g_connect_at < FAKE_HOLD;
+  FAR struct pnut_timer_s *t;
+  FAR struct pnut_watch_s *w;
+  struct epoll_event ev[2];
+  uint64_t now = pnut_now();
+  int n;
+  int i;
+
+  if (g_app.connecting || g_app2.connecting)
+    {
+      return true;
+    }
+
+  for (t = g_loop->armed; t != NULL && t->deadline <= now; t = t->next)
+    {
+      if (t->handler != step_timer && t->handler != steps_release)
+        {
+          return true;
+        }
+    }
+
+  /* Its own timer's descriptor aside: a timer started in a handler sets
+   * it again
+   */
+
+  n = epoll_wait(g_loop->epfd, ev, 2, 0);
+  for (i = 0; i < n; i++)
+    {
+      w = ev[i].data.ptr;
+      if (w->fd >= 0 && !w->dead && w->fd != g_loop->timerfd)
+        {
+          return true;
+        }
+    }
+
+  return false;
 }
 
 static void step_do(FAR const struct step_s *step)
@@ -784,27 +824,38 @@ static void step_do(FAR const struct step_s *step)
 }
 
 /* The steps held, run in order once they may; one that asks for a
- * connection holds those after it
+ * connection, or makes work, holds those after it
  */
 
 static void steps_release(FAR struct pnut_loop_s *loop,
                           FAR struct pnut_timer_s *timer, FAR void *arg)
 {
   FAR const struct step_s *step;
+  bool late;
 
-  while (g_nheld > 0 && !steps_wait())
+  while (g_nheld > 0)
     {
+      late = pnut_now() - g_head_at >= FAKE_HOLD;
+      if (!late && steps_wait())
+        {
+          return;
+        }
+
       step = g_held[0];
       g_nheld--;
       memmove(&g_held[0], &g_held[1], g_nheld * sizeof(g_held[0]));
+      g_head_at = pnut_now();
+      if (late)
+        {
+          printf("fake: the step at %" PRIu32 " held %d ms, run\n",
+                 step->at, FAKE_HOLD);
+        }
+
       step_do(step);
     }
 
-  if (g_nheld == 0)
-    {
-      pnut_timer_cancel(loop, g_holding);
-      g_holding = NULL;
-    }
+  pnut_timer_cancel(loop, g_holding);
+  g_holding = NULL;
 }
 
 static void step_timer(FAR struct pnut_loop_s *loop,
@@ -819,6 +870,7 @@ static void step_timer(FAR struct pnut_loop_s *loop,
   assert_true(g_nheld < FAKE_STEPS);
   if (g_nheld == 0)
     {
+      g_head_at = pnut_now();
       assert_int_equal(pnut_timer_start(loop, 1, 1, steps_release, NULL,
                                         &g_holding), 0);
     }

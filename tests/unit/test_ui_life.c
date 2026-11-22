@@ -4728,9 +4728,13 @@ static void test_get_gone(void **state)
  *
  * Description:
  *   The fake's own guard, for runs on a loaded computer: the loop busy
- *   for 50 ms, the steps due meanwhile run together, an app's connect
- *   among them.  The steps after it wait, in order, for its connection,
- *   so that its Open goes once it is up, and is welcomed.
+ *   for 50 ms, the steps due meanwhile come together.  The steps after an
+ *   app's connect wait, in order, for its connection, and each step waits
+ *   for the work before it to be done: its Open, then its first Show, are
+ *   answered; a check due just after a deadline of the UI's sees Service
+ *   states asked to stop the app; one due just after a tap of an app
+ *   whose old task outlived its deadline sees Service states' Get asked
+ *   (from a timer of the UI's, due at once).
  ****************************************************************************/
 
 static uint64_t ms_now(void)
@@ -4756,10 +4760,29 @@ static void test_steps_bunched(void **state)
   {
     { 20, tile_notes },
     { 25, busy_50 },                      /* Until 75 */
-    { 30, connect },                      /* Both due at 75 */
+    { 30, connect },                      /* All three due at 75 */
     { 40, open_app },
-    { 150, show_inbox },
+    { 60, show_inbox },
     { 300, look2 },
+    { 400, NULL },
+  };
+
+  static const struct step_s deadline[] =
+  {
+    { 20, connect },
+    { 30, open_app },                     /* Not started here: told */
+    { 200, busy_50 },                     /* Until 250 */
+    { 240, keep_stops },                  /* Due with its deadline, 230 */
+    { 300, NULL },
+  };
+
+  static const struct step_s asked[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 40, home_now },                     /* Its deadline 240 */
+    { 280, busy_50 },                     /* Until 330 */
+    { 300, tile_notes },                  /* Both due at 330 */
+    { 310, keep_gets },
     { 400, NULL },
   };
 
@@ -4768,6 +4791,17 @@ static void test_steps_bunched(void **state)
   assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
   assert_int_equal(g_app.status, PNUT_STATUS_OK);
   assert_string_equal(g_top2, "app");
+
+  g_stops = 0;
+  g_stops_kept = 0;
+  run(deadline, 5);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_stops_kept, 1);
+
+  g_gets = 0;
+  g_stop_stays = true;
+  run(asked, 6);
+  assert_int_equal(g_gets_kept, 1);
 }
 
 /****************************************************************************
