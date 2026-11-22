@@ -430,8 +430,12 @@ static void host_stop_due(FAR struct pnut_loop_s *loop,
       return;
     }
 
-  pnut_log(&h->ui->module, PNUT_LOG_WARNING, "app %s did not stop",
-           app->id);
+  /* Told to stop (Stop sent, or Service states asked), it did not; one
+   * that left of itself, or whose connection closed, was never told
+   */
+
+  pnut_log(&h->ui->module, PNUT_LOG_WARNING, "app %s %s", app->id,
+           app->told || app->asked ? "did not stop" : "still running");
 
   /* Service states stops the task by its name: never a shell's program,
    * nor a task of a name another slot holds alive
@@ -475,6 +479,7 @@ static void host_stop(FAR struct host_app_s *app)
     }
 
   app->state = HOST_STOPPING;
+  app->told  = true;
   if (pnut_timer_start(h->loop, h->ui->config.times.stop, 0, host_stop_due,
                        app, &app->due) < 0)
     {

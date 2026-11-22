@@ -107,6 +107,7 @@ struct host_app_s
                                    * since its start; 0 before */
   bool gone;                      /* Its task exited (the topic) */
   bool asked;                     /* Service states asked to stop it */
+  bool told;                      /* Sent Stop */
   char id[MANIFEST_ID_MAX + 1];
   struct manifest_s manifest;
   struct pnut_stream_s stream;    /* Open's: the events */

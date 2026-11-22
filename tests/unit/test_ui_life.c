@@ -140,6 +140,12 @@ static char g_top2[32];
 static int g_depth;
 static int g_depth2;
 
+/* The log caught (catch_start(), catch_end()) */
+
+static char g_out[64 * 1024];
+static FAR FILE *g_catch;
+static int g_saved = -1;
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -245,6 +251,38 @@ static void show_inbox(void)
   app_send_show(&g_app, &in);
 }
 
+/* The log, which on the computer is the standard error, caught in a
+ * file while a test runs
+ */
+
+static void catch_start(void)
+{
+  fflush(stderr);
+  g_catch = tmpfile();
+  assert_non_null(g_catch);
+  g_saved = dup(STDERR_FILENO);
+  assert_true(g_saved >= 0);
+  assert_true(dup2(fileno(g_catch), STDERR_FILENO) >= 0);
+}
+
+/* The lines caught, in g_out; the standard error as it was */
+
+static FAR const char *catch_end(void)
+{
+  size_t n;
+
+  fflush(stderr);
+  dup2(g_saved, STDERR_FILENO);
+  close(g_saved);
+  g_saved = -1;
+  rewind(g_catch);
+  n = fread(g_out, 1, sizeof(g_out) - 1, g_catch);
+  g_out[n] = '\0';
+  fclose(g_catch);
+  g_catch = NULL;
+  return g_out;
+}
+
 static int setup(void **state)
 {
   fake_setup(state);
@@ -262,6 +300,11 @@ static int setup(void **state)
 
 static int teardown(void **state)
 {
+  if (g_saved >= 0)
+    {
+      catch_end();                /* A test failed while catching */
+    }
+
   return fake_teardown(state);
 }
 
@@ -3628,6 +3671,82 @@ static void test_restarting_gone(void **state)
   assert_int_equal(g_states[0], HOST_FREE);
 }
 
+/****************************************************************************
+ * Name: test_still_running
+ *
+ * Description:
+ *   At Stop's deadline, the log says what became of the task (the owner,
+ *   L14): an app that left of itself, or whose connection closed, was
+ *   never told to stop, and its task is "still running"; one told to
+ *   stop "did not stop".  Either way Service states stops it then.
+ ****************************************************************************/
+
+/* It leaves, its task left running */
+
+static void leave_running(void)
+{
+  app_leave(&g_app);
+}
+
+static void test_still_running(void **state)
+{
+  static const struct step_s left[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, leave_running },               /* Of itself */
+    { 200 + T_STOP, NULL },
+  };
+
+  static const struct step_s closed[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, drop_connection },             /* Its task left running */
+    { 200 + T_STOP, NULL },
+  };
+
+  static const struct step_s told[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, cancel_open },                 /* Told to stop */
+    { 200 + T_STOP, NULL },
+  };
+
+  FAR const char *out;
+
+  catch_start();
+  run(left, 6);
+  out = catch_end();
+  assert_non_null(strstr(out, "app " NOTES " still running"));
+  assert_null(strstr(out, "did not stop"));
+  assert_int_equal(g_stops, 1);
+
+  g_stops = 0;
+  catch_start();
+  run(closed, 6);
+  out = catch_end();
+  assert_non_null(strstr(out, "app " NOTES " still running"));
+  assert_null(strstr(out, "did not stop"));
+  assert_int_equal(g_stops, 1);
+
+  g_stops = 0;
+  g_stop_stays = true;
+  catch_start();
+  run(told, 6);
+  out = catch_end();
+  assert_non_null(strstr(out, "app " NOTES " did not stop"));
+  assert_null(strstr(out, "still running"));
+  assert_int_equal(g_stops, 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -3714,6 +3833,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_unsent_stops, setup, teardown),
     cmocka_unit_test_setup_teardown(test_restarting_gone, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_still_running, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
