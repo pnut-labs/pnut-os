@@ -770,7 +770,9 @@ static void host_welcome(FAR struct host_app_s *app)
   ev.kind.welcome.clock24 = true;
   ev.kind.welcome.reason = PNUT_UI_WELCOME_REASON_OPENED;
 
-  /* Started again after it was stopped behind: its token, given once */
+  /* Started again after it was stopped behind: its token, kept until it
+   * gives another or clears it, leaves of itself, or crashes
+   */
 
   r = app->shell ? NULL : host_resume_find(app->host, app->id);
   if (r != NULL)
@@ -778,7 +780,6 @@ static void host_welcome(FAR struct host_app_s *app)
       ev.kind.welcome.reason = PNUT_UI_WELCOME_REASON_RESUMED;
       ev.kind.welcome.token.size = r->len;
       memcpy(ev.kind.welcome.token.bytes, r->token, r->len);
-      memset(r, 0, sizeof(*r));
     }
 
   host_event_to(app, &ev);

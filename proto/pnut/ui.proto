@@ -66,9 +66,10 @@ service Ui {
   }
 
   // The app's resume token, given whenever its place changes (which
-  // screen, which item, a draft's id): kept in memory while the app is
-  // behind, and given back in Welcome when it is started again; an empty
-  // one forgets it.  From any app connected.
+  // screen, which item, a draft's id): kept in memory until the app gives
+  // another, leaves of itself or crashes, and given back in each Welcome
+  // when it is started again; an empty one forgets it.  From any app
+  // connected.
   rpc Resume (UiResumeRequest) returns (UiReply) {
     option (pnut.method) = 6;
   }

@@ -107,7 +107,10 @@ struct host_app_s
   uint8_t count;
 };
 
-/* An app's resume token, kept while it is behind (RFC 0037) */
+/* An app's resume token (RFC 0037), given back in each Welcome: kept
+ * until the app gives another or clears it, leaves of itself, crashes,
+ * or the owner closes it
+ */
 
 struct host_resume_s
 {

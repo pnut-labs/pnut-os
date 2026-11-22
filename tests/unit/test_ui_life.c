@@ -1008,8 +1008,11 @@ static void test_home_undrawn(void **state)
  * Description:
  *   Notes gives its resume token, goes warm, and is stopped behind (Todo
  *   warm after it); it exits.  Its tile starts it again, welcomed as
- *   resumed with its token.
+ *   resumed with its token, which is kept still: until the app gives
+ *   another or clears it, leaves, or crashes.
  ****************************************************************************/
+
+static bool g_token_kept;
 
 static void resume_inbox(void)
 {
@@ -1019,6 +1022,11 @@ static void resume_inbox(void)
 static void notes_exits(void)
 {
   pnut_ui_disconnect(&g_app.client);
+}
+
+static void keep_token(void)
+{
+  g_token_kept = host_token(&g_ui.host, NOTES) != NULL;
 }
 
 static void test_resume_kept(void **state)
@@ -1041,11 +1049,14 @@ static void test_resume_kept(void **state)
     { 310, tile_notes },
     { 320, connect },
     { 330, open_app },
+    { 380, keep_token },
     { 400, NULL },
   };
 
   write_manifest(TODO, "reminders", 2, g_two);
-  run(steps, 17);
+  g_token_kept = false;
+  run(steps, 18);
+  assert_true(g_token_kept);
   assert_int_equal(g_starts, 3);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
   assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
