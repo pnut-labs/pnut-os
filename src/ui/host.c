@@ -13,7 +13,8 @@
  * warm, one being opened.  An app the system UI did not start (after the
  * system UI's own restart, or a second task of one running) has its Open
  * answered with Stop; a program typed in a developer's shell opens as it
- * comes.  Events go down Open's stream as the app's credit allows; an app
+ * comes, under an id no app has, and is never given a place or counted
+ * crashes.  Events go down Open's stream as the app's credit allows; an app
  * that leaves HOST_EVENTS of them waiting is taken off.  An app's text is
  * never logged.
  */
@@ -860,8 +861,9 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
     }
   else if (out->shell)
     {
-      /* Typed in a developer's shell: under the id it gives, with its
-       * manifest if there is one, every template if not
+      /* Typed in a developer's shell: under the id it gives, with every
+       * template; never an app's id, one with a manifest (the owner,
+       * 2026-11-22), so that it touches no app's place or crashes
        */
 
       if (!manifest_good_id(h->claimed))
@@ -874,22 +876,20 @@ static void host_who(FAR struct pnut_services_client_s *client, int status,
       strlcpy(id, h->claimed, sizeof(id));
       shell = true;
       ret = manifest_load(h->apps, id, &manifest);
-      if (ret == -ENOENT)
+      if (ret == 0 || ret == -EINVAL)
         {
-          manifest_any(&manifest);
-        }
-      else if (ret == -EINVAL)
-        {
-          host_refuse(h, PNUT_STATUS_DENIED, PNUT_UI_ERROR_CODE_NOT_AN_APP,
-                      "its manifest is not one");
+          host_refuse(h, PNUT_STATUS_DENIED, PNUT_UI_ERROR_CODE_BAD_ID,
+                      "an app's id");
           return;
         }
-      else if (ret < 0)
+      else if (ret != -ENOENT)
         {
           host_refuse(h, PNUT_STATUS_UNAVAILABLE, PNUT_UI_ERROR_CODE_NONE,
                       "its manifest cannot be read");
           return;
         }
+
+      manifest_any(&manifest);
     }
   else
     {
@@ -1209,20 +1209,27 @@ static void host_leave(FAR struct pnut_ui_server_s *server,
       return;
     }
 
-  /* Leaving of itself, the app is done; told to stop, it will be back */
+  /* Leaving of itself, the app is done; told to stop, it will be back.  A
+   * shell's program has neither a place kept nor crashes counted.
+   */
 
-  if (app->state != HOST_STOPPING)
+  if (!app->shell)
     {
-      host_resume_forget(h, app->id);
+      if (app->state != HOST_STOPPING)
+        {
+          host_resume_forget(h, app->id);
+        }
+
+      host_crash_clear(h, app->id);
     }
 
-  host_crash_clear(h, app->id);
   host_drop(app, PNUT_STATUS_ENDED);
   host_answer(server, req, pnut_ui_leave_reply, 0);
 }
 
 /* The app's place: kept, or forgotten when empty; from any app connected,
- * one told to stop too (Stop is when it saves), unless the owner closed it
+ * one told to stop too (Stop is when it saves), unless the owner closed
+ * it.  A shell's program's is answered, never kept.
  */
 
 static void host_resume(FAR struct pnut_ui_server_s *server,
@@ -1240,7 +1247,7 @@ static void host_resume(FAR struct pnut_ui_server_s *server,
       return;
     }
 
-  if (app->closed)
+  if (app->closed || app->shell)
     {
       host_answer(server, req, pnut_ui_resume_reply, 0);
       return;                     /* Done with: nothing to come back to */
@@ -1563,7 +1570,11 @@ void host_enable(FAR struct host_s *h, FAR const char *id)
 void host_close_app(FAR struct host_app_s *app)
 {
   app->closed = true;
-  host_resume_forget(app->host, app->id);
+  if (!app->shell)
+    {
+      host_resume_forget(app->host, app->id);
+    }
+
   host_cancel(app);
 }
 

@@ -2115,6 +2115,202 @@ static void test_sheet_gathered(void **state)
   assert_int_equal(g_marks[2], g_marks[0] + 1);
 }
 
+/****************************************************************************
+ * Name: test_shell_app_id
+ *
+ * Description:
+ *   A shell's program may not take an app's id (one with a manifest): it
+ *   is refused, and Notes' resume token and crash count stay as they
+ *   were: Notes, disabled, is still disabled (the owner, 2026-11-22).
+ ****************************************************************************/
+
+static int g_crash_count;
+static uint32_t g_open_code;
+
+static void keep_open_code2(void)
+{
+  g_open_code = g_app2.code;
+}
+
+static void shell_connect(void)
+{
+  app_connect_unstarted(&g_app2);
+}
+
+static void shell_as_notes(void)
+{
+  g_who = WHO_SHELL;
+  app_open(&g_app2, NOTES, 4);
+}
+
+static void shell_resume(void)
+{
+  app_resume(&g_app2, "evil");
+}
+
+static void shell_leave(void)
+{
+  app_leave(&g_app2);
+}
+
+static void shell_gone(void)
+{
+  pnut_ui_disconnect(&g_app2.client);
+  g_who = WHO_NAMED;
+}
+
+static int crash_count(FAR const char *id)
+{
+  int i;
+
+  for (i = 0; i < HOST_CRASHES; i++)
+    {
+      if (strcmp(g_ui.host.crashes[i].id, id) == 0)
+        {
+          return g_ui.host.crashes[i].count;
+        }
+    }
+
+  return 0;
+}
+
+/* A token and crashes kept for an id, as the tables hold them */
+
+static void plant_for(FAR const char *id, uint8_t crashes)
+{
+  FAR struct host_s *h = &g_ui.host;
+
+  strlcpy(h->resumes[0].id, id, sizeof(h->resumes[0].id));
+  h->resumes[0].len = 3;
+  memcpy(h->resumes[0].token, "old", 3);
+  h->resumes[0].order = ++h->resume_orders;
+  strlcpy(h->crashes[0].id, id, sizeof(h->crashes[0].id));
+  h->crashes[0].count = crashes;
+}
+
+static void plant_notes(void)
+{
+  plant_for(NOTES, HOST_CRASHED);
+}
+
+static void keep_crashes(void)
+{
+  FAR const struct host_resume_s *r = host_token(&g_ui.host, NOTES);
+
+  g_crash_count = crash_count(NOTES);
+  g_token_kept = r != NULL && r->len == 3 &&
+                 memcmp(r->token, "old", 3) == 0;
+}
+
+static void test_shell_app_id(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, plant_notes },
+    { 20, shell_connect },
+    { 30, shell_as_notes },
+    { 70, keep_open_code2 },
+    { 80, shell_resume },
+    { 90, shell_leave },
+    { 100, shell_gone },
+    { 150, keep_crashes },
+    { 200, tile_notes },
+    { 250, look_stopped },
+    { 300, NULL },
+  };
+
+  run(steps, 11);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_open_code, PNUT_UI_ERROR_CODE_BAD_ID);
+  assert_true(g_token_kept);
+  assert_int_equal(g_crash_count, HOST_CRASHED);
+  assert_string_equal(g_top, "stopped");
+  assert_int_equal(g_starts, 0);
+}
+
+/****************************************************************************
+ * Name: test_shell_tables
+ *
+ * Description:
+ *   A shell's program never touches the resume or crash tables: its
+ *   Resume keeps nothing, its Leave forgets and clears nothing, its
+ *   Welcome gives no token, the owner's Close forgets nothing of its id.
+ ****************************************************************************/
+
+static void plant(void)
+{
+  plant_for(DEV, 2);
+}
+
+static void shell_dev(void)
+{
+  g_who = WHO_SHELL;
+  app_open(&g_app, DEV, 4);
+}
+
+static void dev_resume(void)
+{
+  app_resume(&g_app, "new");
+}
+
+static void dev_leave(void)
+{
+  app_leave(&g_app);
+}
+
+static FAR const struct host_resume_s *g_dev_token;
+static int g_dev_crashes;
+
+static void keep_dev(void)
+{
+  g_dev_token = host_token(&g_ui.host, DEV);
+  g_dev_crashes = crash_count(DEV);
+  if (g_dev_token != NULL)
+    {
+      assert_memory_equal(g_dev_token->token, "old", 3);
+    }
+}
+
+static void test_shell_tables(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, plant },
+    { 20, connect },
+    { 30, shell_dev },
+    { 80, show_dev },
+    { 90, dev_resume },
+    { 100, dev_leave },
+    { 150, keep_dev },
+    { 200, NULL },
+  };
+
+  static const struct step_s closed[] =
+  {
+    { 10, plant },
+    { 20, connect },
+    { 30, shell_dev },
+    { 80, show_dev },
+    { 100, key_back },
+    { 150 + T_HUNG, soft_right },         /* Close */
+    { 200 + T_HUNG, keep_dev },
+    { 250 + T_HUNG, NULL },
+  };
+
+  run(steps, 8);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.events[0].kind.welcome.reason,
+                   PNUT_UI_WELCOME_REASON_OPENED);
+  assert_non_null(g_dev_token);
+  assert_int_equal(g_dev_crashes, 2);
+
+  g_dev_token = NULL;
+  run(closed, 8);
+  assert_int_equal(g_app.events[g_app.nevents - 1].which_kind,
+                   PNUT_UI_EVENT_STOP_TAG);
+  assert_non_null(g_dev_token);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -2168,6 +2364,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_switch_on_screen, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_sheet_gathered, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_shell_app_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_shell_tables, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

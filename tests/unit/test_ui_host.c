@@ -239,8 +239,8 @@ static void test_open_unknown(void **state)
  *
  * Description:
  *   A program typed in the developer's shell opens under the id it gives,
- *   with every template when it has no manifest, with its manifest's when
- *   it has one; an id that is not one is invalid.
+ *   with every template; an id that is not one is invalid, and one that
+ *   names an app with a manifest is refused (the owner, 2026-11-22).
  ****************************************************************************/
 
 static void open_as_demo(void)
@@ -258,6 +258,13 @@ static void show_detail(void)
   show_template(&g_app, 2, PNUT_UI_TEMPLATE_UI_TEMPLATE_DETAIL);
 }
 
+static uint32_t g_open_code;
+
+static void keep_open_code(void)
+{
+  g_open_code = g_app.code;
+}
+
 static void test_open_shell(void **state)
 {
   static const struct step_s good[] =
@@ -273,6 +280,7 @@ static void test_open_shell(void **state)
   {
     { 20, connect_app },
     { 60, open_as_demo },
+    { 150, keep_open_code },
     { 200, show_detail },
     { 400, NULL },
   };
@@ -296,13 +304,13 @@ static void test_open_shell(void **state)
   assert_int_equal(g_app.opened, PNUT_STATUS_INVALID);
   assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_BAD_ID);
 
-  /* With a manifest of its own: the templates it lists, no more */
+  /* An app's id, with its manifest: never a shell's program's */
 
   write_manifest("org.pnut.demo", "notes", 1, g_list);
-  run(limited, 4);
-  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
-  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);
-  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_LISTED);
+  run(limited, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_open_code, PNUT_UI_ERROR_CODE_BAD_ID);
+  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);   /* Not open */
 }
 
 /****************************************************************************
