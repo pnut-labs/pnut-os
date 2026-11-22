@@ -45,6 +45,8 @@
 #include "pnut/time.topics.h"
 #include "pnut/ui.pnut.h"
 
+#include "pnut_internal.h"
+
 #include "host.h"
 #include "input.h"
 #include "ui.h"
@@ -103,6 +105,7 @@ enum who_e
 struct app_s
 {
   struct pnut_ui_client_s client;
+  bool connecting;                /* Asked to connect, never up yet */
   bool connected;
   bool up;
   uint16_t stream;
@@ -204,6 +207,27 @@ struct fake_get_s
 
 static uint32_t g_get_late;
 static struct fake_get_s g_get_waiting[FAKE_GETS];
+
+/* Steps due while an app's connection is asked for and not up yet wait,
+ * in order, until it is: its client connects from the loop, after the
+ * steps already due, and on a loaded computer those can be the next ones
+ * (its Open, then sent unconnected).  Checked each ms, for FAKE_HOLD ms
+ * at most.
+ */
+
+#define FAKE_STEPS    64
+#define FAKE_HOLD     2000
+
+static FAR const struct step_s *g_held[FAKE_STEPS];
+static int g_nheld;
+static FAR struct pnut_timer_s *g_holding;
+static uint64_t g_connect_at;
+
+/* Whether the loop runs: a test that fails inside it leaves it running,
+ * and its teardown ends the run
+ */
+
+static bool g_running;
 
 /* The apps' timings the UI runs with; all 0: the defaults */
 
@@ -553,6 +577,10 @@ static void app_state_changed(FAR struct pnut_ui_client_s *client,
   FAR struct app_s *app = arg;
 
   app->connected = connected;
+  if (connected)
+    {
+      app->connecting = false;
+    }
 }
 
 static void app_opened(FAR struct pnut_ui_client_s *client, int status,
@@ -601,6 +629,8 @@ static void app_connect_unstarted(FAR struct app_s *app)
   memset(app, 0, sizeof(*app));
   app->opened = -1;
   app->ended  = -1;
+  app->connecting = true;
+  g_connect_at = pnut_now();
   assert_int_equal(pnut_ui_connect(g_loop, HOST_SERVICE, app_state_changed,
                                    app, &app->client), 0);
 }
@@ -731,19 +761,69 @@ static void save(FAR const char *name)
   fclose(f);
 }
 
-static void step_timer(FAR struct pnut_loop_s *loop,
-                       FAR struct pnut_timer_s *timer, FAR void *arg)
-{
-  FAR const struct step_s *step = arg;
+/* Whether the steps due wait: an app's connection asked for, not up yet,
+ * and not for too long
+ */
 
+static bool steps_wait(void)
+{
+  return (g_app.connecting || g_app2.connecting) &&
+         pnut_now() - g_connect_at < FAKE_HOLD;
+}
+
+static void step_do(FAR const struct step_s *step)
+{
   if (step->run != NULL)
     {
       step->run();
     }
   else
     {
-      pnut_loop_stop(loop, 0);
+      pnut_loop_stop(g_loop, 0);
     }
+}
+
+/* The steps held, run in order once they may; one that asks for a
+ * connection holds those after it
+ */
+
+static void steps_release(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR const struct step_s *step;
+
+  while (g_nheld > 0 && !steps_wait())
+    {
+      step = g_held[0];
+      g_nheld--;
+      memmove(&g_held[0], &g_held[1], g_nheld * sizeof(g_held[0]));
+      step_do(step);
+    }
+
+  if (g_nheld == 0)
+    {
+      pnut_timer_cancel(loop, g_holding);
+      g_holding = NULL;
+    }
+}
+
+static void step_timer(FAR struct pnut_loop_s *loop,
+                       FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  if (g_nheld == 0 && !steps_wait())
+    {
+      step_do(arg);
+      return;
+    }
+
+  assert_true(g_nheld < FAKE_STEPS);
+  if (g_nheld == 0)
+    {
+      assert_int_equal(pnut_timer_start(loop, 1, 1, steps_release, NULL,
+                                        &g_holding), 0);
+    }
+
+  g_held[g_nheld++] = arg;
 }
 
 /* Warsaw's time, for the header */
@@ -773,6 +853,36 @@ static void publish_sim(int sim)
   assert_int_equal(pnut_telephony_info_publish(g_tel, &tel), 0);
 }
 
+/* The end of a run: the apps' connections, Service states' fake and the
+ * topics closed, the loop gone.  A run left from inside the loop, as
+ * cmocka leaves it when a test fails, stops its modules here, as the loop
+ * would have: else the next test's UI could not start (its LVGL glue
+ * takes one loop at a time).
+ */
+
+static void run_end(void)
+{
+  if (g_loop == NULL)
+    {
+      return;
+    }
+
+  if (g_running)
+    {
+      g_running = false;
+      pnut_module_stopall(g_loop);
+    }
+
+  pnut_ui_disconnect(&g_app.client);
+  pnut_ui_disconnect(&g_app2.client);
+  pnut_services_close(&g_services);
+  pnut_topic_unadvertise(g_time);
+  pnut_topic_unadvertise(g_tel);
+  pnut_topic_unadvertise(g_svc);
+  pnut_loop_destroy(g_loop);
+  g_loop = NULL;
+}
+
 /* Run the steps with the ui module, Service states' fake and the apps'
  * folder, Who answering as set
  */
@@ -785,9 +895,14 @@ static void run(FAR const struct step_s *steps, int nsteps)
   struct ui_config_s uconfig;
   char path[128];
   FILE *f;
+  int ret;
   int i;
 
   memset(g_svc_states, 0, sizeof(g_svc_states));
+  g_app.connecting = false;
+  g_app2.connecting = false;
+  g_nheld = 0;
+  g_holding = NULL;
   pnut_loop_defaults(&lconfig);
   lconfig.rundir = g_dir;
   lconfig.timers = 64;            /* Each step is one, beside the UI's */
@@ -843,14 +958,11 @@ static void run(FAR const struct step_s *steps, int nsteps)
                                         NULL), 0);
     }
 
-  assert_int_equal(pnut_loop_run(g_loop), 0);
-  pnut_ui_disconnect(&g_app.client);
-  pnut_ui_disconnect(&g_app2.client);
-  pnut_services_close(&g_services);
-  pnut_topic_unadvertise(g_time);
-  pnut_topic_unadvertise(g_tel);
-  pnut_topic_unadvertise(g_svc);
-  pnut_loop_destroy(g_loop);
+  g_running = true;
+  ret = pnut_loop_run(g_loop);
+  g_running = false;
+  assert_int_equal(ret, 0);
+  run_end();
 }
 
 static int fake_setup(void **state)
@@ -888,6 +1000,7 @@ static int fake_teardown(void **state)
 {
   char cmd[64];
 
+  run_end();                      /* A test failed inside the loop */
   snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
   assert_int_equal(system(cmd), 0);
   return 0;

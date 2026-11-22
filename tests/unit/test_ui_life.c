@@ -4723,6 +4723,104 @@ static void test_get_gone(void **state)
   assert_int_equal(g_crash_count, 0);
 }
 
+/****************************************************************************
+ * Name: test_steps_bunched
+ *
+ * Description:
+ *   The fake's own guard, for runs on a loaded computer: the loop busy
+ *   for 50 ms, the steps due meanwhile run together, an app's connect
+ *   among them.  The steps after it wait, in order, for its connection,
+ *   so that its Open goes once it is up, and is welcomed.
+ ****************************************************************************/
+
+static uint64_t ms_now(void)
+{
+  struct timespec ts;
+
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static void busy_50(void)
+{
+  uint64_t end = ms_now() + 50;
+
+  while (ms_now() < end)
+    {
+    }
+}
+
+static void test_steps_bunched(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 25, busy_50 },                      /* Until 75 */
+    { 30, connect },                      /* Both due at 75 */
+    { 40, open_app },
+    { 150, show_inbox },
+    { 300, look2 },
+    { 400, NULL },
+  };
+
+  run(steps, 7);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_string_equal(g_top2, "app");
+}
+
+/****************************************************************************
+ * Name: test_run_after_failure
+ *
+ * Description:
+ *   The fake's own guard: a run left from inside a step, as cmocka leaves
+ *   it when a test fails, then ended as the teardown ends it; the next
+ *   run starts the UI afresh, and an app opens in it.
+ ****************************************************************************/
+
+static jmp_buf g_left;
+
+static void leave_loop(void)
+{
+  longjmp(g_left, 1);
+}
+
+static void test_run_after_failure(void **state)
+{
+  static const struct step_s left[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 60, leave_loop },
+    { 100, NULL },
+  };
+
+  static const struct step_s again[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 60, show_inbox },
+    { 300, look2 },
+    { 400, NULL },
+  };
+
+  if (setjmp(g_left) == 0)
+    {
+      run(left, 5);
+      fail();
+    }
+
+  run_end();
+  g_starts = 0;
+  run(again, 6);
+  assert_int_equal(g_starts, 1);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_string_equal(g_top2, "app");
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -4833,6 +4931,9 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_gets_one, setup, teardown),
     cmocka_unit_test_setup_teardown(test_get_gone, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_steps_bunched, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_run_after_failure, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
