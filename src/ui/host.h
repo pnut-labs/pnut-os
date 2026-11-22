@@ -49,6 +49,7 @@
  */
 
 #define HOST_APPS       4
+#define HOST_EXITING    4         /* Apps whose old task may still exit */
 #define HOST_RESUMES    4         /* Apps whose resume token is kept */
 #define HOST_CRASHES    4         /* Apps whose crashes are counted */
 #define HOST_CRASHED    3         /* Crashes in a row that disable one */
@@ -129,6 +130,20 @@ struct host_resume_s
   uint8_t token[sizeof(((FAR pnut_ui_resume_request_t *)0)->token.bytes)];
 };
 
+/* An app whose old task was not seen gone when its slot was freed at
+ * Stop's deadline: a new start of the app waits until the services topic,
+ * or Service states' Get, says its service stopped (the owner,
+ * 2026-11-22).  When the table is full, the one marked longest ago goes:
+ * that app is started at once again, as before.
+ */
+
+struct host_exiting_s
+{
+  char id[MANIFEST_ID_MAX + 1];   /* Empty: none */
+  uint32_t order;                 /* When it was marked; Get's answer
+                                   * names it */
+};
+
 /* An app's crashes in a row (RFC 0037, Failures; RFC 0008) */
 
 struct host_crash_s
@@ -165,6 +180,12 @@ struct host_s
 
   struct host_app_s next;
   FAR struct pnut_timer_s *kick;
+  bool getting;                   /* Get asked about its old task */
+
+  /* Apps whose old task may still exit, their slots freed */
+
+  struct host_exiting_s exiting[HOST_EXITING];
+  uint32_t exiting_orders;
 
   /* Service states' services topic: the apps' tasks started and gone */
 
@@ -196,10 +217,12 @@ void host_close(FAR struct host_s *h);
  * an app being opened before is cancelled.  The UI's Busy is drawn when
  * nothing is by the times' opening; with no Open by their open, the app
  * is stopped.  A warm app is brought back, and sent Shown.  While a task
- * of the app still exits, or with no slot free, the UI's Busy is drawn at
- * once, and the app started as soon as that task is gone and a slot is
- * free (the services topic tells; Stop's deadline at the latest).  0 when
- * it is started, brought back, waits to start, or is opening already;
+ * of the app still exits (its slot stopping, or freed at Stop's deadline
+ * with the task not seen gone), or with no slot free, the UI's Busy is
+ * drawn at once, and the app started as soon as that task is gone and a
+ * slot is free: the services topic tells, or Service states' Get where
+ * the topic may have missed it.  0 when it is started, brought back,
+ * waits to start, or is opening already;
  * -ENOENT with no manifest; -EACCES for an app disabled after
  * HOST_CRASHED crashes in a row.
  */

@@ -3551,7 +3551,8 @@ static void test_stop_asked_once(void **state)
  *
  * Description:
  *   Without the services topic, an app done with the UI has its slot free
- *   at once: nothing would tell when its task is gone.
+ *   at once: nothing would tell when its task is gone.  Nor does a new
+ *   start wait for a task that outlived Stop's deadline.
  ****************************************************************************/
 
 static void test_no_topic(void **state)
@@ -3567,12 +3568,30 @@ static void test_no_topic(void **state)
     { 200 + T_STOP, NULL },
   };
 
+  static const struct step_s told[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, cancel_open },                 /* Told to stop: deadline 300 */
+    { 400, tile_notes },                  /* Past it, its task running */
+    { 420, keep_starts },
+    { 500, NULL },
+  };
+
   g_svc_none = true;
   g_stop_stays = true;
   run(steps, 7);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
   assert_int_equal(g_states[0], HOST_FREE);
   assert_int_equal(g_stops, 0);
+
+  /* Nothing would tell when the task is gone: the app starts at once */
+
+  g_starts = 0;
+  run(told, 8);
+  assert_int_equal(g_starts_kept, 2);
 }
 
 /****************************************************************************
@@ -4015,6 +4034,319 @@ static void test_switch_under_pin(void **state)
   assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
 }
 
+/****************************************************************************
+ * Name: test_wait_past_deadline
+ *
+ * Description:
+ *   An app cancelled before it opened, whose task outlives Stop's
+ *   deadline, its tile pressed again: at the deadline its slot is free for
+ *   other apps, but the new start waits, "Opening" up, until the services
+ *   topic says the app's service stopped (the owner, L13).  The old task's
+ *   late Open is told to stop, never taken for the new start's, and its
+ *   end is no crash; the new start runs once the old task is gone.
+ *   Without a late Open, the topic's STOPPED alone starts it.
+ ****************************************************************************/
+
+static int g_first_kind;
+
+static void keep_first_kind(void)
+{
+  g_first_kind = g_app.nevents > 0 ? g_app.events[0].which_kind : -1;
+  count_notes_slots();
+}
+
+static void test_wait_past_deadline(void **state)
+{
+  static const struct step_s late[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 30, connect },
+    { 40, home_now },                     /* Cancelled: its deadline 240 */
+    { 50, tile_notes },                   /* Waits */
+    { 55, look_busy },
+    { 300, keep_starts },                 /* Past the deadline: waits */
+    { 310, keep_opening },
+    { 320, open_app },                    /* Task 1's Open, late */
+    { 400, keep_first_kind },
+    { 450, crash },                       /* Task 1 gone */
+    { 480, keep_count },
+    { 500, connect },                     /* Task 2 */
+    { 510, open_app },
+    { 550, show_inbox },
+    { 600, look2 },
+    { 700, NULL },
+  };
+
+  static const struct step_s topic[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },
+    { 50, tile_notes },
+    { 300, keep_starts },
+    { 350, notes_task_exits },            /* The topic: stopped */
+    { 400, keep_count },
+    { 500, NULL },
+  };
+
+  g_stop_stays = true;
+  run(late, 16);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Opening Notes\xe2\x80\xa6");
+  assert_int_equal(g_starts_kept, 1);     /* Not at the deadline */
+  assert_true(g_opening_left);
+  assert_int_equal(g_first_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_notes_slots, 1);     /* Its own, told to stop */
+  assert_int_equal(g_crash_count, 0);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  assert_string_equal(g_top2, "app");
+
+  g_starts = 0;
+  run(topic, 7);
+  assert_int_equal(g_starts_kept, 1);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);
+}
+
+/****************************************************************************
+ * Name: test_missed_stopped
+ *
+ * Description:
+ *   Where the services topic may have missed the old task's STOPPED,
+ *   Service states' Get is asked: at a gap in the topic's numbers while
+ *   the app waits, and at a tap of an app whose old task was last seen
+ *   exiting, or of one waiting already.  Get saying it stopped starts the
+ *   app.  With Get never answering, "Opening" stays until Cancel or Home
+ *   (the owner, L13).
+ ****************************************************************************/
+
+static void notes_exits_missed(void)
+{
+  task_exits_missed(NOTES);
+}
+
+static void other_change(void)
+{
+  publish_service("telephony", PNUT_SERVICE_STATE_STATE_READY, 77);
+}
+
+static void test_missed_stopped(void **state)
+{
+  static const struct step_s gap[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },                     /* Its deadline 240 */
+    { 50, tile_notes },                   /* Waits */
+    { 300, notes_exits_missed },
+    { 330, keep_starts },
+    { 350, other_change },                /* The gap seen */
+    { 400, keep_count },
+    { 500, NULL },
+  };
+
+  static const struct step_s tap[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },
+    { 300, notes_exits_missed },
+    { 350, tile_notes },                  /* Past the deadline */
+    { 400, keep_count },
+    { 410, look_busy },
+    { 500, NULL },
+  };
+
+  static const struct step_s retap[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },                     /* Its deadline 240 */
+    { 50, tile_notes },                   /* Waits; Get at 240 */
+    { 300, notes_exits_missed },          /* No message after it */
+    { 330, keep_starts },
+    { 350, tile_notes },                  /* Tapped again: Get again */
+    { 400, keep_count },
+    { 500, NULL },
+  };
+
+  static const struct step_s silent[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },
+    { 300, notes_exits_missed },
+    { 350, tile_notes },
+    { 1500, keep_starts },                /* Past Get's time too */
+    { 1510, keep_opening },
+    { 1600, home_now },
+    { 1650, look },
+    { 1700, NULL },
+  };
+
+  g_stop_stays = true;
+  run(gap, 8);
+  assert_int_equal(g_starts_kept, 1);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);
+
+  g_starts = 0;
+  g_gets = 0;
+  run(tap, 7);
+  assert_true(g_gets >= 1);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);
+  assert_string_equal(g_top, "opening");
+
+  g_starts = 0;
+  run(retap, 8);
+  assert_int_equal(g_starts_kept, 1);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);
+
+  g_starts = 0;
+  g_get_silent = true;
+  run(silent, 9);
+  assert_int_equal(g_starts_kept, 1);
+  assert_true(g_opening_left);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_starts, 1);
+}
+
+/****************************************************************************
+ * Name: test_exiting_gone
+ *
+ * Description:
+ *   An app told to stop whose task the topic saw exit, its connection
+ *   still open at Stop's deadline: nothing is waited for, and its tile
+ *   starts it at once, Service states not asked.
+ ****************************************************************************/
+
+static void test_exiting_gone(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, notes_task_exits },            /* Seen gone, still connected */
+    { 120, cancel_open },                 /* Told: its deadline 320 */
+    { 400, tile_notes },
+    { 420, keep_starts },
+    { 500, NULL },
+  };
+
+  g_stop_stays = true;
+  run(steps, 9);
+  assert_int_equal(g_starts_kept, 2);
+  assert_int_equal(g_gets, 0);
+}
+
+/****************************************************************************
+ * Name: test_exiting_full
+ *
+ * Description:
+ *   With every mark of an old task still exiting taken, the app marked
+ *   longest ago gives its place: that app starts at once again, as
+ *   before; the others still wait.  No app is refused for want of room.
+ ****************************************************************************/
+
+static bool g_marked[4];                /* Notes', Todo's, Reminders', Maps' */
+
+static bool marked(FAR const char *id)
+{
+  int i;
+
+  for (i = 0; i < HOST_EXITING; i++)
+    {
+      if (strcmp(g_ui.host.exiting[i].id, id) == 0)
+        {
+          return true;
+        }
+    }
+
+  return false;
+}
+
+static void plant_exiting(void)
+{
+  static const char *ids[4] =
+  {
+    TODO, REMINDERS, PHOTOS, MAPS
+  };
+
+  FAR struct host_s *h = &g_ui.host;
+  int i;
+
+  assert_int_equal(HOST_EXITING, 4);
+  for (i = 0; i < HOST_EXITING; i++)
+    {
+      strlcpy(h->exiting[i].id, ids[i], sizeof(h->exiting[i].id));
+      h->exiting[i].order = ++h->exiting_orders;
+    }
+}
+
+static void keep_marks(void)
+{
+  g_marked[0] = marked(NOTES);
+  g_marked[1] = marked(TODO);
+  g_marked[2] = marked(REMINDERS);
+  g_marked[3] = marked(MAPS);
+}
+
+static void test_exiting_full(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 10, plant_exiting },
+    { 20, tile_notes },
+    { 40, home_now },                     /* Its deadline 240 */
+    { 300, keep_marks },
+    { 320, tile_todo },                   /* No longer marked */
+    { 340, keep_starts },
+    { 400, NULL },
+  };
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  g_stop_stays = true;
+  run(steps, 7);
+  assert_true(g_marked[0]);
+  assert_false(g_marked[1]);              /* Marked longest ago */
+  assert_true(g_marked[2]);
+  assert_true(g_marked[3]);
+  assert_int_equal(g_starts_kept, 2);     /* Notes, then Todo at once */
+}
+
+/****************************************************************************
+ * Name: test_get_stale
+ *
+ * Description:
+ *   Service states' Get answers with the state as it was when asked: a
+ *   late answer that an older task stopped never takes off the mark of a
+ *   newer task still exiting.
+ ****************************************************************************/
+
+static void test_get_stale(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 40, home_now },                     /* Its deadline 240: Get A */
+    { 50, tile_notes },                   /* Waits */
+    { 300, notes_exits_missed },
+    { 320, tile_notes },                  /* Get B: stopped, at 720 */
+    { 350, notes_task_exits },            /* Task 2 started */
+    { 380, home_now },                    /* Its deadline 580: Get C */
+    { 390, tile_notes },                  /* Waits for task 2 */
+    { 800, keep_starts },                 /* After Get B's answer */
+    { 810, keep_opening },
+    { 900, NULL },
+  };
+
+  g_stop_stays = true;
+  g_get_late = 400;
+  run(steps, 11);
+  assert_int_equal(g_starts_kept, 2);
+  assert_true(g_opening_left);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -4112,6 +4444,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_switch_in_field, setup, teardown),
     cmocka_unit_test_setup_teardown(test_switch_under_pin, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_wait_past_deadline, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_missed_stopped, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_exiting_gone, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_exiting_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_get_stale, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

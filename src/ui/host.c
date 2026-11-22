@@ -15,11 +15,12 @@
  * answered with Stop; a program typed in a developer's shell opens as it
  * comes, under an id no app has, and is never given a place or counted
  * crashes.  An app's slot is kept until its task has exited, as Service
- * states' services topic tells (or Stop's deadline), so that the app is
- * started again only once its old task is gone; a tile pressed meanwhile,
- * or with no slot free, waits with the UI's Busy up.  Events go down
- * Open's stream as the app's credit allows; an app that leaves
- * HOST_EVENTS of them waiting is taken off.  An app's text is never
+ * states' services topic tells, or Stop's deadline passes; the app is
+ * started again only once its old task is gone, past the deadline too:
+ * the topic, or Service states' Get, says its service stopped.  A tile
+ * pressed meanwhile, or with no slot free, waits with the UI's Busy up.
+ * Events go down Open's stream as the app's credit allows; an app that
+ * leaves HOST_EVENTS of them waiting is taken off.  An app's text is never
  * logged.
  */
 
@@ -51,6 +52,9 @@ static void host_stop_due(FAR struct pnut_loop_s *loop,
                           FAR struct pnut_timer_s *timer, FAR void *arg);
 static void host_owe(FAR struct host_app_s *app);
 static void host_unowe(FAR struct host_app_s *app);
+static void host_got(FAR struct pnut_services_client_s *client, int status,
+                     FAR const pnut_service_state_t *out,
+                     FAR const pnut_error_t *err, FAR void *arg);
 static void host_resume_forget(FAR struct host_s *h, FAR const char *id);
 
 /* The app whose connection a request comes from, or NULL */
@@ -127,6 +131,61 @@ static FAR struct host_app_s *host_free_slot(FAR struct host_s *h)
     }
 
   return NULL;
+}
+
+/* An app whose old task may still exit, or NULL */
+
+static FAR struct host_exiting_s *host_exiting(FAR struct host_s *h,
+                                               FAR const char *id)
+{
+  int i;
+
+  for (i = 0; i < HOST_EXITING; i++)
+    {
+      if (h->exiting[i].id[0] != '\0' &&
+          strcmp(h->exiting[i].id, id) == 0)
+        {
+          return &h->exiting[i];
+        }
+    }
+
+  return NULL;
+}
+
+/* Mark an app whose old task may still exit, in place of the one marked
+ * longest ago when the table is full (that app starts at once again)
+ */
+
+static void host_exiting_mark(FAR struct host_s *h, FAR const char *id)
+{
+  FAR struct host_exiting_s *e = host_exiting(h, id);
+  int i;
+
+  for (i = 0; e == NULL && i < HOST_EXITING; i++)
+    {
+      if (h->exiting[i].id[0] == '\0')
+        {
+          e = &h->exiting[i];
+        }
+    }
+
+  if (e == NULL)
+    {
+      e = &h->exiting[0];
+      for (i = 1; i < HOST_EXITING; i++)
+        {
+          if (h->exiting[i].order < e->order)
+            {
+              e = &h->exiting[i];
+            }
+        }
+
+      pnut_log(&h->ui->module, PNUT_LOG_INFO,
+               "app %s not waited for: no room", e->id);
+    }
+
+  strlcpy(e->id, id, sizeof(e->id));
+  e->order = ++h->exiting_orders;
 }
 
 /* An app waiting to start tries again, from the loop: a slot is free, or
@@ -438,12 +497,18 @@ static void host_stop_due(FAR struct pnut_loop_s *loop,
            app->told || app->asked ? "did not stop" : "still running");
 
   /* Service states stops the task by its name: never a shell's program,
-   * nor a task of a name another slot holds alive
+   * nor a task of a name another slot holds alive.  Its slot is free for
+   * other apps; a new start of this one waits until its task is gone (the
+   * owner, 2026-11-22), unless nothing would tell (no services topic).
    */
 
   if (!app->shell && host_twin(app) == NULL)
     {
       host_stop_slot(app);
+      if (!app->gone && h->changes_open)
+        {
+          host_exiting_mark(h, app->id);
+        }
     }
 
   host_forget(app);               /* Its stream ended */
@@ -1524,10 +1589,49 @@ static void host_next_drop(FAR struct host_s *h)
   app_opening_gone(h->ui, &h->next);
   memset(&h->next, 0, sizeof(h->next));
   h->next.host = h;
+  h->getting = false;
+}
+
+/* Service states answered Get about the old task of the app waiting: one
+ * stopped, and still marked as when asked (by its order), is gone, and
+ * the app may start.  Its answer may be older than the topic's news: it
+ * only takes a mark off.  No answer: the app waits for the topic.
+ */
+
+static void host_got(FAR struct pnut_services_client_s *client, int status,
+                     FAR const pnut_service_state_t *out,
+                     FAR const pnut_error_t *err, FAR void *arg)
+{
+  FAR struct host_s *h = (FAR struct host_s *)
+    ((FAR char *)client - offsetof(struct host_s, services));
+  uint32_t order = (uint32_t)(uintptr_t)arg;
+  FAR struct host_exiting_s *e;
+
+  if (status != PNUT_STATUS_OK || out == NULL)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_WARNING,
+               "an app's state not told: %d", status);
+      return;
+    }
+
+  e = host_exiting(h, out->name);
+  if (e == NULL || e->order != order ||
+      out->state != PNUT_SERVICE_STATE_STATE_STOPPED)
+    {
+      return;                     /* Still running, or no longer marked */
+    }
+
+  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s stopped (Get)", e->id);
+  memset(e, 0, sizeof(*e));
+  host_kick(h);
 }
 
 /* The app waiting to start, started once no task of its id is left and a
- * slot is free: in that slot, its Busy (up since the tile) moved with it
+ * slot is free: in that slot, its Busy (up since the tile) moved with it.
+ * Its old task last seen exiting, past its slot's deadline: the topic
+ * tells when it stops, and Service states' Get is asked once for the wait
+ * (again at a gap in the topic, or a tap), as the topic may have missed
+ * it.
  */
 
 static void host_next_due(FAR struct pnut_loop_s *loop,
@@ -1535,14 +1639,39 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
 {
   FAR struct host_s *h = arg;
   FAR struct host_app_s *n = &h->next;
+  FAR struct host_exiting_s *e;
   FAR struct host_app_s *app;
+  pnut_services_name_request_t in;
   struct manifest_s manifest;
   char id[MANIFEST_ID_MAX + 1];
+  int ret;
 
   h->kick = NULL;
   if (n->state == HOST_FREE || host_find(h, n->id) != NULL)
     {
       return;                     /* None, or its task still exits */
+    }
+
+  e = host_exiting(h, n->id);
+  if (e != NULL)
+    {
+      if (!h->getting)
+        {
+          memset(&in, 0, sizeof(in));
+          strlcpy(in.name, n->id, sizeof(in.name));
+          ret = pnut_services_get(&h->services, &in,
+                                  h->ui->config.times.who, host_got,
+                                  (FAR void *)(uintptr_t)e->order);
+          if (ret < 0)
+            {
+              pnut_log(&h->ui->module, PNUT_LOG_WARNING,
+                       "app %s: its state not asked: %d", n->id, ret);
+            }
+
+          h->getting = ret >= 0;
+        }
+
+      return;                     /* Its old task not seen gone */
     }
 
   app = host_free_slot(h);
@@ -1557,6 +1686,7 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
   app_opening_move(h->ui, n, app);
   memset(n, 0, sizeof(*n));
   n->host = h;
+  h->getting = false;
   host_launch(app, id, &manifest);
 }
 
@@ -1565,8 +1695,10 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
  * gone before the app opened, the app crashed (the owner, 2026-11-22: its
  * Busy off at once); seen gone after, its slot is free once the app is
  * done with the UI.  A gone task of a start not seen running is an older
- * task's end, and changes nothing.  Changes missed (the sequence's gap)
- * are not asked again: the Open's and Stop's deadlines stand in.
+ * task's end, and changes nothing but the mark of an app whose old task
+ * outlived its slot.  Changes missed (the sequence's gap): an app waiting
+ * for its old task asks Service states' Get again; otherwise the Open's
+ * and Stop's deadlines stand in.
  */
 
 static void host_service_change(FAR struct pnut_service_change_reader_s
@@ -1575,6 +1707,7 @@ static void host_service_change(FAR struct pnut_service_change_reader_s
                                 FAR void *arg)
 {
   FAR struct host_s *h = arg;
+  FAR struct host_exiting_s *e;
   FAR struct host_app_s *app;
   bool gone = msg->state == PNUT_SERVICE_STATE_STATE_STOPPED ||
               msg->state == PNUT_SERVICE_STATE_STATE_RESTARTING;
@@ -1585,9 +1718,18 @@ static void host_service_change(FAR struct pnut_service_change_reader_s
       pnut_log(&h->ui->module, PNUT_LOG_INFO,
                "services' changes missed: %" PRIu32 " to %" PRIu32,
                h->seq, msg->seq);
+      h->getting = false;
+      host_kick(h);
     }
 
   h->seq = msg->seq;
+  e = gone ? host_exiting(h, msg->name) : NULL;
+  if (e != NULL)
+    {
+      memset(e, 0, sizeof(*e));   /* Its old task gone */
+      host_kick(h);
+    }
+
   for (i = 0; i < HOST_APPS; i++)
     {
       app = &h->slots[i];
@@ -1707,6 +1849,7 @@ void host_close(FAR struct host_s *h)
 
   memset(&h->next, 0, sizeof(h->next));
   h->next.host = h;
+  h->getting = false;
   if (h->changes_open)
     {
       pnut_service_change_unsubscribe(&h->changes);
@@ -1784,7 +1927,13 @@ int host_start(FAR struct host_s *h, FAR const char *id)
     {
       if (n->state != HOST_FREE && strcmp(n->id, id) == 0)
         {
-          return 0;               /* Waiting to start already */
+          /* Waiting to start already: tapped again, Service states is
+           * asked again about an old task last seen exiting
+           */
+
+          h->getting = false;
+          host_kick(h);
+          return 0;
         }
 
       c = host_crash(h, id, false);
@@ -1835,15 +1984,16 @@ int host_start(FAR struct host_s *h, FAR const char *id)
       return 0;
     }
 
-  /* A task of the app still exits (NxInit would start nothing), or no
-   * slot is free: "Opening" at once, and the app started as soon as it
-   * can (the owner, 2026-11-22)
+  /* A task of the app still exits (NxInit would start nothing), in a
+   * slot or past its deadline, or no slot is free: "Opening" at once, and
+   * the app started as soon as it can (the owner, 2026-11-22)
    */
 
   app = host_free_slot(h);
-  if (stopping || app == NULL)
+  if (stopping || app == NULL || host_exiting(h, id) != NULL)
     {
       memset(n, 0, sizeof(*n));
+      h->getting  = false;
       n->host     = h;
       n->state    = HOST_OPENING;
       n->wait     = HOST_WAIT_OPENING;

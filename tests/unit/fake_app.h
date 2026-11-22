@@ -171,6 +171,40 @@ static bool g_stop_stays;
 
 static bool g_svc_none;
 
+/* What Service states' Get answers: each service's state as the fake
+ * last set it, told on the topic or not (a task stopped that stays is
+ * STOPPING); none set, not found.  Get asked how many times; never
+ * answered when g_get_silent.
+ */
+
+#define FAKE_SERVICES 8
+
+struct fake_svc_s
+{
+  char name[64];
+  int state;
+  int32_t pid;
+};
+
+static struct fake_svc_s g_svc_states[FAKE_SERVICES];
+static bool g_get_silent;
+static int g_gets;
+
+/* Get answered this many ms late (0: at once), with the state as it was
+ * when asked
+ */
+
+#define FAKE_GETS     4
+
+struct fake_get_s
+{
+  struct pnut_request_s req;
+  pnut_service_state_t out;
+};
+
+static uint32_t g_get_late;
+static struct fake_get_s g_get_waiting[FAKE_GETS];
+
 /* The apps' timings the UI runs with; all 0: the defaults */
 
 static struct ui_times_s g_times;
@@ -259,12 +293,41 @@ static void fake_who(FAR struct pnut_services_server_s *server,
     }
 }
 
+/* A service's state, as Get will answer it */
+
+static void fake_state(FAR const char *name, int state, int32_t pid)
+{
+  FAR struct fake_svc_s *e = NULL;
+  int i;
+
+  for (i = 0; i < FAKE_SERVICES; i++)
+    {
+      if (strcmp(g_svc_states[i].name, name) == 0)
+        {
+          g_svc_states[i].state = state;
+          g_svc_states[i].pid   = pid;
+          return;
+        }
+
+      if (e == NULL && g_svc_states[i].name[0] == '\0')
+        {
+          e = &g_svc_states[i];
+        }
+    }
+
+  assert_non_null(e);
+  strlcpy(e->name, name, sizeof(e->name));
+  e->state = state;
+  e->pid   = pid;
+}
+
 /* A service's change on the services topic */
 
 static void publish_service(FAR const char *name, int state, int32_t pid)
 {
   pnut_service_change_t msg;
 
+  fake_state(name, state, pid);
   if (g_svc_none)
     {
       return;
@@ -283,6 +346,71 @@ static void publish_service(FAR const char *name, int state, int32_t pid)
 static void task_exits(FAR const char *name)
 {
   publish_service(name, PNUT_SERVICE_STATE_STATE_STOPPED, 0);
+}
+
+/* ... but the topic's message is lost: its number taken, so that the
+ * next one shows a gap
+ */
+
+static void task_exits_missed(FAR const char *name)
+{
+  fake_state(name, PNUT_SERVICE_STATE_STATE_STOPPED, 0);
+  g_svc_seq++;
+}
+
+/* Service states' Get */
+
+static void fake_get_late(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  FAR struct fake_get_s *g = arg;
+
+  pnut_services_get_reply(&g_services, &g->req, PNUT_STATUS_OK, &g->out);
+}
+
+static void fake_get(FAR struct pnut_services_server_s *server,
+                     FAR const struct pnut_request_s *req,
+                     FAR const pnut_services_name_request_t *in,
+                     FAR void *arg)
+{
+  pnut_service_state_t out;
+  int i;
+
+  g_gets++;
+  if (g_get_silent)
+    {
+      return;                     /* Never answered */
+    }
+
+  for (i = 0; i < FAKE_SERVICES; i++)
+    {
+      if (g_svc_states[i].name[0] != '\0' &&
+          strcmp(g_svc_states[i].name, in->name) == 0)
+        {
+          memset(&out, 0, sizeof(out));
+          strlcpy(out.name, in->name, sizeof(out.name));
+          out.state = g_svc_states[i].state;
+          out.pid   = g_svc_states[i].pid;
+          if (g_get_late > 0)
+            {
+              FAR struct fake_get_s *g = &g_get_waiting[g_gets % FAKE_GETS];
+
+              g->req = *req;
+              g->out = out;
+              assert_int_equal(pnut_timer_start(g_loop, g_get_late, 0,
+                                                fake_get_late, g, NULL),
+                               0);
+              return;
+            }
+
+          pnut_services_get_reply(server, req, PNUT_STATUS_OK, &out);
+          return;
+        }
+    }
+
+  pnut_services_fail(server, req, PNUT_STATUS_NOTFOUND,
+                     PNUT_SERVICES_ERROR_CODE_UNKNOWN_SERVICE,
+                     "no such service");
 }
 
 static void fake_start_fail(FAR struct pnut_loop_s *loop,
@@ -315,6 +443,11 @@ static void fake_start(FAR struct pnut_services_server_s *server,
       publish_service(in->name, PNUT_SERVICE_STATE_STATE_STARTING,
                       FAKE_PID + g_starts);
     }
+  else
+    {
+      fake_state(in->name, PNUT_SERVICE_STATE_STATE_STARTING,
+                 FAKE_PID + g_starts);
+    }
 
   memset(&out, 0, sizeof(out));
   pnut_services_start_reply(server, req, PNUT_STATUS_OK, &out);
@@ -335,10 +468,15 @@ static void fake_stop(FAR struct pnut_services_server_s *server,
     {
       task_exits(in->name);
     }
+  else
+    {
+      fake_state(in->name, PNUT_SERVICE_STATE_STATE_STOPPING, 0);
+    }
 }
 
 static const struct pnut_services_handlers_s g_fake_services =
 {
+  .get   = fake_get,
   .start = fake_start,
   .stop  = fake_stop,
   .who   = fake_who
@@ -616,6 +754,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   FILE *f;
   int i;
 
+  memset(g_svc_states, 0, sizeof(g_svc_states));
   pnut_loop_defaults(&lconfig);
   lconfig.rundir = g_dir;
   lconfig.timers = 64;            /* Each step is one, beside the UI's */
@@ -700,6 +839,9 @@ static int fake_setup(void **state)
   g_start_quiet = false;
   g_stop_stays = false;
   g_svc_none = false;
+  g_get_silent = false;
+  g_get_late = 0;
+  g_gets = 0;
   g_svc_seq = 0;
   g_updates = 0;
   g_fulls = 0;
