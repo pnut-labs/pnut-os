@@ -3733,7 +3733,9 @@ static void test_restarting_gone(void **state)
  *   At Stop's deadline, the log says what became of the task (the owner,
  *   L14): an app that left of itself, or whose connection closed, was
  *   never told to stop, and its task is "still running"; one told to
- *   stop "did not stop".  Either way Service states stops it then.
+ *   stop "did not stop", and so does one whose task Service states was
+ *   asked to stop (cancelled before its Open, no Open in time, taken
+ *   off).  Either way Service states stops it then.
  ****************************************************************************/
 
 /* It leaves, its task left running */
@@ -3741,6 +3743,21 @@ static void test_restarting_gone(void **state)
 static void leave_running(void)
 {
   app_leave(&g_app);
+}
+
+/* A run whose log at Stop's deadline says the task did not stop */
+
+static void run_did_not_stop(FAR const struct step_s *steps, int n)
+{
+  FAR const char *out;
+
+  g_stops = 0;
+  catch_start();
+  run(steps, n);
+  out = catch_end();
+  assert_non_null(strstr(out, "app " NOTES " did not stop"));
+  assert_null(strstr(out, "still running"));
+  assert_int_equal(g_stops, 1);
 }
 
 static void test_still_running(void **state)
@@ -3775,6 +3792,29 @@ static void test_still_running(void **state)
     { 200 + T_STOP, NULL },
   };
 
+  static const struct step_s unopened[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },                     /* Stopped by Service states */
+    { 100 + T_STOP, NULL },
+  };
+
+  static const struct step_s late[] =
+  {
+    { 20, tile_notes },                   /* No Open by 620 */
+    { 100 + T_OPEN + T_STOP, NULL },
+  };
+
+  static const struct step_s off[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, unsendable },                  /* Taken off */
+    { 200 + T_STOP, NULL },
+  };
+
   FAR const char *out;
 
   catch_start();
@@ -3800,6 +3840,10 @@ static void test_still_running(void **state)
   assert_non_null(strstr(out, "app " NOTES " did not stop"));
   assert_null(strstr(out, "still running"));
   assert_int_equal(g_stops, 1);
+
+  run_did_not_stop(unopened, 3);
+  run_did_not_stop(late, 2);
+  run_did_not_stop(off, 6);
 }
 
 /****************************************************************************
