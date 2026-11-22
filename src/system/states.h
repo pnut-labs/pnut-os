@@ -126,6 +126,14 @@ struct states_service_s
    */
 
   bool held;
+
+  /* Held when a whole watch was lost: NxInit's lines from then on are
+   * newer than what Who found, which is published before one that has
+   * the service stopped, restarting or with another task, and before a
+   * whole list that does not name it
+   */
+
+  bool early;
   pid_t pid;                      /* 0 when not running */
 };
 

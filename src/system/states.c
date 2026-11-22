@@ -484,8 +484,9 @@ static void states_ready_check(FAR struct states_s *states)
  *   A line "<service> <state> <pid>" of NxInit's, as a list's line or an
  *   event's: changes are published once a whole list has come.  A change
  *   Who's lookup made and held is published with the line, though the
- *   line is the same; one that differs is published as itself.  Either
- *   way the service is held no more.
+ *   line is the same; one that differs is published as itself, after
+ *   what Who found when that is early and the line has another task, or
+ *   none.  Either way the service is held no more.
  *
  ****************************************************************************/
 
@@ -497,6 +498,7 @@ static void states_update(FAR struct states_s *states, FAR char *line)
   FAR char *end;
   long pid;
   int state;
+  bool early;
   bool held;
 
   words[0] = strtok_r(line, " ", &save);
@@ -532,12 +534,23 @@ static void states_update(FAR struct states_s *states, FAR char *line)
       return;
     }
 
-  service->seen = true;
-  held          = service->held;
-  service->held = false;
+  service->seen  = true;
+  held           = service->held;
+  early          = service->early;
+  service->held  = false;
+  service->early = false;
   states_known(states, (pid_t)pid);
   if (service->state != state || service->pid != (pid_t)pid)
     {
+      /* The line is newer than what Who found early, and would leave its
+       * task out
+       */
+
+      if (early && service->pid != (pid_t)pid)
+        {
+          states_publish(states, service);
+        }
+
       service->state = state;
       service->pid   = (pid_t)pid;
       if (states->listed)
@@ -559,8 +572,8 @@ static void states_update(FAR struct states_s *states, FAR char *line)
  *
  * Description:
  *   A whole list has come: a service it did not name has gone from NxInit
- *   (a oneshot that ended), and counts as stopped; what Who found for it
- *   is held no more.
+ *   (a oneshot that ended), and counts as stopped, after what Who found
+ *   for it early; what Who found is held no more.
  *
  ****************************************************************************/
 
@@ -578,7 +591,13 @@ static void states_listed(FAR struct states_s *states)
           continue;
         }
 
-      service->held = false;
+      if (service->early)
+        {
+          states_publish(states, service);
+        }
+
+      service->held  = false;
+      service->early = false;
       if (service->state != PNUT_SERVICE_STATE_STATE_STOPPED ||
           service->pid != 0)
         {
@@ -659,6 +678,17 @@ static void states_answer(FAR struct states_s *states,
 static void states_close(FAR struct states_s *states)
 {
   FAR struct states_command_s *command;
+  uint8_t i;
+
+  /* What Who found on a whole watch, and holds, is early: older than any
+   * line to come.  A whole watch came after the first list, so an early
+   * change is one to publish.
+   */
+
+  for (i = 0; states->current && i < states->nservices; i++)
+    {
+      states->services[i].early = states->services[i].held;
+    }
 
   /* The states are old until a list comes again */
 
@@ -1638,7 +1668,8 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
   /* The task changes the service in the table at once, as the watch's
    * line about it would; the change is held, and published with NxInit's
    * next line about the service, so that it does not go ahead of older
-   * lines still unread (states_update).  A program not ready yet holds
+   * lines still unread (states_update).  It is not early: a list being
+   * read may be older (states_close).  A program not ready yet holds
    * config.ready back.  A halt waits for no fewer programs: none has
    * stopped.
    */
@@ -1655,6 +1686,7 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
       service->state = state;
       service->pid   = pid;
       service->held  = true;
+      service->early = false;
       states_ready_check(states);
     }
 
