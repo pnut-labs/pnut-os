@@ -1250,6 +1250,41 @@ static void test_hung_wait(void **state)
 }
 
 /****************************************************************************
+ * Name: test_hung_long_name
+ *
+ * Description:
+ *   An app's name as long as a manifest's may be: "<app> isn't
+ *   responding" whole, not cut at a Busy heading's limit.
+ ****************************************************************************/
+
+#define LONG_NAME  "Notes from the long trip, part 2"   /* 32 bytes */
+
+static void img_hung_long(void)
+{
+  save("app-hung-long");
+}
+
+static void test_hung_long_name(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, key_back },
+    { 150 + T_HUNG, look_busy },
+    { 160 + T_HUNG, img_hung_long },
+    { 200 + T_HUNG, NULL },
+  };
+
+  g_manifest_name = LONG_NAME;
+  write_manifest(NOTES, "notes", 1, g_list);
+  run(steps, 8);
+  assert_string_equal(g_busy, LONG_NAME " isn\xe2\x80\x99t responding");
+}
+
+/****************************************************************************
  * Name: test_home_clears_owed
  *
  * Description:
@@ -1869,6 +1904,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_back_waiting, setup, teardown),
     cmocka_unit_test_setup_teardown(test_hung_close, setup, teardown),
     cmocka_unit_test_setup_teardown(test_hung_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_hung_long_name, setup, teardown),
     cmocka_unit_test_setup_teardown(test_home_clears_owed, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_first_screen_hung, setup,

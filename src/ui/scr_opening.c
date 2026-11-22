@@ -46,13 +46,19 @@ struct opening_s
  * Private Functions
  ****************************************************************************/
 
-/* The Busy's parts in the content's box */
+/* The Busy's parts in the content's box: a heading and a line of the
+ * UI's own, the heading whole (a name and its sentence may pass an app's
+ * Busy heading's limit)
+ */
 
 static void opening_parts(FAR struct screen_s *s, FAR struct tpl_busy_s *t,
-                          FAR const pnut_ui_busy_t *busy)
+                          FAR const char *heading, FAR const char *text)
 {
+  pnut_ui_busy_t busy;
   FAR lv_obj_t *box;
 
+  memset(&busy, 0, sizeof(busy));
+  strlcpy(busy.text, text, sizeof(busy.text));
   box = lv_obj_create(s->root);
   theme_box(box);
   lv_obj_set_pos(box, 0, BLOCK_HEADER_H);
@@ -61,7 +67,9 @@ static void opening_parts(FAR struct screen_s *s, FAR struct tpl_busy_s *t,
   lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
                         LV_FLEX_ALIGN_START);
-  tpl_busy_parts(s, t, box, busy);
+  tpl_busy_parts(s, t, box, &busy);
+  block_set_text(t->heading, app_text(heading, s->ui->text_long,
+                                      UI_TEXT_LONG));
 }
 
 static void opening_build(FAR struct screen_s *s)
@@ -70,7 +78,6 @@ static void opening_build(FAR struct screen_s *s)
   FAR struct host_app_s *app = (FAR struct host_app_s *)s->arg;
   FAR char *heading = s->ui->texts[0];
   FAR const char *name;
-  pnut_ui_busy_t busy;
 
   /* A developer's program without a manifest has its id for a name */
 
@@ -78,18 +85,12 @@ static void opening_build(FAR struct screen_s *s)
   o->app = app;
   ui_header(s, app_icon(app->manifest.icon), name);
 
-  memset(&busy, 0, sizeof(busy));
   snprintf(heading, UI_TEXT_MAX,
            app->wait == HOST_WAIT_HUNG ? UI_T_HUNG :
            app->wait == HOST_WAIT_WAITING ? UI_T_WAITING : UI_T_OPENING,
            name);
-  strlcpy(busy.heading, heading, sizeof(busy.heading));
-  if (app->wait == HOST_WAIT_HUNG)
-    {
-      strlcpy(busy.text, UI_T_HUNG_TEXT, sizeof(busy.text));
-    }
-
-  opening_parts(s, &o->busy, &busy);
+  opening_parts(s, &o->busy, heading,
+                app->wait == HOST_WAIT_HUNG ? UI_T_HUNG_TEXT : "");
   if (app->wait == HOST_WAIT_HUNG)
     {
       block_softkeys(s->root, UI_T_WAIT, "", UI_T_CLOSE);
@@ -135,14 +136,10 @@ static void stopped_build(FAR struct screen_s *s)
 {
   FAR const struct ui_app_s *a = s->arg;
   FAR char *heading = s->ui->texts[0];
-  pnut_ui_busy_t busy;
 
   ui_header(s, a->icon, a->name);
-  memset(&busy, 0, sizeof(busy));
   snprintf(heading, UI_TEXT_MAX, UI_T_STOPPED, a->name);
-  strlcpy(busy.heading, heading, sizeof(busy.heading));
-  strlcpy(busy.text, UI_T_TRY_AGAIN_Q, sizeof(busy.text));
-  opening_parts(s, s->state, &busy);
+  opening_parts(s, s->state, heading, UI_T_TRY_AGAIN_Q);
   block_softkeys(s->root, UI_T_TRY_AGAIN, "", UI_T_CANCEL);
 }
 
