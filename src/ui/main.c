@@ -57,6 +57,10 @@
 
 #define UI_TIMERS     48
 
+/* Descriptors: four apps' connections, services topic, screens' clients */
+
+#define UI_FDS        24
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -78,6 +82,7 @@ int main(int argc, FAR char *argv[])
   config.jobs    = 0;
   config.budget  = UI_BUDGET_MS;
   config.timers  = UI_TIMERS;
+  config.fds     = UI_FDS;
 
   /* The program's state is large (the apps' requests among it): from the
    * heap, in external memory, not in the internal memory statics take
