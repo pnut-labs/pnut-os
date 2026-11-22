@@ -2273,14 +2273,7 @@ static void who_lost(FAR struct fixture_s *f)
 
   fake_set(&f->fake, "late", "starting", 12, false);
   f->rets[0] = states_who(&f->states, 12, &name);
-
-  pthread_mutex_lock(&f->fake.lock);
-  f->fake.hold = true;
-  pthread_mutex_unlock(&f->fake.lock);
-
-  assert_int_equal(write(f->fake.wake[1], "k", 1), 1);
-  f->until = relisting;
-  f->then  = f->after;
+  relist_held(f);
 }
 
 static void test_states_who_relisted(void **state)
@@ -2512,6 +2505,75 @@ static void test_states_who_lost_differs(void **state)
 
   lost_run(&f, "ok 2\nconsole ready 7\nlate ready 12\n", NULL, 0);
   seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_READY, 12, 1);
+  seen_is(&f, 1, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 2);
+  assert_int_equal(f.nseen, 2);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
+ * Name: test_states_who_lost_task
+ *
+ * Description:
+ *   A new task Who found before the watch was lost, for a service the
+ *   watch showed ready, is held with that state (L28): no start, which is
+ *   what L37 publishes early.  When the new list's line has the service
+ *   stopped, or the list does not name it, only the stop is published:
+ *   never a "ready" NxInit did not say.  A service Who did not find,
+ *   starting when the watch was lost, is published as its line has it.
+ ****************************************************************************/
+
+/* "late" ready with task 11 in the first list, "console" starting; the
+ * new task 13 of "late" found by Who; the watch lost, and the new list
+ * held back; then list_then()
+ */
+
+static void who_lost_task(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 13, false);
+  f->rets[0] = states_who(&f->states, 13, &name);
+  table_kept(f, 1, "late");
+  relist_held(f);
+}
+
+static void lost_task_run(FAR struct fixture_s *f, FAR const char *list)
+{
+  fixture_setup(f, "");
+  fake_set(&f->fake, "console", "starting", 7, false);
+  fake_set(&f->fake, "late", "ready", 11, false);
+  fixture_read(f);
+
+  f->list  = list;
+  f->until = listed;
+  f->then  = who_lost_task;
+  f->after = list_then;
+  fixture_run(f);
+
+  assert_int_equal(f->rets[0], OK);
+  assert_int_equal(f->rets[1], PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(f->rets[2], 13);
+}
+
+static void test_states_who_lost_task(void **state)
+{
+  struct fixture_s f;
+
+  /* Stopped; "console" has another task */
+
+  lost_task_run(&f, "ok 2\nconsole ready 8\nlate stopped 0\n");
+  seen_is(&f, 0, "console", PNUT_SERVICE_STATE_STATE_READY, 8, 1);
+  seen_is(&f, 1, "late", PNUT_SERVICE_STATE_STATE_STOPPED, 0, 2);
+  seen_is(&f, 2, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 3);
+  assert_int_equal(f.nseen, 3);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+
+  /* Not named */
+
+  lost_task_run(&f, "ok 1\nconsole starting 7\n");
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STOPPED, 0, 1);
   seen_is(&f, 1, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 2);
   assert_int_equal(f.nseen, 2);
   assert_false(f.fake.broken);
@@ -2751,6 +2813,7 @@ int main(void)
     cmocka_unit_test(test_states_who_relisted),
     cmocka_unit_test(test_states_who_lost),
     cmocka_unit_test(test_states_who_lost_differs),
+    cmocka_unit_test(test_states_who_lost_task),
     cmocka_unit_test(test_states_who_first_list),
     cmocka_unit_test(test_states_ready_who),
   };

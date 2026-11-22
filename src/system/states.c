@@ -677,17 +677,21 @@ static void states_answer(FAR struct states_s *states,
 
 static void states_close(FAR struct states_s *states)
 {
+  FAR struct states_service_s *service;
   FAR struct states_command_s *command;
   uint8_t i;
 
-  /* What Who found on a whole watch, and holds, is early: older than any
-   * line to come.  A whole watch came after the first list, so an early
-   * change is one to publish.
+  /* A start Who found on a whole watch, and holds, is early: older than
+   * any line to come.  A whole watch came after the first list, so an
+   * early start is one to publish.  A new task held with the state the
+   * watch showed (ready, stopping) is no start.
    */
 
   for (i = 0; states->current && i < states->nservices; i++)
     {
-      states->services[i].early = states->services[i].held;
+      service        = &states->services[i];
+      service->early = service->held &&
+                       service->state == PNUT_SERVICE_STATE_STATE_STARTING;
     }
 
   /* The states are old until a list comes again */
