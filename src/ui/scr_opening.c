@@ -243,6 +243,18 @@ void app_opening_mode(FAR struct ui_s *ui, FAR struct host_app_s *app)
     }
 }
 
+void app_opening_move(FAR struct ui_s *ui, FAR const struct host_app_s *from,
+                      FAR struct host_app_s *to)
+{
+  FAR struct screen_s *s = app_opening_screen(ui, from);
+
+  if (s != NULL)
+    {
+      s->arg = to;
+      ((FAR struct opening_s *)s->state)->app = to;
+    }
+}
+
 void app_opening_gone(FAR struct ui_s *ui, FAR const struct host_app_s *app)
 {
   FAR struct screen_s *s = app_opening_screen(ui, app);

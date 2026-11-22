@@ -769,9 +769,9 @@ void app_launch(FAR struct ui_s *ui, FAR const struct ui_app_s *a)
     }
   else
     {
-      /* With no room, or while the app stops, the press does nothing;
-       * with no manifest, the app is not there; disabled, the owner is
-       * asked to try again
+      /* With no room, or while the app's old task exits, it waits to
+       * start, its Busy up; with no manifest, the app is not there;
+       * disabled, the owner is asked to try again
        */
 
       ret = host_start(&ui->host, a->id);

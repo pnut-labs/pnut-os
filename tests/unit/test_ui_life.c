@@ -25,6 +25,7 @@
 
 #include "fake_app.h"
 
+#include "app.h"
 #include "apps.h"
 #include "apptpl.h"
 #include "blocks.h"
@@ -39,6 +40,8 @@
 #define TODO       "org.example.todo"
 #define REMINDERS  "org.example.reminders"
 #define MAIL       "org.example.mail"     /* No manifest */
+#define PHOTOS     "org.example.photos"
+#define MAPS       "org.example.maps"
 
 /* The timings these tests run with, in ms */
 
@@ -104,6 +107,23 @@ static const struct ui_app_s g_four_apps[4] =
 static const struct ui_folder_s g_four_menu =
 {
   "Menu", UI_ICON_MENU, g_four_apps, 4
+};
+
+/* Six, for every slot taken */
+
+static const struct ui_app_s g_six_apps[6] =
+{
+  { "Notes",     UI_ICON_NOTES,     NULL, false, NOTES },
+  { "Todo",      UI_ICON_REMINDERS, NULL, false, TODO },
+  { "Reminders", UI_ICON_REMINDERS, NULL, false, REMINDERS },
+  { "Photos",    UI_ICON_NOTES,     NULL, false, PHOTOS },
+  { "Maps",      UI_ICON_NOTES,     NULL, false, MAPS },
+  { "Mail",      UI_ICON_EMAIL,     NULL, false, MAIL },
+};
+
+static const struct ui_folder_s g_six_menu =
+{
+  "Menu", UI_ICON_MENU, g_six_apps, 6
 };
 
 /* The slots' states, kept by a step: Notes', Todo's, Reminders' */
@@ -592,10 +612,11 @@ static void run_after(FAR const struct step_s *more, int n)
     { 200, show_todo },
   };
 
-  static struct step_s steps[NOTES_TODO + 8];
+  static struct step_s steps[NOTES_TODO + 12];
 
   memcpy(steps, first, sizeof(first));
   memcpy(&steps[NOTES_TODO], more, n * sizeof(*more));
+  strcpy(g_named, NOTES);         /* Who names Notes first */
   write_manifest(TODO, "reminders", 2, g_two);
   write_manifest(REMINDERS, "reminders", 2, g_two);
   run(steps, NOTES_TODO + n);
@@ -865,9 +886,12 @@ static void test_one_warm(void **state)
  *   and Service states never asked.
  ****************************************************************************/
 
+/* It leaves, and its task exits */
+
 static void leave(void)
 {
   app_leave(&g_app);
+  task_exits(NOTES);
 }
 
 static void test_stop_answered(void **state)
@@ -1019,9 +1043,12 @@ static void resume_inbox(void)
   app_resume(&g_app, "inbox/3");
 }
 
+/* Its task exits: its connection closes, and the services topic tells */
+
 static void notes_exits(void)
 {
   pnut_ui_disconnect(&g_app.client);
+  task_exits(NOTES);
 }
 
 static void keep_token(void)
@@ -1514,6 +1541,7 @@ static void crash_cycle(void)
 static void crash(void)
 {
   pnut_ui_disconnect(&g_app.client);
+  task_exits(NOTES);
 }
 
 static void look_stopped(void)
@@ -2311,6 +2339,387 @@ static void test_shell_tables(void **state)
   assert_non_null(g_dev_token);
 }
 
+/****************************************************************************
+ * Name: test_dies_before_open
+ *
+ * Description:
+ *   An app whose task exits before it opens (the services topic tells):
+ *   its Busy off at once, and a crash (the owner, 2026-11-22); three in a
+ *   row disable it.  The end of a task its start was not seen to run (an
+ *   older one's) changes nothing.
+ ****************************************************************************/
+
+static void notes_task_exits(void)
+{
+  task_exits(NOTES);
+}
+
+static void keep_count(void)
+{
+  g_crash_count = crash_count(NOTES);
+  keep_states();
+}
+
+static void test_dies_before_open(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 50, notes_task_exits },             /* Before its Busy */
+    { 60, keep_count },
+    { 100, tile_notes },
+    { 120 + T_OPENING, look_busy },
+    { 140 + T_OPENING, notes_task_exits },  /* Its Busy up */
+    { 150 + T_OPENING, look2 },
+    { 300, tile_notes },
+    { 320, notes_task_exits },
+    { 400, tile_notes },
+    { 420, look_stopped },
+    { 500, NULL },
+  };
+
+  static const struct step_s stale[] =
+  {
+    { 20, tile_notes },
+    { 50, notes_task_exits },             /* Not this start's task */
+    { 60, keep_count },
+    { 100, NULL },
+  };
+
+  run(steps, 12);
+  assert_int_equal(g_states[0], HOST_FREE);
+  assert_string_equal(g_top, "stopped");  /* Disabled */
+  assert_string_equal(g_top2, "menu");    /* The Busy off at once */
+  assert_int_equal(g_starts, 3);
+
+  g_start_quiet = true;
+  g_starts = 0;
+  run(stale, 4);
+  assert_int_equal(g_crash_count, 0);
+  assert_int_equal(g_states[0], HOST_OPENING);
+}
+
+/****************************************************************************
+ * Name: test_slot_until_gone
+ *
+ * Description:
+ *   An app done with the UI (here, crashed) keeps its slot, stopping,
+ *   until its task is gone: the services topic tells, or Service states
+ *   stops it at Stop's deadline.  Its screen is off at once.
+ ****************************************************************************/
+
+static void drop_connection(void)
+{
+  pnut_ui_disconnect(&g_app.client);
+}
+
+/* Its connection gone, a key sent to it before the UI has read that: the
+ * push fails, then its task exits
+ */
+
+static void drop_and_key(void)
+{
+  pnut_ui_disconnect(&g_app.client);
+  key(KEYMAP_BACKSPACE, true);
+  task_exits(NOTES);
+}
+
+static void test_slot_until_gone(void **state)
+{
+  static const struct step_s told[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, drop_connection },
+    { 120, keep_count },
+    { 130, look },
+    { 150, notes_task_exits },
+    { 170, look2 },
+    { 180, keep_states },
+    { 300, NULL },
+  };
+
+  static const struct step_s never[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, drop_connection },
+    { 150 + T_STOP, keep_states },
+    { 200 + T_STOP, NULL },
+  };
+
+  static const struct step_s topic_first[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, notes_task_exits },            /* Told before it closes */
+    { 120, drop_connection },
+    { 140, keep_states },
+    { 200 + T_STOP, NULL },
+  };
+
+  static const struct step_s pushed[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 600, drop_and_key },
+    { 700, keep_count },
+    { 800 + T_STOP, NULL },
+  };
+
+  run(told, 11);
+  assert_int_equal(g_crash_count, 1);
+  assert_string_equal(g_top, "menu");
+  assert_int_equal(g_stops, 0);
+  assert_int_equal(g_states[0], HOST_FREE);
+
+  run(topic_first, 8);
+  assert_int_equal(g_states[0], HOST_FREE);
+  assert_int_equal(g_stops, 0);
+
+  run(pushed, 7);
+  assert_int_equal(g_states[0], HOST_FREE);
+  assert_int_equal(g_stops, 0);
+
+  g_stop_stays = true;
+  run(never, 7);
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+  assert_int_equal(g_states[0], HOST_FREE);
+}
+
+/****************************************************************************
+ * Name: test_retap_after_cancel
+ *
+ * Description:
+ *   An app cancelled before it opened, its tile pressed again: its old
+ *   task's late Open is told to stop, in the old task's slot, never taken
+ *   for the new start's, and its end is not a crash.  The UI's Busy is up
+ *   at once; the app is started again once the old task is gone.
+ ****************************************************************************/
+
+static int g_notes_slots;
+
+static void count_notes_slots(void)
+{
+  int i;
+
+  g_notes_slots = 0;
+  for (i = 0; i < HOST_APPS; i++)
+    {
+      if (g_ui.host.slots[i].state != HOST_FREE &&
+          strcmp(g_ui.host.slots[i].id, NOTES) == 0)
+        {
+          g_notes_slots++;
+        }
+    }
+}
+
+static void test_retap_after_cancel(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 30, connect },
+    { 40, home_now },                     /* Cancelled: stopped */
+    { 50, tile_notes },
+    { 55, look_busy },                    /* "Opening" at once */
+    { 60, open_app },                     /* Task 1's Open, late */
+    { 85, count_notes_slots },
+    { 90, keep_states },
+    { 100, crash },                       /* Task 1 gone */
+    { 120, keep_count },
+    { 150, connect },                     /* Task 2 */
+    { 160, open_app },
+    { 200, show_inbox },
+    { 250, look2 },
+    { 300, NULL },
+  };
+
+  g_stop_stays = true;
+  run(steps, 15);
+  assert_int_equal(g_notes_slots, 1);     /* Its own slot, told to stop */
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Opening Notes\xe2\x80\xa6");
+  assert_int_equal(g_crash_count, 0);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);  /* Task 2's start */
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  assert_string_equal(g_top2, "app");
+  assert_int_equal(g_depth2, 3);          /* Home, Menu, the app */
+}
+
+/****************************************************************************
+ * Name: test_wait_stopping
+ *
+ * Description:
+ *   The tile of an app still stopping (told to stop behind): "Opening" at
+ *   once, the app started as soon as its old task is gone, its first
+ *   screen in the Busy's place.  Home, or another app's tile (the newer
+ *   tap wins), while it waits forgets it.
+ ****************************************************************************/
+
+static int g_starts_kept;
+static bool g_opening_left;
+
+static void keep_starts(void)
+{
+  g_starts_kept = g_starts;
+}
+
+static void keep_opening(void)
+{
+  g_opening_left = app_opening_screen(&g_ui, NULL) != NULL;
+}
+
+static void test_wait_stopping(void **state)
+{
+  static const struct step_s more[] =
+  {
+    { 220, home_now },                    /* Notes told to stop */
+    { 260, tile_notes },
+    { 265, look_busy },
+    { 270, keep_starts },
+    { 300, notes_exits },
+    { 320, named_notes },
+    { 330, connect },
+    { 340, open_app },
+    { 400, show_inbox },
+    { 450, look2 },
+    { 500, NULL },
+  };
+
+  static const struct step_s newer[] =
+  {
+    { 220, home_now },
+    { 260, tile_notes },                  /* Waits */
+    { 270, tile_todo },                   /* Todo, warm: Notes forgotten */
+    { 290, show_todo },
+    { 300, notes_exits },
+    { 350, look },
+    { 360, keep_opening },
+    { 400, keep_starts },
+    { 500, NULL },
+  };
+
+  static const struct step_s home[] =
+  {
+    { 220, home_now },
+    { 260, tile_notes },
+    { 270, home_now },                    /* Forgotten */
+    { 280, look },
+    { 300, notes_exits },
+    { 400, keep_starts },
+    { 500, NULL },
+  };
+
+  run_after(more, 11);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Opening Notes\xe2\x80\xa6");
+  assert_int_equal(g_starts_kept, 2);     /* Notes waits */
+  assert_int_equal(g_starts, 3);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
+  assert_string_equal(g_top2, "app");
+  assert_string_equal(g_title, "Notes");
+
+  g_starts = 0;
+  run_after(home, 7);
+  assert_string_equal(g_top, "home");
+  assert_int_equal(g_starts_kept, 2);
+
+  g_starts = 0;
+  run_after(newer, 9);
+  assert_int_equal(g_starts_kept, 2);
+  assert_string_equal(g_top, "app");
+  assert_string_equal(g_title, "Today");
+  assert_false(g_opening_left);
+}
+
+/****************************************************************************
+ * Name: test_wait_no_slot
+ *
+ * Description:
+ *   No slot free (one open, one warm, two still stopping): the tile's app
+ *   shows "Opening" at once, and is started in the first slot freed.
+ ****************************************************************************/
+
+static void tile6(int n)
+{
+  int i;
+
+  ui_push(&g_ui, &g_scr_menu, &g_six_menu);
+  for (i = 0; i < n % 3; i++)
+    {
+      key('d', false);
+    }
+
+  for (i = 0; i < n / 3; i++)
+    {
+      key('s', false);
+    }
+
+  key(KEYMAP_ENTER, true);
+}
+
+static void tile_photos(void)
+{
+  tile6(3);
+}
+
+static void tile_maps(void)
+{
+  tile6(4);
+}
+
+static void reminders_exits(void)
+{
+  task_exits(REMINDERS);
+}
+
+static char g_started_kept[64];
+
+static void keep_started(void)
+{
+  g_starts_kept = g_starts;
+  strlcpy(g_started_kept, g_started, sizeof(g_started_kept));
+}
+
+static void test_wait_no_slot(void **state)
+{
+  static const struct step_s more[] =
+  {
+    { 220, tile_reminders },              /* Opening, not connected */
+    { 240, tile_photos },                 /* Reminders cancelled */
+    { 260, tile_maps },                   /* Photos too: no slot */
+    { 270, look_busy },
+    { 280, keep_started },
+    { 300, reminders_exits },             /* A slot free */
+    { 350, keep_states },
+    { 400, NULL },
+  };
+
+  g_stop_stays = true;
+  g_times.stop = 5000;
+  write_manifest(PHOTOS, "notes", 1, g_list);
+  write_manifest(MAPS, "notes", 1, g_list);
+  run_after(more, 8);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_title, "Notes");  /* The manifests' name */
+  assert_int_equal(g_starts_kept, 4);     /* Notes, Todo, Reminders, Photos */
+  assert_string_equal(g_started_kept, PHOTOS);
+  assert_int_equal(g_starts, 5);
+  assert_string_equal(g_started, MAPS);
+  assert_int_equal(g_states[2], HOST_FREE);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -2366,6 +2775,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_sheet_gathered, setup, teardown),
     cmocka_unit_test_setup_teardown(test_shell_app_id, setup, teardown),
     cmocka_unit_test_setup_teardown(test_shell_tables, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_dies_before_open, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_slot_until_gone, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_retap_after_cancel, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_wait_stopping, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_wait_no_slot, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

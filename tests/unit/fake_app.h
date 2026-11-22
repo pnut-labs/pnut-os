@@ -40,6 +40,7 @@
 
 #include "pnut/manifest.pb.h"
 #include "pnut/services.pnut.h"
+#include "pnut/services.topics.h"
 #include "pnut/telephony.topics.h"
 #include "pnut/time.topics.h"
 #include "pnut/ui.pnut.h"
@@ -57,6 +58,12 @@
 #define FAKE_STRIDE   (FAKE_WIDTH / 8)
 #define FAKE_EVENTS   64
 #define FAKE_NOTES    "org.example.notes"
+
+/* The pids the services topic gives the tasks Service states starts: made
+ * up, the n-th start's FAKE_PID + n (every fake app is this process)
+ */
+
+#define FAKE_PID      1000
 
 /* The time the screens show: 2026-09-22 12:07:00 in Warsaw */
 
@@ -119,6 +126,8 @@ static FAR struct pnut_loop_s *g_loop;
 static struct pnut_services_server_s g_services;
 static FAR struct pnut_publisher_s *g_time;
 static FAR struct pnut_publisher_s *g_tel;
+static FAR struct pnut_publisher_s *g_svc;
+static uint32_t g_svc_seq;
 static enum who_e g_who;
 static char g_named[64];
 static int g_whos;
@@ -139,6 +148,14 @@ static char g_stopped[64];
 static int g_start_fail_first;
 static struct pnut_request_s g_start_req;
 static FAR const char *g_manifest_name;
+
+/* What the services topic tells (Service states' changes, RFC 0006): a
+ * task started is STARTING with its pid, unless g_start_quiet; one
+ * stopped exits at once (STOPPED), unless g_stop_stays
+ */
+
+static bool g_start_quiet;
+static bool g_stop_stays;
 
 /* The apps' timings the UI runs with; all 0: the defaults */
 
@@ -211,6 +228,27 @@ static void fake_who(FAR struct pnut_services_server_s *server,
     }
 }
 
+/* A service's change on the services topic */
+
+static void publish_service(FAR const char *name, int state, int32_t pid)
+{
+  pnut_service_change_t msg;
+
+  memset(&msg, 0, sizeof(msg));
+  strlcpy(msg.name, name, sizeof(msg.name));
+  msg.state = state;
+  msg.pid   = pid;
+  msg.seq   = ++g_svc_seq;
+  assert_int_equal(pnut_service_change_publish(g_svc, &msg), 0);
+}
+
+/* An app's task exits: the topic tells it stopped */
+
+static void task_exits(FAR const char *name)
+{
+  publish_service(name, PNUT_SERVICE_STATE_STATE_STOPPED, 0);
+}
+
 static void fake_start_fail(FAR struct pnut_loop_s *loop,
                             FAR struct pnut_timer_s *timer, FAR void *arg)
 {
@@ -235,6 +273,13 @@ static void fake_start(FAR struct pnut_services_server_s *server,
                                         fake_start_fail, NULL, NULL), 0);
       return;
     }
+
+  if (!g_start_quiet)
+    {
+      publish_service(in->name, PNUT_SERVICE_STATE_STATE_STARTING,
+                      FAKE_PID + g_starts);
+    }
+
   memset(&out, 0, sizeof(out));
   pnut_services_start_reply(server, req, PNUT_STATUS_OK, &out);
 }
@@ -250,6 +295,10 @@ static void fake_stop(FAR struct pnut_services_server_s *server,
   strlcpy(g_stopped, in->name, sizeof(g_stopped));
   memset(&out, 0, sizeof(out));
   pnut_services_stop_reply(server, req, PNUT_STATUS_OK, &out);
+  if (!g_stop_stays)
+    {
+      task_exits(in->name);
+    }
 }
 
 static const struct pnut_services_handlers_s g_fake_services =
@@ -535,6 +584,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   assert_int_equal(pnut_loop_create(&lconfig, &g_loop), 0);
   assert_int_equal(pnut_time_change_advertise(g_loop, &g_time), 0);
   assert_int_equal(pnut_telephony_info_advertise(g_loop, &g_tel), 0);
+  assert_int_equal(pnut_service_change_advertise(g_loop, &g_svc), 0);
   publish_time();
   assert_int_equal(pnut_services_serve(g_loop, "services", 0,
                                        &g_fake_services, NULL,
@@ -576,6 +626,7 @@ static void run(FAR const struct step_s *steps, int nsteps)
   pnut_services_close(&g_services);
   pnut_topic_unadvertise(g_time);
   pnut_topic_unadvertise(g_tel);
+  pnut_topic_unadvertise(g_svc);
   pnut_loop_destroy(g_loop);
 }
 
@@ -594,6 +645,9 @@ static int fake_setup(void **state)
   g_stopped[0] = '\0';
   memset(&g_times, 0, sizeof(g_times));
   g_start_fail_first = 0;
+  g_start_quiet = false;
+  g_stop_stays = false;
+  g_svc_seq = 0;
   g_updates = 0;
   g_fulls = 0;
   g_manifest_name = "Notes";

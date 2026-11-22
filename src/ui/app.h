@@ -48,6 +48,13 @@ void app_gone(FAR struct ui_s *ui);
 void app_opening(FAR struct ui_s *ui, FAR struct host_app_s *app);
 void app_opening_mode(FAR struct ui_s *ui, FAR struct host_app_s *app);
 void app_opening_gone(FAR struct ui_s *ui, FAR const struct host_app_s *app);
+
+/* The UI's Busy of one app now another's: an app waiting to start, which
+ * is given a slot
+ */
+
+void app_opening_move(FAR struct ui_s *ui, FAR const struct host_app_s *from,
+                      FAR struct host_app_s *to);
 FAR struct screen_s *app_opening_screen(FAR struct ui_s *ui,
                                         FAR const struct host_app_s *app);
 

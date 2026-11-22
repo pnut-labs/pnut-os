@@ -657,12 +657,14 @@ static void test_gone(void **state)
  * Name: test_leave
  *
  * Description:
- *   Leave takes the app off; its stream ends; another Open is accepted.
+ *   Leave takes the app off; its stream ends; once its task has exited,
+ *   another Open is accepted.
  ****************************************************************************/
 
 static void leave_app(void)
 {
   app_leave(&g_app);
+  task_exits(NOTES);
 }
 
 /* Notes opened again from Menu, after it left */

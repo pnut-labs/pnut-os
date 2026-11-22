@@ -22,6 +22,7 @@
 #include <pnut/timer.h>
 
 #include "pnut/services.pnut.h"
+#include "pnut/services.topics.h"
 #include "pnut/ui.pnut.h"
 
 #include "applist.h"
@@ -69,7 +70,8 @@ enum host_state_e
   HOST_OPENING,                   /* Started; its Open not accepted yet */
   HOST_OPEN,                      /* Its screen on top */
   HOST_WARM,                      /* Running, behind */
-  HOST_STOPPING                   /* Asked to stop, or never to run */
+  HOST_STOPPING                   /* Asked to stop, or never to run; or
+                                   * done with, its task still exiting */
 };
 
 /* What the UI's own Busy over an app says (scr_opening.c) */
@@ -101,10 +103,14 @@ struct host_app_s
   uint8_t wait;                   /* What the UI's Busy says */
   bool closed;                    /* The owner closed it: its place is
                                    * not kept */
+  int32_t pid;                    /* Its task, as the services topic told
+                                   * since its start; 0 before */
+  bool gone;                      /* Its task exited (the topic) */
+  bool asked;                     /* Service states asked to stop it */
   char id[MANIFEST_ID_MAX + 1];
   struct manifest_s manifest;
   struct pnut_stream_s stream;    /* Open's: the events */
-  pnut_ui_event_t queue[HOST_EVENTS];
+  FAR pnut_ui_event_t *queue;     /* HOST_EVENTS of them, its slot's */
   uint8_t head;
   uint8_t count;
 };
@@ -147,8 +153,23 @@ struct host_s
   char claimed[MANIFEST_ID_MAX + 1];
 
   struct host_app_s slots[HOST_APPS];
+  pnut_ui_event_t queues[HOST_APPS][HOST_EVENTS];
   uint32_t orders;
   uint32_t starts;
+
+  /* An app waiting to start, its tile pressed while a task of its id
+   * still exited or no slot was free: no slot of its own, no queue (its
+   * state HOST_FREE for none); started as soon as it can
+   */
+
+  struct host_app_s next;
+  FAR struct pnut_timer_s *kick;
+
+  /* Service states' services topic: the apps' tasks started and gone */
+
+  struct pnut_service_change_reader_s changes;
+  bool changes_open;
+  uint32_t seq;
   struct host_resume_s resumes[HOST_RESUMES];
   uint32_t resume_orders;
   struct host_crash_s crashes[HOST_CRASHES];
@@ -173,16 +194,20 @@ void host_close(FAR struct host_s *h);
  * it: Service states starts its task, and its Open makes it the open app;
  * an app being opened before is cancelled.  The UI's Busy is drawn when
  * nothing is by the times' opening; with no Open by their open, the app
- * is stopped.  A warm app is brought back, and sent Shown.  0 when it is
- * started, brought back, or is opening already; -ENOENT with no manifest;
- * -EBUSY with no room for another app, or while the app stops; -EACCES
- * for an app disabled after HOST_CRASHED crashes in a row.
+ * is stopped.  A warm app is brought back, and sent Shown.  While a task
+ * of the app still exits, or with no slot free, the UI's Busy is drawn at
+ * once, and the app started as soon as that task is gone and a slot is
+ * free (the services topic tells; Stop's deadline at the latest).  0 when
+ * it is started, brought back, waits to start, or is opening already;
+ * -ENOENT with no manifest; -EACCES for an app disabled after
+ * HOST_CRASHED crashes in a row.
  */
 
 int host_start(FAR struct host_s *h, FAR const char *id);
 
 /* Cancel an app being opened: told to stop if it has opened, stopped by
- * Service states if not; the UI's Busy taken off
+ * Service states if not, forgotten if it was waiting to start; the UI's
+ * Busy taken off
  */
 
 void host_cancel(FAR struct host_app_s *app);
@@ -204,7 +229,7 @@ FAR const struct host_resume_s *host_token(FAR struct host_s *h,
                                            FAR const char *id);
 
 /* Home: the open app kept warm (one warm at most: the one open longest
- * ago is stopped), an app being opened cancelled
+ * ago is stopped), an app being opened, or waiting to start, cancelled
  */
 
 void host_home(FAR struct host_s *h);
