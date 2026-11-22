@@ -1332,9 +1332,17 @@ static void host_rows(FAR struct pnut_ui_server_s *server,
 
   if (app != NULL)
     {
+      /* Only a page taken answers the page owed (the owner, 2026-11-22,
+       * as for Show): one dropped leaves the times running
+       */
+
       host_draw_begin(app, false, false);
-      host_unowe(app);            /* Answered */
       ret = app_rows(h->ui, in);
+      if (ret > 0)
+        {
+          host_unowe(app);        /* Answered */
+        }
+
       host_draw_end(app);
       host_answer(server, req, pnut_ui_rows_reply, ret);
     }

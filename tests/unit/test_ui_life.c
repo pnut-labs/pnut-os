@@ -3014,23 +3014,30 @@ static void down14(void)
     }
 }
 
-static void rows_page(void)
+/* A page of 20 rows from first, for a screen */
+
+static void rows_send(uint32_t screen, uint32_t first)
 {
   static pnut_ui_rows_request_t in;
   int i;
 
   memset(&in, 0, sizeof(in));
-  in.screen = INBOX;
-  in.first = 20;
+  in.screen = screen;
+  in.first = first;
   in.rows_count = 20;
   for (i = 0; i < 20; i++)
     {
-      in.rows[i].id = 21 + i;
+      in.rows[i].id = first + 1 + i;
       snprintf(in.rows[i].title, sizeof(in.rows[i].title), "Row %d",
-               20 + i);
+               (int)first + i);
     }
 
   app_send_rows(&g_app, &in);
+}
+
+static void rows_page(void)
+{
+  rows_send(INBOX, 20);
 }
 
 static void test_page_owed(void **state)
@@ -3065,6 +3072,64 @@ static void test_page_owed(void **state)
   run(answered, 8);
   assert_int_equal(g_app.status, PNUT_STATUS_OK);
   assert_string_equal(g_top, "app");
+}
+
+/****************************************************************************
+ * Name: test_rows_owed
+ *
+ * Description:
+ *   Only a valid Rows for the screen on top answers the page owed (the
+ *   owner, L24, as a refused Show answers nothing): one for another
+ *   screen, or not from the row asked, is dropped as before, answered OK,
+ *   and the page is still owed: "Waiting for Notes…" comes.
+ ****************************************************************************/
+
+static void rows_other(void)
+{
+  rows_send(INBOX + 1, 20);
+}
+
+static void rows_unasked(void)
+{
+  rows_send(INBOX, 10);
+}
+
+static void test_rows_owed(void **state)
+{
+  static const struct step_s other[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_long },
+    { 700, down14 },                      /* A page asked for */
+    { 800, rows_other },                  /* Another screen's */
+    { 750 + T_BUSY, look_busy },
+    { 800 + T_BUSY, NULL },
+  };
+
+  static const struct step_s unasked[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_long },
+    { 700, down14 },
+    { 800, rows_unasked },                /* Not from the row asked */
+    { 750 + T_BUSY, look_busy },
+    { 800 + T_BUSY, NULL },
+  };
+
+  run(other, 8);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Waiting for Notes\xe2\x80\xa6");
+
+  g_busy[0] = '\0';
+  run(unasked, 8);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Waiting for Notes\xe2\x80\xa6");
 }
 
 /****************************************************************************
@@ -3632,6 +3697,7 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_owed_drawn_now, setup, teardown),
     cmocka_unit_test_setup_teardown(test_page_owed, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_rows_owed, setup, teardown),
     cmocka_unit_test_setup_teardown(test_crash_table_full, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_resume_table_full, setup,

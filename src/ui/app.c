@@ -746,13 +746,14 @@ int app_rows(FAR struct ui_s *ui, FAR const pnut_ui_rows_request_t *in)
   FAR struct screen_s *s = app_screen(ui);
 
   if (s != NULL && app_state(s)->screen == in->screen &&
-      app_state(s)->tpl != NULL && app_state(s)->tpl->rows != NULL)
+      app_state(s)->tpl != NULL && app_state(s)->tpl->rows != NULL &&
+      app_state(s)->tpl->rows(s, in) == 0)
     {
-      app_state(s)->tpl->rows(s, in);
       ui_place(ui);
+      return 1;
     }
 
-  return 0;                       /* Not the screen's: dropped */
+  return 0;                       /* Not the screen's, or not asked */
 }
 
 void app_launch(FAR struct ui_s *ui, FAR const struct ui_app_s *a)

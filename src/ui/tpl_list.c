@@ -255,15 +255,19 @@ static int tpl_list_update(FAR struct screen_s *s,
   return 0;
 }
 
-static void tpl_list_rows(FAR struct screen_s *s,
-                          FAR const pnut_ui_rows_request_t *in)
+static int tpl_list_rows(FAR struct screen_s *s,
+                         FAR const pnut_ui_rows_request_t *in)
 {
   FAR struct applist_s *l = &tpl_list_of(s)->list;
+  int ret;
 
-  if (applist_rows(l, in->first, in->rows, in->rows_count) == 0)
+  ret = applist_rows(l, in->first, in->rows, in->rows_count);
+  if (ret == 0)
     {
       tpl_list_draw(s);
     }
+
+  return ret;
 }
 
 static void tpl_list_leave(FAR struct screen_s *s)

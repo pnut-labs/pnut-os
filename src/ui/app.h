@@ -29,7 +29,8 @@ struct ui_app_s;
 /* The open app's screens (RFC 0037), as host.c hands them over once it
  * has checked who sends them.  0, or -EINVAL for a description that does
  * not hold together; an Update or Rows for a screen not on top is
- * dropped, and is 0.
+ * dropped, and is 0.  Rows is 1 when its page is taken: only that
+ * answers the page owed; one not from the row asked is dropped too.
  */
 
 int app_show(FAR struct ui_s *ui, FAR const pnut_ui_show_request_t *in);
