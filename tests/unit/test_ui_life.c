@@ -3509,6 +3509,60 @@ static void test_unsent_stops(void **state)
   assert_string_equal(g_stopped, NOTES);
 }
 
+/****************************************************************************
+ * Name: test_restarting_gone
+ *
+ * Description:
+ *   RESTARTING on the services topic means the app's task is gone (the
+ *   owner, L22): before the app opened, a crash, its Busy off; for an
+ *   app cancelled and still stopping, its slot free before Stop's
+ *   deadline.
+ ****************************************************************************/
+
+static int g_states_kept;
+
+static void notes_restarting(void)
+{
+  publish_service(NOTES, PNUT_SERVICE_STATE_STATE_RESTARTING, 0);
+}
+
+static void keep_notes_state(void)
+{
+  g_states_kept = slot_state(NOTES);
+}
+
+static void test_restarting_gone(void **state)
+{
+  static const struct step_s opening[] =
+  {
+    { 20, tile_notes },                   /* Seen starting */
+    { 50, notes_restarting },
+    { 60, keep_count },
+    { 100, NULL },
+  };
+
+  static const struct step_s stopping[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },                     /* Cancelled: stopping */
+    { 60, keep_notes_state },
+    { 80, notes_restarting },
+    { 100, keep_count },                  /* Before Stop's deadline */
+    { 150, NULL },
+  };
+
+  run(opening, 4);
+  assert_int_equal(g_crash_count, 1);
+  assert_int_equal(g_states[0], HOST_FREE);
+
+  g_stop_stays = true;
+  g_times.stop = 5000;
+  run(stopping, 6);
+  assert_int_equal(g_states_kept, HOST_STOPPING);
+  assert_int_equal(g_crash_count, 0);
+  assert_int_equal(g_states[0], HOST_FREE);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -3592,6 +3646,8 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_no_topic, setup, teardown),
     cmocka_unit_test_setup_teardown(test_unsent_stops, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_restarting_gone, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
