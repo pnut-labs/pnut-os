@@ -1831,6 +1831,56 @@ static void test_states_who_published(void **state)
 }
 
 /****************************************************************************
+ * Name: test_states_who_restarting
+ *
+ * Description:
+ *   A service the watch last showed restarting has no task (the owner's
+ *   answer L22): a task Who finds for it is its new start, published as
+ *   starting, once, before the watch's lines about it.
+ ****************************************************************************/
+
+/* "late" crashed; its new task asked of Who before the watch's event */
+
+static void who_after_crash(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  f->until = late_published;
+  f->then  = NULL;
+}
+
+static void test_states_who_restarting(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fake_set(&f.fake, "late", "restarting", 0, false);
+  fixture_read(&f);
+
+  f.until = listed;
+  f.then  = who_after_crash;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  assert_string_equal(f.seen[0].name, "late");
+  assert_int_equal(f.seen[0].state, PNUT_SERVICE_STATE_STATE_STARTING);
+  assert_int_equal(f.seen[0].pid, 12);
+  assert_int_equal(f.seen[0].seq, 1);
+  assert_string_equal(f.seen[1].name, "late");
+  assert_int_equal(f.seen[1].state, PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(f.seen[1].pid, 12);
+  assert_int_equal(f.seen[1].seq, 2);
+  assert_int_equal(f.nseen, 2);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
  * Name: test_states_ready_who
  *
  * Description:
@@ -1934,6 +1984,7 @@ int main(void)
     cmocka_unit_test(test_states_long_name),
     cmocka_unit_test(test_states_origin),
     cmocka_unit_test(test_states_who_published),
+    cmocka_unit_test(test_states_who_restarting),
     cmocka_unit_test(test_states_ready_who),
   };
 
