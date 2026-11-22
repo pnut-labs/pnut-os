@@ -4396,6 +4396,35 @@ static void test_exiting_remarked(void **state)
 }
 
 /****************************************************************************
+ * Name: test_wait_asks_again
+ *
+ * Description:
+ *   Get answered "still running" for a wait that Home forgot: a new wait
+ *   of the same app asks Service states again, as the topic may have
+ *   missed the STOPPED meanwhile.
+ ****************************************************************************/
+
+static void test_wait_asks_again(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 40, home_now },                     /* Its deadline 240 */
+    { 50, tile_notes },                   /* Waits: Get at 240, running */
+    { 300, home_now },                    /* Forgotten */
+    { 320, notes_exits_missed },          /* No message after it */
+    { 350, tile_notes },                  /* Waits anew */
+    { 400, keep_starts },
+    { 500, NULL },
+  };
+
+  g_stop_stays = true;
+  run(steps, 8);
+  assert_int_equal(g_starts_kept, 2);
+  assert_int_equal(g_gets, 2);
+}
+
+/****************************************************************************
  * Name: test_gets_one
  *
  * Description:
@@ -4607,6 +4636,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_exiting_full, setup, teardown),
     cmocka_unit_test_setup_teardown(test_get_stale, setup, teardown),
     cmocka_unit_test_setup_teardown(test_exiting_remarked, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_wait_asks_again, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_gets_one, setup, teardown),
   };

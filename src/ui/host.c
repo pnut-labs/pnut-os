@@ -1589,14 +1589,23 @@ static int host_launch(FAR struct host_app_s *app, FAR const char *id,
   return 0;
 }
 
+/* No app waiting to start: the next wait asks Service states' Get
+ * afresh, as the topic may have missed its old task's STOPPED since
+ */
+
+static void host_next_clear(FAR struct host_s *h)
+{
+  memset(&h->next, 0, sizeof(h->next));
+  h->next.host = h;
+  h->getting = false;
+}
+
 /* The app waiting to start forgotten, its Busy off */
 
 static void host_next_drop(FAR struct host_s *h)
 {
   app_opening_gone(h->ui, &h->next);
-  memset(&h->next, 0, sizeof(h->next));
-  h->next.host = h;
-  h->getting = false;
+  host_next_clear(h);
 }
 
 /* Service states answered Get about the old task of the app waiting: one
@@ -1696,9 +1705,7 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
   manifest = n->manifest;
   app->wait = HOST_WAIT_OPENING;
   app_opening_move(h->ui, n, app);
-  memset(n, 0, sizeof(*n));
-  n->host = h;
-  h->getting = false;
+  host_next_clear(h);
   host_launch(app, id, &manifest);
 }
 
@@ -1859,9 +1866,7 @@ void host_close(FAR struct host_s *h)
       h->kick = NULL;
     }
 
-  memset(&h->next, 0, sizeof(h->next));
-  h->next.host = h;
-  h->getting = false;
+  host_next_clear(h);
   if (h->changes_open)
     {
       pnut_service_change_unsubscribe(&h->changes);
@@ -2004,9 +2009,7 @@ int host_start(FAR struct host_s *h, FAR const char *id)
   app = host_free_slot(h);
   if (stopping || app == NULL || host_exiting(h, id) != NULL)
     {
-      memset(n, 0, sizeof(*n));
-      h->getting  = false;
-      n->host     = h;
+      host_next_clear(h);
       n->state    = HOST_OPENING;
       n->wait     = HOST_WAIT_OPENING;
       n->manifest = manifest;
