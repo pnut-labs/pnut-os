@@ -3230,6 +3230,285 @@ static void test_home_closes_options(void **state)
   assert_false(g_options_are);
 }
 
+/****************************************************************************
+ * Name: test_switch_once
+ *
+ * Description:
+ *   Only the app's first screen after a switch takes the full refresh
+ *   (the owner: on the app's first screen): another of its screens is
+ *   drawn as any other change.
+ ****************************************************************************/
+
+/* The updates and the full ones among them */
+
+static void mark_both(void)
+{
+  g_marks[g_nmarks] = g_updates;
+  g_fulls_at[g_nmarks++] = g_fulls;
+}
+
+static void test_switch_once(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },                   /* Its first screen: full */
+    { 700, mark_both },
+    { 800, show_archive },                /* Another of its screens */
+    { 1900, mark_both },                  /* Drawn, not full */
+    { 1910, look },
+    { 2000, NULL },
+  };
+
+  times_long();
+  g_nmarks = 0;
+  run(steps, 9);
+  assert_string_equal(g_title, "Archive");
+  assert_true(g_fulls_at[0] > 0);
+  assert_true(g_marks[1] > g_marks[0]);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+}
+
+/****************************************************************************
+ * Name: test_other_service
+ *
+ * Description:
+ *   Another service's change on the services topic is not the app's:
+ *   Telephony stopping while Notes opens is no crash of Notes, whose Busy
+ *   stays.
+ ****************************************************************************/
+
+static void telephony_stops(void)
+{
+  task_exits("telephony");
+}
+
+static void test_other_service(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },                   /* Its task told starting */
+    { 60 + T_OPENING, telephony_stops },  /* Its Busy up */
+    { 80 + T_OPENING, look_busy },
+    { 90 + T_OPENING, keep_count },
+    { 200 + T_OPENING, NULL },
+  };
+
+  run(steps, 5);
+  assert_int_equal(g_crash_count, 0);
+  assert_int_equal(g_states[0], HOST_OPENING);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Opening Notes\xe2\x80\xa6");
+}
+
+/****************************************************************************
+ * Name: test_shell_id_taken
+ *
+ * Description:
+ *   A shell's program may not take an id a slot holds (the owner,
+ *   2026-11-22: an app's, or a slot's): a second program opening as the
+ *   first is refused, and the first stays open.
+ ****************************************************************************/
+
+static void second_as_dev(void)
+{
+  app_open(&g_app2, DEV, 4);
+}
+
+static void test_shell_id_taken(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect },
+    { 30, shell_dev },                    /* Open as DEV */
+    { 80, show_dev },
+    { 100, shell_connect },
+    { 110, second_as_dev },               /* Another program, as DEV */
+    { 150, keep_open_code2 },
+    { 160, keep_dev_state },
+    { 200, NULL },
+  };
+
+  run(steps, 8);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_BUSY);
+  assert_int_equal(g_open_code, PNUT_UI_ERROR_CODE_ANOTHER_APP);
+  assert_int_equal(g_dev_state, HOST_OPEN);
+  assert_int_equal(g_app.nevents, 1);     /* Welcome: never Stop */
+}
+
+/****************************************************************************
+ * Name: test_wait_cancel
+ *
+ * Description:
+ *   Cancel on the "Opening" of an app waiting to start (its old task still
+ *   stopping) forgets it: it is not started when the old task is gone.
+ *   Cancel once it has been started in a slot freed cancels that start:
+ *   Service states stops it.  Either way a Cancel, not a Close: its
+ *   resume token is kept (the owner: kept until it gives another, leaves
+ *   or crashes).
+ ****************************************************************************/
+
+static void plant_notes_token(void)
+{
+  plant_for(NOTES, 0);
+}
+
+static void test_wait_cancel(void **state)
+{
+  static const struct step_s waiting[] =
+  {
+    { 210, plant_notes_token },
+    { 220, home_now },                    /* Notes told to stop */
+    { 260, tile_notes },                  /* Waits */
+    { 270, soft_right },                  /* Cancel */
+    { 280, look },
+    { 300, notes_exits },
+    { 350, keep_crashes },
+    { 360, keep_starts },
+    { 400, NULL },
+  };
+
+  static const struct step_s started[] =
+  {
+    { 210, plant_notes_token },
+    { 220, home_now },
+    { 260, tile_notes },
+    { 300, notes_exits },                 /* Started in the slot freed */
+    { 310, keep_starts },
+    { 320, soft_right },                  /* Cancel, before its Busy time */
+    { 330, look },
+    { 340, keep_opening },
+    { 350, keep_crashes },
+    { 360, keep_states },
+    { 400, NULL },
+  };
+
+  run_after(waiting, 9);
+  assert_string_equal(g_top, "menu");
+  assert_true(g_token_kept);
+  assert_int_equal(g_starts_kept, 2);     /* Notes, Todo: not again */
+  assert_int_equal(g_stops, 0);
+
+  g_starts = 0;
+  g_stop_stays = true;
+  run_after(started, 11);
+  assert_int_equal(g_starts_kept, 3);     /* Notes, Todo, Notes */
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+  assert_int_equal(g_states[0], HOST_STOPPING);
+  assert_false(g_opening_left);
+  assert_string_equal(g_top, "menu");
+  assert_true(g_token_kept);
+}
+
+/****************************************************************************
+ * Name: test_stop_asked_once
+ *
+ * Description:
+ *   Service states is asked to stop an app's task once for its slot: an
+ *   app cancelled before it opened, or that never opened, whose task
+ *   does not exit, is not asked again at Stop's deadline.
+ ****************************************************************************/
+
+static void test_stop_asked_once(void **state)
+{
+  static const struct step_s cancelled[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },                     /* Cancelled: stopped */
+    { 100 + T_STOP, NULL },               /* Past its deadline */
+  };
+
+  static const struct step_s unopened[] =
+  {
+    { 20, tile_notes },
+    { 100 + T_OPEN + T_STOP, NULL },      /* No Open, then its deadline */
+  };
+
+  g_stop_stays = true;
+  run(cancelled, 3);
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+
+  g_stops = 0;
+  run(unopened, 2);
+  assert_int_equal(g_stops, 1);
+}
+
+/****************************************************************************
+ * Name: test_no_topic
+ *
+ * Description:
+ *   Without the services topic, an app done with the UI has its slot free
+ *   at once: nothing would tell when its task is gone.
+ ****************************************************************************/
+
+static void test_no_topic(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, drop_connection },             /* It crashed */
+    { 120, keep_states },
+    { 200 + T_STOP, NULL },
+  };
+
+  g_svc_none = true;
+  g_stop_stays = true;
+  run(steps, 7);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_states[0], HOST_FREE);
+  assert_int_equal(g_stops, 0);
+}
+
+/****************************************************************************
+ * Name: test_unsent_stops
+ *
+ * Description:
+ *   An event that cannot be sent (one that does not encode; a send that
+ *   fails closes the connection first) takes the app off: its stream
+ *   ended, and its task stopped by Service states at once, as for events
+ *   left waiting.
+ ****************************************************************************/
+
+/* A Welcome whose region has no end, as no event the UI makes should */
+
+static void unsendable(void)
+{
+  pnut_ui_event_t ev;
+
+  memset(&ev, 0, sizeof(ev));
+  ev.which_kind = PNUT_UI_EVENT_WELCOME_TAG;
+  memset(ev.kind.welcome.region, 'x', sizeof(ev.kind.welcome.region));
+  host_event(&g_ui.host, &ev);
+}
+
+static void test_unsent_stops(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 600, unsendable },
+    { 620, keep_stops },                  /* Before Stop's deadline */
+    { 700, NULL },
+  };
+
+  g_stop_stays = true;
+  run(steps, 7);
+  assert_int_equal(g_app.ended, PNUT_STATUS_INTERNAL);
+  assert_int_equal(g_stops_kept, 1);
+  assert_string_equal(g_stopped, NOTES);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -3305,6 +3584,14 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_home_closes_options, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_switch_once, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_other_service, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_shell_id_taken, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_wait_cancel, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_stop_asked_once, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_no_topic, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_unsent_stops, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

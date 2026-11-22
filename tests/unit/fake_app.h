@@ -157,6 +157,12 @@ static FAR const char *g_manifest_name;
 static bool g_start_quiet;
 static bool g_stop_stays;
 
+/* No services topic: none advertised, and its directory a plain file, so
+ * that the UI's subscription fails; nothing is published
+ */
+
+static bool g_svc_none;
+
 /* The apps' timings the UI runs with; all 0: the defaults */
 
 static struct ui_times_s g_times;
@@ -233,6 +239,11 @@ static void fake_who(FAR struct pnut_services_server_s *server,
 static void publish_service(FAR const char *name, int state, int32_t pid)
 {
   pnut_service_change_t msg;
+
+  if (g_svc_none)
+    {
+      return;
+    }
 
   memset(&msg, 0, sizeof(msg));
   strlcpy(msg.name, name, sizeof(msg.name));
@@ -576,6 +587,8 @@ static void run(FAR const struct step_s *steps, int nsteps)
   struct display_config_s screen;
   struct input_config_s iconfig;
   struct ui_config_s uconfig;
+  char path[128];
+  FILE *f;
   int i;
 
   pnut_loop_defaults(&lconfig);
@@ -584,7 +597,20 @@ static void run(FAR const struct step_s *steps, int nsteps)
   assert_int_equal(pnut_loop_create(&lconfig, &g_loop), 0);
   assert_int_equal(pnut_time_change_advertise(g_loop, &g_time), 0);
   assert_int_equal(pnut_telephony_info_advertise(g_loop, &g_tel), 0);
-  assert_int_equal(pnut_service_change_advertise(g_loop, &g_svc), 0);
+  if (g_svc_none)
+    {
+      snprintf(path, sizeof(path), "%s/topic.%s", g_dir,
+               g_pnut_service_change_topic.name);
+      f = fopen(path, "w");
+      assert_non_null(f);
+      fclose(f);
+      g_svc = NULL;
+    }
+  else
+    {
+      assert_int_equal(pnut_service_change_advertise(g_loop, &g_svc), 0);
+    }
+
   publish_time();
   assert_int_equal(pnut_services_serve(g_loop, "services", 0,
                                        &g_fake_services, NULL,
@@ -647,6 +673,7 @@ static int fake_setup(void **state)
   g_start_fail_first = 0;
   g_start_quiet = false;
   g_stop_stays = false;
+  g_svc_none = false;
   g_svc_seq = 0;
   g_updates = 0;
   g_fulls = 0;
