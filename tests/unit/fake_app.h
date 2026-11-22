@@ -321,6 +321,21 @@ static void fake_state(FAR const char *name, int state, int32_t pid)
   e->pid   = pid;
 }
 
+/* A service Service states no longer knows: Get answers NOTFOUND */
+
+static void fake_state_forget(FAR const char *name)
+{
+  int i;
+
+  for (i = 0; i < FAKE_SERVICES; i++)
+    {
+      if (strcmp(g_svc_states[i].name, name) == 0)
+        {
+          memset(&g_svc_states[i], 0, sizeof(g_svc_states[i]));
+        }
+    }
+}
+
 /* A service's state as the fake last set it, or -1 for none */
 
 static int fake_state_of(FAR const char *name)

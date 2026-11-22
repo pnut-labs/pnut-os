@@ -1609,10 +1609,11 @@ static void host_next_drop(FAR struct host_s *h)
 }
 
 /* Service states answered Get about the old task of the app waiting: one
- * stopped, and still marked as when asked (by its order), is gone, and
- * the app may start.  Its answer may be older than the topic's news: it
- * only takes a mark off.  No answer: the app waits for the topic.  Either
- * way the next Get may go, if one was wanted meanwhile.
+ * stopped or restarting (as on the topic), or a service it does not know,
+ * and still marked as when asked (by its order), is gone (the owner, L31),
+ * and the app may start.  Its answer may be older than the topic's news:
+ * it only takes a mark off.  No answer: the app waits for the topic.
+ * Either way the next Get may go, if one was wanted meanwhile.
  */
 
 static void host_got(FAR struct pnut_services_client_s *client, int status,
@@ -1622,24 +1623,39 @@ static void host_got(FAR struct pnut_services_client_s *client, int status,
   FAR struct host_s *h = (FAR struct host_s *)
     ((FAR char *)client - offsetof(struct host_s, services));
   uint32_t order = (uint32_t)(uintptr_t)arg;
-  FAR struct host_exiting_s *e;
+  FAR struct host_exiting_s *e = NULL;
+  bool gone = false;
+  int i;
 
   h->get_out = false;
-  if (status != PNUT_STATUS_OK || out == NULL)
+  for (i = 0; i < HOST_EXITING; i++)
+    {
+      if (h->exiting[i].id[0] != '\0' && h->exiting[i].order == order)
+        {
+          e = &h->exiting[i];
+        }
+    }
+
+  if (status == PNUT_STATUS_NOTFOUND)
+    {
+      gone = true;
+    }
+  else if (status != PNUT_STATUS_OK || out == NULL)
     {
       pnut_log(&h->ui->module, PNUT_LOG_WARNING,
                "an app's state not told: %d", status);
     }
   else
     {
-      e = host_exiting(h, out->name);
-      if (e != NULL && e->order == order &&
-          out->state == PNUT_SERVICE_STATE_STATE_STOPPED)
-        {
-          pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s stopped (Get)",
-                   e->id);
-          memset(e, 0, sizeof(*e));
-        }
+      gone = out->state == PNUT_SERVICE_STATE_STATE_STOPPED ||
+             out->state == PNUT_SERVICE_STATE_STATE_RESTARTING;
+    }
+
+  if (e != NULL && gone)
+    {
+      pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s gone (Get): %d",
+               e->id, status);
+      memset(e, 0, sizeof(*e));
     }
 
   host_kick(h);

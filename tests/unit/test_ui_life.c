@@ -4660,6 +4660,69 @@ static void test_gets_one(void **state)
   assert_null(strstr(out, "not started"));
 }
 
+/****************************************************************************
+ * Name: test_get_gone
+ *
+ * Description:
+ *   Service states' Get answering RESTARTING, or NOTFOUND (no such
+ *   service), about the old task of an app tapped past Stop's deadline:
+ *   the old task is gone, as when it says STOPPED (the owner, L31), and
+ *   the app starts.  Its end is no crash.
+ ****************************************************************************/
+
+/* Notes' old task restarting, the topic's message lost */
+
+static void notes_restarts_missed(void)
+{
+  fake_state(NOTES, PNUT_SERVICE_STATE_STATE_RESTARTING, 0);
+  g_svc_seq++;
+}
+
+/* Notes no longer known to Service states */
+
+static void notes_unknown(void)
+{
+  fake_state_forget(NOTES);
+}
+
+static void test_get_gone(void **state)
+{
+  static const struct step_s restarting[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 40, home_now },                     /* Its deadline 240 */
+    { 300, notes_restarts_missed },
+    { 350, tile_notes },                  /* Get: restarting */
+    { 400, keep_count },
+    { 500, NULL },
+  };
+
+  static const struct step_s notfound[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },
+    { 300, notes_unknown },
+    { 350, tile_notes },                  /* Get: not found */
+    { 400, keep_count },
+    { 500, NULL },
+  };
+
+  g_stop_stays = true;
+  run(restarting, 6);
+  assert_true(g_gets >= 1);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);
+  assert_int_equal(g_crash_count, 0);
+
+  g_starts = 0;
+  g_gets = 0;
+  run(notfound, 6);
+  assert_true(g_gets >= 1);
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_states[0], HOST_OPENING);
+  assert_int_equal(g_crash_count, 0);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -4769,6 +4832,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_wait_asks_again, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_gets_one, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_get_gone, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
