@@ -1303,6 +1303,43 @@ static void test_first_screen_hung(void **state)
 }
 
 /****************************************************************************
+ * Name: test_bad_show_owed
+ *
+ * Description:
+ *   A first Show refused (invalid) answers nothing: the first screen is
+ *   still owed, and "isn't responding" comes at 10 s.
+ ****************************************************************************/
+
+static void show_invalid(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = 0;                          /* Never 0 */
+  strcpy(in.title, "Inbox");
+  in.which_content = PNUT_UI_SHOW_REQUEST_LIST_TAG;
+  app_send_show(&g_app, &in);
+}
+
+static void test_bad_show_owed(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 60, show_invalid },
+    { 150 + T_HUNG, look_busy },
+    { 250 + T_HUNG, NULL },
+  };
+
+  run(steps, 6);
+  assert_int_equal(g_app.status, PNUT_STATUS_INVALID);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_busy, "Notes isn\xe2\x80\x99t responding");
+}
+
+/****************************************************************************
  * Name: test_shown_waiting
  *
  * Description:
@@ -1756,6 +1793,7 @@ int main(void)
                                     teardown),
     cmocka_unit_test_setup_teardown(test_first_screen_hung, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_bad_show_owed, setup, teardown),
     cmocka_unit_test_setup_teardown(test_shown_waiting, setup, teardown),
     cmocka_unit_test_setup_teardown(test_owed_afresh, setup, teardown),
     cmocka_unit_test_setup_teardown(test_stall, setup, teardown),

@@ -1121,9 +1121,17 @@ static void host_show(FAR struct pnut_ui_server_s *server,
       return;
     }
 
+  /* Only a Show drawn answers what is owed: one refused leaves the times
+   * running
+   */
+
   host_draw_begin(app, in->now, in->quiet);
-  host_unowe(app);                /* Answered */
   ret = app_show(h->ui, in);
+  if (ret == 0)
+    {
+      host_unowe(app);            /* Answered */
+    }
+
   host_draw_end(app);
   if (ret == 0 && !in->sheet)
     {
