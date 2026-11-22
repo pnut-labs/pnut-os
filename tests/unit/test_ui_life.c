@@ -2005,6 +2005,116 @@ static void test_switch_on_screen(void **state)
   assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
 }
 
+/****************************************************************************
+ * Name: test_sheet_gathered
+ *
+ * Description:
+ *   A sheet the app opens on its own, nobody's key causing it, is
+ *   gathered and spaced, whether it replaces a sheet open or shuts the
+ *   options: what it takes off is drawn with it, not at once.
+ ****************************************************************************/
+
+static const int g_list_confirm[2] =
+{
+  PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST, PNUT_UI_TEMPLATE_UI_TEMPLATE_CONFIRM
+};
+
+static void sheet(uint32_t id, FAR const char *question)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = id;
+  in.sheet = true;
+  in.which_content = PNUT_UI_SHOW_REQUEST_CONFIRM_TAG;
+  strcpy(in.content.confirm.question, question);
+  app_send_show(&g_app, &in);
+}
+
+static void sheet2(void)
+{
+  sheet(2, "Delete?");
+}
+
+static void sheet3(void)
+{
+  sheet(3, "Really?");
+}
+
+static void show_inbox_options(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  strcpy(in.title, "Inbox");
+  in.options_count = 1;
+  in.options[0].id = 1;
+  strcpy(in.options[0].label, "Delete all");
+  strcpy(in.options[0].letter, "x");
+  in.which_content = PNUT_UI_SHOW_REQUEST_LIST_TAG;
+  in.content.list.count = 1;
+  in.content.list.rows_count = 1;
+  in.content.list.rows[0].id = 1;
+  strcpy(in.content.list.rows[0].title, "Shopping");
+  app_send_show(&g_app, &in);
+}
+
+static void options_key(void)
+{
+  input_key(&g_input, KEYMAP_ALT, true, true);
+  key(KEYMAP_ENTER, true);
+  input_key(&g_input, KEYMAP_ALT, true, false);
+}
+
+static void test_sheet_gathered(void **state)
+{
+  static const struct step_s replaced[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 700, mark },                        /* 0 */
+    { 800, sheet2 },                      /* Gathered: drawn at 1100 */
+    { 900, mark },                        /* 1: not yet */
+    { 1300, mark },                       /* 2: drawn */
+    { 3000, sheet3 },                     /* Gathered: due 3300 */
+    { 3100, mark },                       /* 3: not yet */
+    { 3500, mark },                       /* 4: drawn */
+    { 3600, NULL },
+  };
+
+  static const struct step_s options[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox_options },
+    { 700, options_key },                 /* Drawn at 1200 */
+    { 1300, mark },                       /* 0 */
+    { 3000, sheet2 },                     /* Gathered: due 3300 */
+    { 3100, mark },                       /* 1: not yet */
+    { 3500, mark },                       /* 2: drawn */
+    { 3600, NULL },
+  };
+
+  write_manifest(NOTES, "notes", 2, g_list_confirm);
+  g_nmarks = 0;
+  run(replaced, 12);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_int_equal(g_marks[1], g_marks[0]);
+  assert_int_equal(g_marks[2], g_marks[0] + 1);
+  assert_int_equal(g_marks[3], g_marks[2]);
+  assert_int_equal(g_marks[4], g_marks[2] + 1);
+
+  g_nmarks = 0;
+  run(options, 10);
+  assert_int_equal(g_app.status, PNUT_STATUS_OK);
+  assert_int_equal(g_marks[1], g_marks[0]);
+  assert_int_equal(g_marks[2], g_marks[0] + 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -2057,6 +2167,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_switch_full, setup, teardown),
     cmocka_unit_test_setup_teardown(test_switch_on_screen, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_sheet_gathered, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

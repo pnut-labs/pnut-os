@@ -250,10 +250,12 @@ static void app_sheet_keys(FAR struct screen_s *s)
 }
 
 /* The sheet off, the screen's softkeys back.  Its objects go after LVGL
- * is done with the tap that may have closed it.
+ * is done with the key or tap that may have closed it; at once (now) for
+ * an app's request, so that what they leave is drawn as the request asks,
+ * not by their deletion later, as a change nobody's key caused.
  */
 
-static void app_sheet_close(FAR struct screen_s *s)
+static void app_sheet_close(FAR struct screen_s *s, bool now)
 {
   FAR struct app_scr_s *st = app_state(s);
   FAR struct app_sheet_s *sh = &st->sheet;
@@ -263,9 +265,19 @@ static void app_sheet_close(FAR struct screen_s *s)
       return;
     }
 
-  lv_obj_delete_async(sh->keys);
-  lv_obj_delete_async(sh->box);
-  lv_obj_delete_async(sh->shadow);
+  if (now)
+    {
+      lv_obj_delete(sh->keys);
+      lv_obj_delete(sh->box);
+      lv_obj_delete(sh->shadow);
+    }
+  else
+    {
+      lv_obj_delete_async(sh->keys);
+      lv_obj_delete_async(sh->box);
+      lv_obj_delete_async(sh->shadow);
+    }
+
   memset(sh, 0, sizeof(*sh));
   if (st->keys != NULL)
     {
@@ -300,7 +312,7 @@ static void app_sheet_open(FAR struct screen_s *s,
   FAR const pnut_ui_confirm_t *c = &in->content.confirm;
   FAR lv_obj_t *label;
 
-  app_sheet_close(s);
+  app_sheet_close(s, true);      /* A request: one sheet replaces another */
   ui_options_shut(s->ui, s);
 
   sh->screen = in->screen;
@@ -377,7 +389,7 @@ static void app_sheet_key(FAR struct screen_s *s, uint8_t action)
 
   if (confirm || (cancel && (!sh->busy || sh->cancel)))
     {
-      app_sheet_close(s);
+      app_sheet_close(s, false);
       app_input_on(s, screen, confirm ? PNUT_UI_INPUT_ACTION_CONFIRMED :
                                         PNUT_UI_INPUT_ACTION_CANCELLED,
                    0, 0);

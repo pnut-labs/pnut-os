@@ -181,19 +181,39 @@ static void ui_options_tapped(FAR lv_event_t *e)
                     lv_event_get_user_data(e));
 }
 
-static void ui_options_close(FAR struct ui_s *ui)
+/* The options off: after LVGL is done with the key or tap that may be
+ * going through them, or at once (now) for an app's request, so that what
+ * they leave is drawn as the request asks
+ */
+
+static void ui_options_end(FAR struct ui_s *ui, bool now)
 {
   FAR struct ui_options_s *o = &ui->options;
 
   if (o->box != NULL)
     {
-      lv_obj_delete_async(o->catcher);
-      lv_obj_delete_async(o->shadow);
-      lv_obj_delete_async(o->box);
+      if (now)
+        {
+          lv_obj_delete(o->catcher);
+          lv_obj_delete(o->shadow);
+          lv_obj_delete(o->box);
+        }
+      else
+        {
+          lv_obj_delete_async(o->catcher);
+          lv_obj_delete_async(o->shadow);
+          lv_obj_delete_async(o->box);
+        }
+
       o->box     = NULL;
       o->shadow  = NULL;
       o->catcher = NULL;
     }
+}
+
+static void ui_options_close(FAR struct ui_s *ui)
+{
+  ui_options_end(ui, false);
 }
 
 static void ui_options_focus(FAR struct ui_options_s *o, uint8_t focus)
@@ -999,7 +1019,7 @@ void ui_options_shut(FAR struct ui_s *ui, FAR struct screen_s *s)
 {
   if (ui->options.box != NULL && ui->options.screen == s)
     {
-      ui_options_close(ui);
+      ui_options_end(ui, true);
     }
 }
 

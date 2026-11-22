@@ -299,7 +299,10 @@ int ui_options_lettered(FAR struct screen_s *s,
                                             int index));
 bool ui_options_open(FAR struct ui_s *ui);
 
-/* A screen's options closed, nothing chosen (a sheet comes over them) */
+/* A screen's options closed, nothing chosen (a sheet comes over them):
+ * from an app's request, never a key's or tap's handler, since they are
+ * deleted at once
+ */
 
 void ui_options_shut(FAR struct ui_s *ui, FAR struct screen_s *s);
 
