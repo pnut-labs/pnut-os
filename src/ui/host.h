@@ -181,6 +181,7 @@ struct host_s
   struct host_app_s next;
   FAR struct pnut_timer_s *kick;
   bool getting;                   /* Get asked about its old task */
+  bool get_out;                   /* A Get unanswered: one at a time */
 
   /* Apps whose old task may still exit, their slots freed */
 

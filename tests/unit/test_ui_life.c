@@ -4348,12 +4348,11 @@ static void test_get_stale(void **state)
   static const struct step_s steps[] =
   {
     { 20, tile_notes },                   /* Task 1 */
-    { 40, home_now },                     /* Its deadline 240: Get A */
-    { 50, tile_notes },                   /* Waits */
+    { 40, home_now },                     /* Its deadline 240 */
     { 300, notes_exits_missed },
     { 320, tile_notes },                  /* Get B: stopped, at 720 */
     { 350, notes_task_exits },            /* Task 2 started */
-    { 380, home_now },                    /* Its deadline 580: Get C */
+    { 380, home_now },                    /* Its deadline 580 */
     { 390, tile_notes },                  /* Waits for task 2 */
     { 800, keep_starts },                 /* After Get B's answer */
     { 810, keep_opening },
@@ -4362,7 +4361,7 @@ static void test_get_stale(void **state)
 
   g_stop_stays = true;
   g_get_late = 400;
-  run(steps, 11);
+  run(steps, 10);
   assert_int_equal(g_starts_kept, 2);
   assert_true(g_opening_left);
 }
@@ -4394,6 +4393,114 @@ static void test_exiting_remarked(void **state)
   g_stop_stays = true;
   run(steps, 8);
   assert_int_equal(g_starts_kept, 2);
+}
+
+/****************************************************************************
+ * Name: test_gets_one
+ *
+ * Description:
+ *   Service states' Get is asked one at a time: taps of the waiting app,
+ *   and gaps in the topic, while a Get is unanswered ask again only once
+ *   it is answered or its time is out, and a time out with nothing new
+ *   asks nothing.  The services' calls stay free for other apps' starts.
+ ****************************************************************************/
+
+static int g_gets_kept;
+static int g_gets_kept2;
+
+static void keep_gets(void)
+{
+  g_gets_kept = g_gets;
+}
+
+static void keep_gets2(void)
+{
+  g_gets_kept2 = g_gets;
+}
+
+/* A change of another service lost, then one told: a gap */
+
+static void topic_gap(void)
+{
+  g_svc_seq++;
+  other_change();
+}
+
+static void test_gets_one(void **state)
+{
+  static const struct step_s taps[] =
+  {
+    { 20, tile_notes },                   /* Task 1 */
+    { 40, home_now },                     /* Its deadline 240: Get */
+    { 50, tile_notes },                   /* Waits */
+    { 260, tile_notes },                  /* Tapped again, 12 times */
+    { 270, tile_notes },
+    { 280, tile_notes },
+    { 290, tile_notes },
+    { 300, tile_notes },
+    { 310, tile_notes },
+    { 320, tile_notes },
+    { 330, tile_notes },
+    { 340, tile_notes },
+    { 350, tile_notes },
+    { 360, tile_notes },
+    { 370, tile_notes },
+    { 380, keep_gets },
+    { 400, tile_todo },                   /* Another app */
+    { 450, keep_starts },
+    { 500, NULL },
+  };
+
+  static const struct step_s gaps[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },
+    { 50, tile_notes },                   /* Get at 240, out at 640 */
+    { 260, topic_gap },                   /* 10 gaps */
+    { 270, topic_gap },
+    { 280, topic_gap },
+    { 290, topic_gap },
+    { 300, topic_gap },
+    { 310, topic_gap },
+    { 320, topic_gap },
+    { 330, topic_gap },
+    { 340, topic_gap },
+    { 350, topic_gap },
+    { 380, keep_gets },
+    { 700, keep_gets2 },                  /* Asked again at 640 */
+    { 1100, keep_starts },                /* Its time out at 1040 */
+    { 1110, tile_todo },
+    { 1150, keep_count },
+    { 1200, NULL },
+  };
+
+  FAR const char *out;
+
+  write_manifest(TODO, "reminders", 2, g_two);
+  g_stop_stays = true;
+  g_get_silent = true;
+  g_times.who = 400;
+  catch_start();
+  run(taps, 19);
+  out = catch_end();
+  assert_int_equal(g_gets_kept, 1);
+  assert_int_equal(g_starts_kept, 2);     /* Notes, then Todo */
+  assert_string_equal(g_started, TODO);
+  assert_null(strstr(out, "not asked"));
+  assert_null(strstr(out, "not started"));
+
+  g_starts = 0;
+  g_gets = 0;
+  catch_start();
+  run(gaps, 19);
+  out = catch_end();
+  assert_int_equal(g_gets_kept, 1);
+  assert_int_equal(g_gets_kept2, 2);
+  assert_int_equal(g_gets, 2);            /* None at the second's time */
+  assert_int_equal(g_starts_kept, 1);
+  assert_int_equal(g_states[1], HOST_OPENING);  /* Todo started */
+  assert_null(strstr(out, "not asked"));
+  assert_null(strstr(out, "not started"));
 }
 
 int main(void)
@@ -4501,6 +4608,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_get_stale, setup, teardown),
     cmocka_unit_test_setup_teardown(test_exiting_remarked, setup,
                                     teardown),
+    cmocka_unit_test_setup_teardown(test_gets_one, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

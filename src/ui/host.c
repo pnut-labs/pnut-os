@@ -1602,7 +1602,8 @@ static void host_next_drop(FAR struct host_s *h)
 /* Service states answered Get about the old task of the app waiting: one
  * stopped, and still marked as when asked (by its order), is gone, and
  * the app may start.  Its answer may be older than the topic's news: it
- * only takes a mark off.  No answer: the app waits for the topic.
+ * only takes a mark off.  No answer: the app waits for the topic.  Either
+ * way the next Get may go, if one was wanted meanwhile.
  */
 
 static void host_got(FAR struct pnut_services_client_s *client, int status,
@@ -1614,22 +1615,24 @@ static void host_got(FAR struct pnut_services_client_s *client, int status,
   uint32_t order = (uint32_t)(uintptr_t)arg;
   FAR struct host_exiting_s *e;
 
+  h->get_out = false;
   if (status != PNUT_STATUS_OK || out == NULL)
     {
       pnut_log(&h->ui->module, PNUT_LOG_WARNING,
                "an app's state not told: %d", status);
-      return;
     }
-
-  e = host_exiting(h, out->name);
-  if (e == NULL || e->order != order ||
-      out->state != PNUT_SERVICE_STATE_STATE_STOPPED)
+  else
     {
-      return;                     /* Still running, or no longer marked */
+      e = host_exiting(h, out->name);
+      if (e != NULL && e->order == order &&
+          out->state == PNUT_SERVICE_STATE_STATE_STOPPED)
+        {
+          pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s stopped (Get)",
+                   e->id);
+          memset(e, 0, sizeof(*e));
+        }
     }
 
-  pnut_log(&h->ui->module, PNUT_LOG_INFO, "app %s stopped (Get)", e->id);
-  memset(e, 0, sizeof(*e));
   host_kick(h);
 }
 
@@ -1638,7 +1641,8 @@ static void host_got(FAR struct pnut_services_client_s *client, int status,
  * Its old task last seen exiting, past its slot's deadline: the topic
  * tells when it stops, and Service states' Get is asked once for the wait
  * (again at a gap in the topic, or a tap), as the topic may have missed
- * it.
+ * it; one Get at a time, so that the services' calls stay free for
+ * starts.
  */
 
 static void host_next_due(FAR struct pnut_loop_s *loop,
@@ -1662,7 +1666,7 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
   e = host_exiting(h, n->id);
   if (e != NULL)
     {
-      if (!h->getting)
+      if (!h->getting && !h->get_out)
         {
           memset(&in, 0, sizeof(in));
           strlcpy(in.name, n->id, sizeof(in.name));
@@ -1676,6 +1680,7 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
             }
 
           h->getting = ret >= 0;
+          h->get_out = ret >= 0;
         }
 
       return;                     /* Its old task not seen gone */
