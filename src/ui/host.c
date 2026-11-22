@@ -1548,12 +1548,12 @@ static void host_next_due(FAR struct pnut_loop_s *loop,
 }
 
 /* A change of a service's state, on Service states' services topic.  An
- * app's task seen running since its start is that start's; seen gone
- * before the app opened, the app crashed (the owner, 2026-11-22: its Busy
- * off at once); seen gone after, its slot is free once the app is done
- * with the UI.  A gone task of a start not seen running is an older task's
- * end, and changes nothing.  Changes missed (the sequence's gap) are not
- * asked again: the Open's and Stop's deadlines stand in.
+ * app's task seen starting or ready since its start is that start's; seen
+ * gone before the app opened, the app crashed (the owner, 2026-11-22: its
+ * Busy off at once); seen gone after, its slot is free once the app is
+ * done with the UI.  A gone task of a start not seen running is an older
+ * task's end, and changes nothing.  Changes missed (the sequence's gap)
+ * are not asked again: the Open's and Stop's deadlines stand in.
  */
 
 static void host_service_change(FAR struct pnut_service_change_reader_s
@@ -1586,9 +1586,15 @@ static void host_service_change(FAR struct pnut_service_change_reader_s
 
       if (!gone)
         {
-          if (app->state == HOST_OPENING && msg->pid != 0)
+          /* Starting or ready: this start's task.  Stopping is an older
+           * one's, still exiting.
+           */
+
+          if (app->state == HOST_OPENING && msg->pid != 0 &&
+              (msg->state == PNUT_SERVICE_STATE_STATE_STARTING ||
+               msg->state == PNUT_SERVICE_STATE_STATE_READY))
             {
-              app->pid = msg->pid;  /* This start's task */
+              app->pid = msg->pid;
             }
 
           continue;

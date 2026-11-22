@@ -2347,12 +2347,19 @@ static void test_shell_tables(void **state)
  *   An app whose task exits before it opens (the services topic tells):
  *   its Busy off at once, and a crash (the owner, 2026-11-22); three in a
  *   row disable it.  The end of a task its start was not seen to run (an
- *   older one's) changes nothing.
+ *   older one's, even told as stopping first) changes nothing.
  ****************************************************************************/
 
 static void notes_task_exits(void)
 {
   task_exits(NOTES);
+}
+
+/* An older task of Notes' slow to stop: signalled, then gone */
+
+static void old_task_stopping(void)
+{
+  publish_service(NOTES, PNUT_SERVICE_STATE_STATE_STOPPING, FAKE_PID - 1);
 }
 
 static void keep_count(void)
@@ -2382,6 +2389,7 @@ static void test_dies_before_open(void **state)
   static const struct step_s stale[] =
   {
     { 20, tile_notes },
+    { 40, old_task_stopping },
     { 50, notes_task_exits },             /* Not this start's task */
     { 60, keep_count },
     { 100, NULL },
@@ -2395,7 +2403,7 @@ static void test_dies_before_open(void **state)
 
   g_start_quiet = true;
   g_starts = 0;
-  run(stale, 4);
+  run(stale, 5);
   assert_int_equal(g_crash_count, 0);
   assert_int_equal(g_states[0], HOST_OPENING);
 }
