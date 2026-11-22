@@ -3663,7 +3663,8 @@ static void test_unsent_stops(void **state)
  *   RESTARTING on the services topic means the app's task is gone (the
  *   owner, L22): before the app opened, a crash, its Busy off; for an
  *   app cancelled and still stopping, its slot free before Stop's
- *   deadline.
+ *   deadline; for an app waiting for its old task past that deadline,
+ *   the app started.
  ****************************************************************************/
 
 static int g_states_kept;
@@ -3698,6 +3699,16 @@ static void test_restarting_gone(void **state)
     { 150, NULL },
   };
 
+  static const struct step_s waiting[] =
+  {
+    { 20, tile_notes },
+    { 40, home_now },                     /* Its deadline 240 */
+    { 50, tile_notes },                   /* Waits; Get: running */
+    { 300, notes_restarting },
+    { 350, keep_starts },
+    { 400, NULL },
+  };
+
   run(opening, 4);
   assert_int_equal(g_crash_count, 1);
   assert_int_equal(g_states[0], HOST_FREE);
@@ -3708,6 +3719,11 @@ static void test_restarting_gone(void **state)
   assert_int_equal(g_states_kept, HOST_STOPPING);
   assert_int_equal(g_crash_count, 0);
   assert_int_equal(g_states[0], HOST_FREE);
+
+  g_starts = 0;
+  g_times.stop = T_STOP;
+  run(waiting, 6);
+  assert_int_equal(g_starts_kept, 2);
 }
 
 /****************************************************************************
