@@ -58,7 +58,9 @@ enum redraw_app_e
  * is gathered, spaced, drawn at once or quietly, as it asks.  A full
  * refresh is due after REDRAW_FULL_AFTER partial ones, and on switching
  * apps and going Home; it is taken at the next change of screen (the
- * app's screen, Home), never while typing.  Times are in ms.
+ * app's screen, Home).  The switch's is taken even when a text field has
+ * the keys on that screen, once; the one after partial ones never while
+ * typing.  Times are in ms.
  */
 
 struct redraw_s

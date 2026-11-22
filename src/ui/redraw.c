@@ -127,8 +127,14 @@ int redraw_take(FAR struct redraw_s *r, uint64_t now)
   r->pending = false;
   r->app     = false;
   r->quiet   = false;
-  return r->screen && !r->typing &&
-         (r->switched || r->partials >= REDRAW_FULL_AFTER) ?
+
+  /* The switch's even in a text field, once, before anything is typed
+   * (the owner, 2026-11-22); the ghosting's never while typing
+   */
+
+  return r->screen &&
+         (r->switched ||
+          (!r->typing && r->partials >= REDRAW_FULL_AFTER)) ?
          REDRAW_FULL : REDRAW_PARTIAL;
 }
 

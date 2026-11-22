@@ -212,7 +212,10 @@ static void test_redraw_app_now_quiet(void **state)
 
 /* Switching apps and going Home: a full refresh on the draw that shows
  * the app's screen or Home, not on one before it; none once the switch is
- * taken back; never while typing
+ * taken back.  The switch's is taken even when a text field has the keys
+ * on that screen (the owner, L21), once: the draws while typing after it
+ * are partial, a change of screen among them too, and the count of
+ * partial ones does not bring a full one while typing.
  */
 
 static void test_redraw_switch(void **state)
@@ -246,7 +249,45 @@ static void test_redraw_switch(void **state)
   redraw_switch(&r);
   redraw_screen(&r);
   redraw_changed(&r, 300);
-  assert_int_equal(redraw_take(&r, 300), REDRAW_PARTIAL);
+  assert_int_equal(redraw_take(&r, 300), REDRAW_FULL);
+  redraw_done(&r, true);
+
+  /* The next keys typed, though one changes the screen: partial */
+
+  redraw_input(&r, 400);
+  redraw_screen(&r);
+  assert_int_equal(redraw_take(&r, 400 + REDRAW_GATHER_MS), REDRAW_PARTIAL);
+  redraw_done(&r, false);
+}
+
+static void test_redraw_typing_count(void **state)
+{
+  struct redraw_s r;
+  int i;
+
+  redraw_init(&r);
+  redraw_typing(&r, true);
+  redraw_switch(&r);
+  redraw_screen(&r);
+  redraw_changed(&r, 0);
+  assert_int_equal(redraw_take(&r, 0), REDRAW_FULL);
+  redraw_done(&r, true);
+
+  /* Typing: the partial ones counted, a full one waits for the end */
+
+  for (i = 0; i <= REDRAW_FULL_AFTER; i++)
+    {
+      redraw_input(&r, 1000 * (i + 1));
+      redraw_screen(&r);
+      assert_int_equal(redraw_take(&r, 1000 * (i + 1) + REDRAW_GATHER_MS),
+                       REDRAW_PARTIAL);
+      redraw_done(&r, false);
+    }
+
+  redraw_typing(&r, false);
+  redraw_screen(&r);
+  redraw_changed(&r, 20000);
+  assert_int_equal(redraw_take(&r, 20000), REDRAW_FULL);
 }
 
 /****************************************************************************
@@ -265,6 +306,7 @@ int main(void)
     cmocka_unit_test(test_redraw_app_joins_key),
     cmocka_unit_test(test_redraw_app_now_quiet),
     cmocka_unit_test(test_redraw_switch),
+    cmocka_unit_test(test_redraw_typing_count),
   };
 
   return cmocka_run_group_tests_name("ui_redraw", tests, NULL, NULL);

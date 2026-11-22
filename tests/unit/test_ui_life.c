@@ -3913,6 +3913,108 @@ static void test_shell_broken_id(void **state)
   assert_int_equal(g_open_code, PNUT_UI_ERROR_CODE_BAD_ID);
 }
 
+/****************************************************************************
+ * Name: test_switch_in_field
+ *
+ * Description:
+ *   The draw that switches to an app takes its full refresh even when a
+ *   text field has the keys on the app's screen (the owner, L21): its
+ *   first screen, or a warm app's screen answering Shown.  No template
+ *   here has a field: the step gives the screen the keys as one would.
+ ****************************************************************************/
+
+static void field_keys(void)
+{
+  ui_typing(ui_top(&g_ui), true);
+}
+
+static void test_switch_in_field(void **state)
+{
+  static const struct step_s first[] =
+  {
+    { 10, mark_fulls },
+    { 20, tile_notes },                   /* The tile's key window */
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, field_keys },
+    { 700, mark_fulls },
+    { 800, NULL },
+  };
+
+  static const struct step_s shown[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 700, home_now },
+    { 1300, mark_fulls },
+    { 1400, tile_notes },                 /* Warm: Shown */
+    { 1450, show_inbox },
+    { 1470, field_keys },
+    { 2100, mark_fulls },
+    { 2200, NULL },
+  };
+
+  times_long();
+  g_nmarks = 0;
+  run(first, 8);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0] + 1);
+
+  g_nmarks = 0;
+  run(shown, 11);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0] + 1);
+}
+
+/****************************************************************************
+ * Name: test_switch_under_pin
+ *
+ * Description:
+ *   An app's first screen drawn beneath the SIM PIN takes its full
+ *   refresh when the PIN goes, not while the PIN is typed into (as built,
+ *   the owner's L21).
+ ****************************************************************************/
+
+static void sim_ready(void)
+{
+  publish_sim(PNUT_TELEPHONY_INFO_SIM_READY);
+}
+
+static void pin_digit(void)
+{
+  key('1', false);
+}
+
+static void test_switch_under_pin(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, sim_locked },
+    { 40, start_notes },
+    { 200, connect },
+    { 210, open_app },
+    { 300, show_inbox },                  /* Beneath the PIN */
+    { 400, look },
+    { 500, mark_both },
+    { 600, pin_digit },
+    { 1300, mark_both },                  /* The PIN typed into */
+    { 1400, sim_ready },                  /* The PIN goes */
+    { 2000, look2 },
+    { 2100, mark_both },
+    { 2200, NULL },
+  };
+
+  times_long();
+  g_nmarks = 0;
+  run(steps, 13);
+  assert_string_equal(g_top, "pin");
+  assert_string_equal(g_top2, "app");
+  assert_true(g_marks[1] > g_marks[0]);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+  assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -4007,6 +4109,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_open_deadline_busy, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_shell_broken_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_switch_in_field, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_switch_under_pin, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
