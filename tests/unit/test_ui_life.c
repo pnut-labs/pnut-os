@@ -1598,6 +1598,85 @@ static void test_stall_slow_reader(void **state)
 }
 
 /****************************************************************************
+ * Name: test_overflow_stops
+ *
+ * Description:
+ *   An app taken off for HOST_EVENTS events waiting has its task stopped
+ *   by Service states, as the stall's rule does; a shell's program's is
+ *   never stopped by its name, which is no service's.
+ ****************************************************************************/
+
+#define DEV  "org.example.dev"            /* A shell's program, no manifest */
+
+static void backs17(void)
+{
+  int i;
+
+  for (i = 0; i < HOST_EVENTS + 1; i++)
+    {
+      key(KEYMAP_BACKSPACE, true);
+    }
+}
+
+static void open_one(void)
+{
+  app_open(&g_app, NULL, 1);
+}
+
+static void shell_open_one(void)
+{
+  g_who = WHO_SHELL;
+  app_open(&g_app, DEV, 1);
+}
+
+static void show_dev(void)
+{
+  static pnut_ui_show_request_t in;
+
+  memset(&in, 0, sizeof(in));
+  in.screen = INBOX;
+  strcpy(in.title, "Dev");
+  in.which_content = PNUT_UI_SHOW_REQUEST_EMPTY_TAG;
+  strcpy(in.content.empty.heading, "Nothing");
+  app_send_show(&g_app, &in);
+}
+
+static void test_overflow_stops(void **state)
+{
+  static const struct step_s named[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_one },
+    { 80, show_inbox },
+    { 120, backs17 },
+    { 200, keep_states },
+    { 220, NULL },
+  };
+
+  static const struct step_s shell[] =
+  {
+    { 30, connect },
+    { 40, shell_open_one },
+    { 80, show_dev },
+    { 120, backs17 },
+    { 220, NULL },
+  };
+
+  run(named, 7);
+  assert_int_equal(g_app.ended, PNUT_STATUS_BUSY);
+  assert_int_equal(g_stops, 1);
+  assert_string_equal(g_stopped, NOTES);
+  assert_int_equal(g_states[0], HOST_FREE);
+
+  g_stops = 0;
+  run(shell, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.ended, PNUT_STATUS_BUSY);
+  assert_int_equal(g_stops, 0);
+}
+
+/****************************************************************************
  * Name: test_resume_on_stop
  *
  * Description:
@@ -1786,6 +1865,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_resume_kept, setup, teardown),
     cmocka_unit_test_setup_teardown(test_resume_left, setup, teardown),
     cmocka_unit_test_setup_teardown(test_resume_on_stop, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_overflow_stops, setup, teardown),
     cmocka_unit_test_setup_teardown(test_back_waiting, setup, teardown),
     cmocka_unit_test_setup_teardown(test_hung_close, setup, teardown),
     cmocka_unit_test_setup_teardown(test_hung_wait, setup, teardown),

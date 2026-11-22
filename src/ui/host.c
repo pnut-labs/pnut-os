@@ -410,7 +410,10 @@ static void host_open_due(FAR struct pnut_loop_s *loop,
     }
 }
 
-/* Take an app off, ending its stream with a status */
+/* Take an app off, ending its stream with a status.  One taken off (not
+ * leaving) has its task stopped by Service states, by its name: never a
+ * shell's program's, nor a task of a name another slot holds alive.
+ */
 
 static void host_drop(FAR struct host_app_s *app, int status)
 {
@@ -428,6 +431,11 @@ static void host_drop(FAR struct host_app_s *app, int status)
   if (app->connected && app->stream.open)
     {
       pnut_stream_end(&app->stream, status);
+    }
+
+  if (status != PNUT_STATUS_ENDED && !app->shell && host_twin(app) == NULL)
+    {
+      host_stop_task(h, app->id);
     }
 
   host_forget(app);
@@ -455,17 +463,11 @@ static void host_stall_due(FAR struct pnut_loop_s *loop,
                            FAR struct pnut_timer_s *timer, FAR void *arg)
 {
   FAR struct host_app_s *app = arg;
-  FAR struct host_s *h = app->host;
 
   app->stall = NULL;
   if (app->state == HOST_FREE || app->count == 0)
     {
       return;
-    }
-
-  if (!app->shell && host_twin(app) == NULL)
-    {
-      host_stop_task(h, app->id);
     }
 
   host_drop(app, PNUT_STATUS_BUSY);

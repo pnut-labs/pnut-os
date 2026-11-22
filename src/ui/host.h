@@ -206,8 +206,8 @@ void host_home(FAR struct host_s *h);
 
 /* An event for the open app, or for an app, sent as its credit allows.
  * -ENOTCONN when there is none, or it is not connected; -ENOSPC when
- * HOST_EVENTS wait already: the app's stream is ended, and the app taken
- * off.
+ * HOST_EVENTS wait already: the app's stream is ended, the app taken off,
+ * and its task stopped by Service states.
  */
 
 int host_event(FAR struct host_s *h, FAR const pnut_ui_event_t *ev);
