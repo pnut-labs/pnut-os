@@ -1676,12 +1676,14 @@ static void test_states_origin(void **state)
  * Name: test_states_who_published
  *
  * Description:
- *   A task Who finds before the watch has shown it changes its service as
- *   the watch's line would, and the change is published on the services
- *   topic: the service starting, or its new task.  The watch's line about
- *   it, when it comes with the same state and task, is not published
- *   again.  Before the first whole list nothing is, as for the watch's
- *   lines.
+ *   A task Who finds before the watch has shown it changes its service in
+ *   the table at once, but the change is held (the owner's answer L28):
+ *   it is published on the services topic when NxInit's own line about
+ *   that service comes, though that line is the same, and once only.  The
+ *   service starting (L23) is held so, and so is its new task with the
+ *   state the watch showed last.  Before the first whole list nothing is
+ *   published, as for the watch's lines, and the list's line about the
+ *   service settles what was held.
  ****************************************************************************/
 
 static bool topic_has(FAR struct fixture_s *f, FAR const char *name,
@@ -1706,28 +1708,66 @@ static bool late_published(FAR struct fixture_s *f)
   return topic_has(f, "late", PNUT_SERVICE_STATE_STATE_READY, 12);
 }
 
+/* Another service's changes, which mark where the topic has got to */
+
 static bool mark_published(FAR struct fixture_s *f)
 {
   return topic_has(f, "mark", PNUT_SERVICE_STATE_STATE_READY, 50);
 }
 
+static bool mark_again(FAR struct fixture_s *f)
+{
+  return topic_has(f, "mark", PNUT_SERVICE_STATE_STATE_READY, 51);
+}
+
+static bool mark_last(FAR struct fixture_s *f)
+{
+  return topic_has(f, "mark", PNUT_SERVICE_STATE_STATE_READY, 52);
+}
+
+/* The watch's line about "late" with its new task and the old state, as a
+ * list's line could be
+ */
+
+static void late_relined(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "late", "ready", 13, true);
+  fake_set(&f->fake, "mark", "ready", 52, true);
+  f->until = mark_last;
+  f->then  = NULL;
+}
+
 /* "late" again, as a new task while the watch still shows the old one
- * ready; then a change of another service, which ends the test once it
- * is on the topic
+ * ready; then another service's change
  */
 
 static void who_restarted(FAR struct fixture_s *f)
 {
   FAR const char *name;
 
-  fake_set(&f->fake, "late", "starting", 13, false);
+  fake_set(&f->fake, "late", "ready", 13, false);
   f->rets[1] = states_who(&f->states, 13, &name);
-  fake_set(&f->fake, "mark", "ready", 50, true);
-  f->until = mark_published;
-  f->then  = NULL;
+  fake_set(&f->fake, "mark", "ready", 51, true);
+  f->until = mark_again;
+  f->then  = late_relined;
 }
 
-/* "late" started, Who asked before the watch's event; then its events */
+/* The watch's line about "late", the same as Who found, twice; then its
+ * next
+ */
+
+static void late_lines(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  f->until = late_published;
+  f->then  = who_restarted;
+}
+
+/* "late" started, Who asked before the watch's event; then another
+ * service's change, on the topic before anything about "late"
+ */
 
 static void who_started(FAR struct fixture_s *f)
 {
@@ -1735,10 +1775,9 @@ static void who_started(FAR struct fixture_s *f)
 
   fake_set(&f->fake, "late", "starting", 12, false);
   f->rets[0] = states_who(&f->states, 12, &name);
-  fake_set(&f->fake, "late", "starting", 12, true);
-  fake_set(&f->fake, "late", "ready", 12, true);
-  f->until = late_published;
-  f->then  = who_restarted;
+  fake_set(&f->fake, "mark", "ready", 50, true);
+  f->until = mark_published;
+  f->then  = late_lines;
 }
 
 static bool list_held(FAR struct fixture_s *f)
@@ -1751,8 +1790,9 @@ static bool list_held(FAR struct fixture_s *f)
   return held;
 }
 
-/* Who asked while the first list is held back; then the list, and an
- * event
+/* Who asked while the first list is held back; then the list, whose line
+ * about "late" is the same as Who found, the watch's line the same again,
+ * and its next
  */
 
 static void who_unlisted(FAR struct fixture_s *f)
@@ -1768,9 +1808,34 @@ static void who_unlisted(FAR struct fixture_s *f)
   fake_list(&f->fake, f->fake.clients[f->fake.held]);
   pthread_mutex_unlock(&f->fake.lock);
 
+  fake_set(&f->fake, "late", "starting", 12, true);
   fake_set(&f->fake, "late", "ready", 12, true);
   f->until = late_published;
   f->then  = NULL;
+}
+
+/* The topic's message i: its service, state, task and number; a failure
+ * says which message, and what it was
+ */
+
+static void seen_is(FAR struct fixture_s *f, int i, FAR const char *name,
+                    uint8_t state, int pid, uint32_t seq)
+{
+  FAR const pnut_service_change_t *msg;
+
+  if (i >= f->nseen || i >= 8)
+    {
+      fail_msg("message %d not seen: %d came", i, f->nseen);
+    }
+
+  msg = &f->seen[i];
+  if (strcmp(msg->name, name) != 0 || msg->state != state ||
+      msg->pid != pid || msg->seq != seq)
+    {
+      fail_msg("message %d is %s %d %d #%u, not %s %d %d #%u", i,
+               msg->name, (int)msg->state, (int)msg->pid,
+               (unsigned)msg->seq, name, (int)state, pid, (unsigned)seq);
+    }
 }
 
 static void test_states_who_published(void **state)
@@ -1785,30 +1850,28 @@ static void test_states_who_published(void **state)
   f.then  = who_started;
   fixture_run(&f);
 
+  /* Nothing at Who; the start when the watch's line came, once */
+
   assert_int_equal(f.rets[0], OK);
   assert_int_equal(f.rets[1], OK);
-  assert_int_equal(f.nseen, 4);
-  assert_string_equal(f.seen[0].name, "late");
-  assert_int_equal(f.seen[0].state, PNUT_SERVICE_STATE_STATE_STARTING);
-  assert_int_equal(f.seen[0].pid, 12);
-  assert_int_equal(f.seen[0].seq, 1);
-  assert_string_equal(f.seen[1].name, "late");
-  assert_int_equal(f.seen[1].state, PNUT_SERVICE_STATE_STATE_READY);
-  assert_int_equal(f.seen[1].pid, 12);
-  assert_int_equal(f.seen[1].seq, 2);
+  seen_is(&f, 0, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 1);
+  seen_is(&f, 1, "late", PNUT_SERVICE_STATE_STATE_STARTING, 12, 2);
+  seen_is(&f, 2, "late", PNUT_SERVICE_STATE_STATE_READY, 12, 3);
 
-  /* The new task, with the state the watch showed last */
+  /* The new task, with the state the watch showed last: when the line
+   * came
+   */
 
-  assert_string_equal(f.seen[2].name, "late");
-  assert_int_equal(f.seen[2].state, PNUT_SERVICE_STATE_STATE_READY);
-  assert_int_equal(f.seen[2].pid, 13);
-  assert_int_equal(f.seen[2].seq, 3);
-  assert_string_equal(f.seen[3].name, "mark");
-  assert_int_equal(f.seen[3].seq, 4);
+  seen_is(&f, 3, "mark", PNUT_SERVICE_STATE_STATE_READY, 51, 4);
+  seen_is(&f, 4, "late", PNUT_SERVICE_STATE_STATE_READY, 13, 5);
+  seen_is(&f, 5, "mark", PNUT_SERVICE_STATE_STATE_READY, 52, 6);
+  assert_int_equal(f.nseen, 6);
   assert_false(f.fake.broken);
   fixture_teardown(&f);
 
-  /* Before the first list: the list, then the event, alone */
+  /* Before the first list: the list, then the events; only the one that
+   * differs from the list
+   */
 
   fixture_setup(&f, "");
   fake_set(&f.fake, "console", "ready", 7, false);
@@ -1836,7 +1899,7 @@ static void test_states_who_published(void **state)
  * Description:
  *   A service the watch last showed restarting has no task (the owner's
  *   answer L22): a task Who finds for it is its new start, published as
- *   starting, once, before the watch's lines about it.
+ *   starting, once, when the watch's line about it comes (L28).
  ****************************************************************************/
 
 /* "late" crashed; its new task asked of Who before the watch's event */
@@ -1875,6 +1938,246 @@ static void test_states_who_restarting(void **state)
   assert_int_equal(f.seen[1].state, PNUT_SERVICE_STATE_STATE_READY);
   assert_int_equal(f.seen[1].pid, 12);
   assert_int_equal(f.seen[1].seq, 2);
+  assert_int_equal(f.nseen, 2);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
+ * Name: test_states_who_order
+ *
+ * Description:
+ *   What Who finds, held, does not go ahead of NxInit's older lines still
+ *   unread about the service: the topic keeps NxInit's order (L28).  A:
+ *   the watch showed "late" ready with task 11, which stopped; its task 12
+ *   is found while "stopped" and "starting" are unread.  B: "late"
+ *   started, crashed and started again; its task 12 is found while those
+ *   three lines are unread.
+ ****************************************************************************/
+
+/* A: then "ready", and the same line again, which adds nothing */
+
+static void order_stopped(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "stopped", 0, true);
+  fake_set(&f->fake, "late", "starting", 12, true);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  fake_set(&f->fake, "mark", "ready", 50, true);
+  f->until = mark_published;
+  f->then  = NULL;
+}
+
+static void order_restarted(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 11, true);
+  fake_set(&f->fake, "late", "restarting", 0, true);
+  fake_set(&f->fake, "late", "starting", 12, true);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  fake_set(&f->fake, "mark", "ready", 50, true);
+  f->until = mark_published;
+  f->then  = NULL;
+}
+
+static void test_states_who_order(void **state)
+{
+  struct fixture_s f;
+
+  /* A */
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fake_set(&f.fake, "late", "ready", 11, false);
+  fixture_read(&f);
+
+  f.until = listed;
+  f.then  = order_stopped;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STOPPED, 0, 1);
+  seen_is(&f, 1, "late", PNUT_SERVICE_STATE_STATE_STARTING, 12, 2);
+  seen_is(&f, 2, "late", PNUT_SERVICE_STATE_STATE_READY, 12, 3);
+  seen_is(&f, 3, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 4);
+  assert_int_equal(f.nseen, 4);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+
+  /* B */
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fake_set(&f.fake, "late", "stopped", 0, false);
+  fixture_read(&f);
+
+  f.until = listed;
+  f.then  = order_restarted;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STARTING, 11, 1);
+  seen_is(&f, 1, "late", PNUT_SERVICE_STATE_STATE_RESTARTING, 0, 2);
+  seen_is(&f, 2, "late", PNUT_SERVICE_STATE_STATE_STARTING, 12, 3);
+  seen_is(&f, 3, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 4);
+  assert_int_equal(f.nseen, 4);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
+ * Name: test_states_who_relisted
+ *
+ * Description:
+ *   After a lost watch, while NxInit lists its services again.  C: a task
+ *   Who finds is held behind the list's older line about its service,
+ *   which differs and is published; the watch's line then publishes the
+ *   start.  D: a service the new list does not name is published as
+ *   stopped, and what Who found for it before is held no more: a later
+ *   line the same as the table publishes nothing.
+ ****************************************************************************/
+
+/* The module watches NxInit again; its list is held back */
+
+static bool relisting(FAR struct fixture_s *f)
+{
+  return !f->states.current && list_held(f);
+}
+
+/* Half the list read: "console"; the line about "late" is to come */
+
+static bool half_listed(FAR struct fixture_s *f)
+{
+  return f->states.listing == 1;
+}
+
+/* A whole list has come on the new watch */
+
+static bool relisted(FAR struct fixture_s *f)
+{
+  int accepts;
+
+  pthread_mutex_lock(&f->fake.lock);
+  accepts = f->fake.accepts;
+  pthread_mutex_unlock(&f->fake.lock);
+  return accepts >= 2 && f->states.current;
+}
+
+static void list_send(FAR struct fixture_s *f, FAR const char *lines)
+{
+  pthread_mutex_lock(&f->fake.lock);
+  fake_send(&f->fake, f->fake.clients[f->fake.held], lines);
+  pthread_mutex_unlock(&f->fake.lock);
+}
+
+/* C: "late" started as NxInit took the list, which still has it stopped;
+ * then the watch's line
+ */
+
+static void relist_who(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  list_send(f, "late stopped 0\n");
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "mark", "ready", 50, true);
+  f->until = mark_published;
+  f->then  = NULL;
+}
+
+static void relist_half(FAR struct fixture_s *f)
+{
+  list_send(f, "ok 2\nconsole ready 7\n");
+  f->until = half_listed;
+  f->then  = relist_who;
+}
+
+static void relist_held(FAR struct fixture_s *f)
+{
+  pthread_mutex_lock(&f->fake.lock);
+  f->fake.hold = true;
+  pthread_mutex_unlock(&f->fake.lock);
+
+  assert_int_equal(write(f->fake.wake[1], "k", 1), 1);
+  f->until = relisting;
+  f->then  = relist_half;
+}
+
+/* D: after the list, a line about "late" the same as the table */
+
+static void unnamed_line(FAR struct fixture_s *f)
+{
+  fake_set(&f->fake, "late", "stopped", 0, true);
+  fake_set(&f->fake, "mark", "ready", 50, true);
+  f->until = mark_published;
+  f->then  = NULL;
+}
+
+/* D: "late" found by Who, then gone from NxInit (a oneshot that ended)
+ * while the watch is lost
+ */
+
+static void who_then_gone(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+  bool last;
+
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[0] = states_who(&f->states, 12, &name);
+
+  pthread_mutex_lock(&f->fake.lock);
+  last = strcmp(f->fake.table[f->fake.ntable - 1].name, "late") == 0;
+  f->fake.ntable--;
+  pthread_mutex_unlock(&f->fake.lock);
+  assert_true(last);
+
+  assert_int_equal(write(f->fake.wake[1], "k", 1), 1);
+  f->until = relisted;
+  f->then  = unnamed_line;
+}
+
+static void test_states_who_relisted(void **state)
+{
+  struct fixture_s f;
+
+  /* C */
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fake_set(&f.fake, "late", "stopped", 0, false);
+  fixture_read(&f);
+
+  f.until = listed;
+  f.then  = relist_held;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STOPPED, 0, 1);
+  seen_is(&f, 1, "late", PNUT_SERVICE_STATE_STATE_STARTING, 12, 2);
+  seen_is(&f, 2, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 3);
+  assert_int_equal(f.nseen, 3);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+
+  /* D */
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fixture_read(&f);
+
+  f.until = listed;
+  f.then  = who_then_gone;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STOPPED, 0, 1);
+  seen_is(&f, 1, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 2);
   assert_int_equal(f.nseen, 2);
   assert_false(f.fake.broken);
   fixture_teardown(&f);
@@ -1985,6 +2288,8 @@ int main(void)
     cmocka_unit_test(test_states_origin),
     cmocka_unit_test(test_states_who_published),
     cmocka_unit_test(test_states_who_restarting),
+    cmocka_unit_test(test_states_who_order),
+    cmocka_unit_test(test_states_who_relisted),
     cmocka_unit_test(test_states_ready_who),
   };
 

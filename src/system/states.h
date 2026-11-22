@@ -120,6 +120,12 @@ struct states_service_s
   char name[STATES_NAME_MAX + 1];
   uint8_t state;                  /* pnut_service_state_state_t */
   bool seen;                      /* In the list being read */
+
+  /* Changed by Who, not yet published: NxInit's next line about the
+   * service publishes it, though that line is the same
+   */
+
+  bool held;
   pid_t pid;                      /* 0 when not running */
 };
 

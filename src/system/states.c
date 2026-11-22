@@ -482,7 +482,10 @@ static void states_ready_check(FAR struct states_s *states)
  *
  * Description:
  *   A line "<service> <state> <pid>" of NxInit's, as a list's line or an
- *   event's: changes are published once a whole list has come.
+ *   event's: changes are published once a whole list has come.  A change
+ *   Who's lookup made and held is published with the line, though the
+ *   line is the same; one that differs is published as itself.  Either
+ *   way the service is held no more.
  *
  ****************************************************************************/
 
@@ -494,6 +497,7 @@ static void states_update(FAR struct states_s *states, FAR char *line)
   FAR char *end;
   long pid;
   int state;
+  bool held;
 
   words[0] = strtok_r(line, " ", &save);
   words[1] = words[0] != NULL ? strtok_r(NULL, " ", &save) : NULL;
@@ -529,6 +533,8 @@ static void states_update(FAR struct states_s *states, FAR char *line)
     }
 
   service->seen = true;
+  held          = service->held;
+  service->held = false;
   states_known(states, (pid_t)pid);
   if (service->state != state || service->pid != (pid_t)pid)
     {
@@ -542,6 +548,10 @@ static void states_update(FAR struct states_s *states, FAR char *line)
       states_halt_check(states);
       states_ready_check(states);
     }
+  else if (held && states->listed)
+    {
+      states_publish(states, service);
+    }
 }
 
 /****************************************************************************
@@ -549,7 +559,8 @@ static void states_update(FAR struct states_s *states, FAR char *line)
  *
  * Description:
  *   A whole list has come: a service it did not name has gone from NxInit
- *   (a oneshot that ended), and counts as stopped.
+ *   (a oneshot that ended), and counts as stopped; what Who found for it
+ *   is held no more.
  *
  ****************************************************************************/
 
@@ -562,9 +573,14 @@ static void states_listed(FAR struct states_s *states)
   for (i = 0; i < states->nservices; i++)
     {
       service = &states->services[i];
-      if (!service->seen &&
-          (service->state != PNUT_SERVICE_STATE_STATE_STOPPED ||
-           service->pid != 0))
+      if (service->seen)
+        {
+          continue;
+        }
+
+      service->held = false;
+      if (service->state != PNUT_SERVICE_STATE_STATE_STOPPED ||
+          service->pid != 0)
         {
           service->state = PNUT_SERVICE_STATE_STATE_STOPPED;
           service->pid   = 0;
@@ -1619,11 +1635,12 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
       return OK;
     }
 
-  /* The task changes the service as the watch's line about it would, and
-   * the change is published as that line's would be, once a whole list
-   * has come; the line, when it comes the same, changes nothing more.  A
-   * program not ready yet holds config.ready back.  A halt waits for no
-   * fewer programs: none has stopped.
+  /* The task changes the service in the table at once, as the watch's
+   * line about it would; the change is held, and published with NxInit's
+   * next line about the service, so that it does not go ahead of older
+   * lines still unread (states_update).  A program not ready yet holds
+   * config.ready back.  A halt waits for no fewer programs: none has
+   * stopped.
    */
 
   state = service->state;
@@ -1637,11 +1654,7 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
     {
       service->state = state;
       service->pid   = pid;
-      if (states->listed)
-        {
-          states_publish(states, service);
-        }
-
+      service->held  = true;
       states_ready_check(states);
     }
 
