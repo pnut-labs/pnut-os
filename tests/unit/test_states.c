@@ -2184,6 +2184,63 @@ static void test_states_who_relisted(void **state)
 }
 
 /****************************************************************************
+ * Name: test_states_who_first_list
+ *
+ * Description:
+ *   Who during the first list, after the list's line about the service:
+ *   what it finds is held all the same, and nothing is published before
+ *   the whole list has come; then the watch's line, the same as the
+ *   table, publishes the start, once.
+ ****************************************************************************/
+
+/* "late" started after NxInit took the list; the rest of the list, then
+ * the watch's lines
+ */
+
+static void first_list_who(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  f->rets[1] = f->states.listed;
+  list_send(f, "console ready 7\n");
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  f->until = late_published;
+  f->then  = NULL;
+}
+
+static void first_list_half(FAR struct fixture_s *f)
+{
+  list_send(f, "ok 2\nlate stopped 0\n");
+  f->until = half_listed;
+  f->then  = first_list_who;
+}
+
+static void test_states_who_first_list(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  f.fake.hold = true;
+  fixture_read(&f);
+
+  f.until = list_held;
+  f.then  = first_list_half;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  assert_false(f.rets[1]);
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STARTING, 12, 1);
+  seen_is(&f, 1, "late", PNUT_SERVICE_STATE_STATE_READY, 12, 2);
+  assert_int_equal(f.nseen, 2);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
  * Name: test_states_ready_who
  *
  * Description:
@@ -2290,6 +2347,7 @@ int main(void)
     cmocka_unit_test(test_states_who_restarting),
     cmocka_unit_test(test_states_who_order),
     cmocka_unit_test(test_states_who_relisted),
+    cmocka_unit_test(test_states_who_first_list),
     cmocka_unit_test(test_states_ready_who),
   };
 
