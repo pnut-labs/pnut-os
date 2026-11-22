@@ -132,6 +132,14 @@ static enum who_e g_who;
 static char g_named[64];
 static int g_whos;
 
+/* Who's answer this many ms late (0: at once), as when the system
+ * program is busy
+ */
+
+static uint32_t g_who_late;
+static struct pnut_request_s g_who_req;
+static pnut_services_who_reply_t g_who_out;
+
 /* Service states' Start and Stop, as the system UI asked them: how many,
  * and the last name each
  */
@@ -201,6 +209,13 @@ static time_t fake_now(void)
 
 /* Service states' Who, as the test sets it */
 
+static void fake_who_late(FAR struct pnut_loop_s *loop,
+                          FAR struct pnut_timer_s *timer, FAR void *arg)
+{
+  pnut_services_who_reply(&g_services, &g_who_req, PNUT_STATUS_OK,
+                          &g_who_out);
+}
+
 static void fake_who(FAR struct pnut_services_server_s *server,
                      FAR const struct pnut_request_s *req,
                      FAR const pnut_services_who_request_t *in,
@@ -215,6 +230,16 @@ static void fake_who(FAR struct pnut_services_server_s *server,
     {
       case WHO_NAMED:
         strlcpy(out.name, g_named, sizeof(out.name));
+        if (g_who_late > 0)
+          {
+            g_who_req = *req;
+            g_who_out = out;
+            assert_int_equal(pnut_timer_start(g_loop, g_who_late, 0,
+                                              fake_who_late, NULL, NULL),
+                             0);
+            break;
+          }
+
         pnut_services_who_reply(server, req, PNUT_STATUS_OK, &out);
         break;
 
@@ -665,6 +690,7 @@ static int fake_setup(void **state)
   g_who = WHO_NAMED;
   strcpy(g_named, FAKE_NOTES);
   g_whos = 0;
+  g_who_late = 0;
   g_starts = 0;
   g_stops = 0;
   g_started[0] = '\0';

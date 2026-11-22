@@ -3747,6 +3747,172 @@ static void test_still_running(void **state)
   assert_int_equal(g_stops, 1);
 }
 
+/****************************************************************************
+ * Name: test_stopping_closes
+ *
+ * Description:
+ *   An app told to stop whose connection then closes, its task still
+ *   running, keeps the deadline it was given: Service states is asked to
+ *   stop the task when that passes, not at one started anew at the close.
+ ****************************************************************************/
+
+static void test_stopping_closes(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, cancel_open },                 /* Told: its deadline at 1100 */
+    { 600, drop_connection },             /* Its task still runs */
+    { 1350, keep_stops },
+    { 1400, NULL },
+  };
+
+  g_stop_stays = true;
+  g_times.stop = 1000;
+  run(steps, 8);
+  assert_int_equal(g_stops_kept, 1);
+}
+
+/****************************************************************************
+ * Name: test_second_task_stopping
+ *
+ * Description:
+ *   A second task of an app told to stop, and still connected, opens: it
+ *   is told to stop in a slot of its own, never in the connected one's,
+ *   whose stream goes on.
+ ****************************************************************************/
+
+static void open_second(void)
+{
+  app_open(&g_app2, NULL, 4);             /* Who names Notes again */
+}
+
+static void test_second_task_stopping(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, cancel_open },                 /* Told to stop, connected */
+    { 120, connect_todo },
+    { 130, open_second },
+    { 200, count_notes_slots },
+    { 300, NULL },
+  };
+
+  g_stop_stays = true;
+  g_times.stop = 5000;
+  run(steps, 9);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
+  assert_true(g_app2.nevents >= 1);
+  assert_int_equal(g_app2.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_notes_slots, 2);
+  assert_int_equal(g_app.ended, -1);      /* The first's stream goes on */
+}
+
+/****************************************************************************
+ * Name: test_accept_fails
+ *
+ * Description:
+ *   An app whose connection goes while Service states names it: its Open
+ *   cannot be accepted, and its task is stopped at once, not at Stop's
+ *   deadline.
+ ****************************************************************************/
+
+static void test_accept_fails(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },                     /* Named at 240 */
+    { 100, drop_connection },
+    { 500, keep_stops },
+    { 600, NULL },
+  };
+
+  g_who_late = 200;
+  g_stop_stays = true;
+  g_times.stop = 3000;
+  run(steps, 6);
+  assert_int_equal(g_app.opened, -1);
+  assert_int_equal(g_stops_kept, 1);
+  assert_string_equal(g_stopped, NOTES);
+}
+
+/****************************************************************************
+ * Name: test_open_deadline_busy
+ *
+ * Description:
+ *   An app with no Open by its deadline, whose task does not exit when
+ *   stopped: its Busy is off at once, though its slot waits for the task.
+ ****************************************************************************/
+
+static void test_open_deadline_busy(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, tile_notes },
+    { 70 + T_OPENING, look_busy },        /* "Opening" */
+    { 220 + T_OPEN, look2 },              /* Past the Open's deadline */
+    { 230 + T_OPEN, keep_notes_state },
+    { 300 + T_OPEN, NULL },
+  };
+
+  g_stop_stays = true;
+  g_times.stop = 3000;
+  run(steps, 5);
+  assert_string_equal(g_top, "opening");
+  assert_string_equal(g_top2, "menu");
+  assert_int_equal(g_states_kept, HOST_STOPPING);
+}
+
+/****************************************************************************
+ * Name: test_shell_broken_id
+ *
+ * Description:
+ *   A shell's program under the id of an app whose manifest does not
+ *   hold together is refused as under any app's id (the owner, L11 and
+ *   L20): DENIED, BAD_ID.
+ ****************************************************************************/
+
+#define BROKEN  "org.example.broken"
+
+static void shell_as_broken(void)
+{
+  g_who = WHO_SHELL;
+  app_open(&g_app2, BROKEN, 4);
+}
+
+static void test_shell_broken_id(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, shell_connect },
+    { 30, shell_as_broken },
+    { 70, keep_open_code2 },
+    { 100, NULL },
+  };
+
+  char path[160];
+  FILE *f;
+
+  snprintf(path, sizeof(path), "%s/%s.manifest", g_apps, BROKEN);
+  f = fopen(path, "wb");
+  assert_non_null(f);
+  fputs("\xff\xff\xff\xff", f);
+  fclose(f);
+
+  run(steps, 4);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_open_code, PNUT_UI_ERROR_CODE_BAD_ID);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -3834,6 +4000,13 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_restarting_gone, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_still_running, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_stopping_closes, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_second_task_stopping, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_accept_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_open_deadline_busy, setup,
+                                    teardown),
+    cmocka_unit_test_setup_teardown(test_shell_broken_id, setup, teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);
