@@ -1536,6 +1536,7 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
 {
   FAR struct states_service_s *service;
   char name[STATES_NAME_MAX + 1];
+  uint8_t state;
   uint8_t i;
   int ret;
 
@@ -1606,8 +1607,8 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
       return -EAGAIN;
     }
 
-  /* The watch's event about it comes later, and publishes it.  With no
-   * room left in the table the name is kept aside, for this answer.
+  /* With no room left in the table the name is kept aside, for this
+   * answer.
    */
 
   service = states_insert(states, name);
@@ -1618,11 +1619,30 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
       return OK;
     }
 
-  service->pid = pid;
-  if (service->state == PNUT_SERVICE_STATE_STATE_STOPPED ||
-      service->state == PNUT_SERVICE_STATE_STATE_RESTARTING)
+  /* The task changes the service as the watch's line about it would, and
+   * the change is published as that line's would be, once a whole list
+   * has come; the line, when it comes the same, changes nothing more.  A
+   * program not ready yet holds config.ready back.  A halt waits for no
+   * fewer programs: none has stopped.
+   */
+
+  state = service->state;
+  if (state == PNUT_SERVICE_STATE_STATE_STOPPED ||
+      state == PNUT_SERVICE_STATE_STATE_RESTARTING)
     {
-      service->state = PNUT_SERVICE_STATE_STATE_STARTING;
+      state = PNUT_SERVICE_STATE_STATE_STARTING;
+    }
+
+  if (service->state != state || service->pid != pid)
+    {
+      service->state = state;
+      service->pid   = pid;
+      if (states->listed)
+        {
+          states_publish(states, service);
+        }
+
+      states_ready_check(states);
     }
 
   *namep = service->name;

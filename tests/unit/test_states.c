@@ -122,6 +122,15 @@ struct fixture_s
   int readies;                    /* config.ready told */
   uint32_t mark;                  /* now_ms(), at a step */
   int mark2;
+
+  /* The services topic, for a test that reads it: the first messages,
+   * and how many came
+   */
+
+  struct pnut_service_change_reader_s reader;
+  bool reading;
+  pnut_service_change_t seen[8];
+  int nseen;
 };
 
 /****************************************************************************
@@ -525,6 +534,20 @@ static pid_t fake_parent(pid_t pid)
   return -1;
 }
 
+/* The services topic's directory on the computer, with the latest message
+ * in it, which a reader would get first in the next test
+ */
+
+static void topic_clean(FAR struct fixture_s *f)
+{
+  char path[128];
+
+  snprintf(path, sizeof(path), "%s/topic.services/last", f->dir);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/topic.services", f->dir);
+  rmdir(path);
+}
+
 static void fixture_setup(FAR struct fixture_s *f, FAR const char *table)
 {
   struct pnut_loop_config_s config;
@@ -538,6 +561,7 @@ static void fixture_setup(FAR struct fixture_s *f, FAR const char *table)
 
   snprintf(f->dir, sizeof(f->dir), "/tmp/pnut-states-%d", getpid());
   mkdir(f->dir, 0700);
+  topic_clean(f);
   snprintf(f->path, sizeof(f->path), "%s/nxinit", f->dir);
   snprintf(f->programs, sizeof(f->programs), "/tmp/pnut-programs-%d",
            getpid());
@@ -571,13 +595,39 @@ static void fixture_run(FAR struct fixture_s *f)
   assert_true(f->done);
 }
 
+static void topic_seen(FAR struct pnut_service_change_reader_s *reader,
+                       FAR const pnut_service_change_t *msg, FAR void *arg)
+{
+  FAR struct fixture_s *f = arg;
+
+  if (f->nseen < 8)
+    {
+      f->seen[f->nseen] = *msg;
+    }
+
+  f->nseen++;
+}
+
+static void fixture_read(FAR struct fixture_s *f)
+{
+  assert_int_equal(pnut_service_change_subscribe(f->loop, topic_seen, f,
+                                                 &f->reader), 0);
+  f->reading = true;
+}
+
 static void fixture_teardown(FAR struct fixture_s *f)
 {
+  if (f->reading)
+    {
+      pnut_service_change_unsubscribe(&f->reader);
+    }
+
   pnut_loop_destroy(f->loop);
   states_deinit(&f->states);
   fake_stop(&f->fake);
   unlink(f->path);
   unlink(f->programs);
+  topic_clean(f);
   rmdir(f->dir);
 }
 
@@ -1623,6 +1673,248 @@ static void test_states_origin(void **state)
 }
 
 /****************************************************************************
+ * Name: test_states_who_published
+ *
+ * Description:
+ *   A task Who finds before the watch has shown it changes its service as
+ *   the watch's line would, and the change is published on the services
+ *   topic: the service starting, or its new task.  The watch's line about
+ *   it, when it comes with the same state and task, is not published
+ *   again.  Before the first whole list nothing is, as for the watch's
+ *   lines.
+ ****************************************************************************/
+
+static bool topic_has(FAR struct fixture_s *f, FAR const char *name,
+                      uint8_t state, int pid)
+{
+  int i;
+
+  for (i = 0; i < f->nseen && i < 8; i++)
+    {
+      if (strcmp(f->seen[i].name, name) == 0 &&
+          f->seen[i].state == state && f->seen[i].pid == pid)
+        {
+          return true;
+        }
+    }
+
+  return false;
+}
+
+static bool late_published(FAR struct fixture_s *f)
+{
+  return topic_has(f, "late", PNUT_SERVICE_STATE_STATE_READY, 12);
+}
+
+static bool mark_published(FAR struct fixture_s *f)
+{
+  return topic_has(f, "mark", PNUT_SERVICE_STATE_STATE_READY, 50);
+}
+
+/* "late" again, as a new task while the watch still shows the old one
+ * ready; then a change of another service, which ends the test once it
+ * is on the topic
+ */
+
+static void who_restarted(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 13, false);
+  f->rets[1] = states_who(&f->states, 13, &name);
+  fake_set(&f->fake, "mark", "ready", 50, true);
+  f->until = mark_published;
+  f->then  = NULL;
+}
+
+/* "late" started, Who asked before the watch's event; then its events */
+
+static void who_started(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  f->until = late_published;
+  f->then  = who_restarted;
+}
+
+static bool list_held(FAR struct fixture_s *f)
+{
+  bool held;
+
+  pthread_mutex_lock(&f->fake.lock);
+  held = f->fake.held >= 0;
+  pthread_mutex_unlock(&f->fake.lock);
+  return held;
+}
+
+/* Who asked while the first list is held back; then the list, and an
+ * event
+ */
+
+static void who_unlisted(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[0] = states_who(&f->states, 12, &name);
+  f->rets[1] = f->states.listed;
+
+  pthread_mutex_lock(&f->fake.lock);
+  f->fake.hold = false;
+  fake_list(&f->fake, f->fake.clients[f->fake.held]);
+  pthread_mutex_unlock(&f->fake.lock);
+
+  fake_set(&f->fake, "late", "ready", 12, true);
+  f->until = late_published;
+  f->then  = NULL;
+}
+
+static void test_states_who_published(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  fixture_read(&f);
+
+  f.until = listed;
+  f.then  = who_started;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  assert_int_equal(f.rets[1], OK);
+  assert_int_equal(f.nseen, 4);
+  assert_string_equal(f.seen[0].name, "late");
+  assert_int_equal(f.seen[0].state, PNUT_SERVICE_STATE_STATE_STARTING);
+  assert_int_equal(f.seen[0].pid, 12);
+  assert_int_equal(f.seen[0].seq, 1);
+  assert_string_equal(f.seen[1].name, "late");
+  assert_int_equal(f.seen[1].state, PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(f.seen[1].pid, 12);
+  assert_int_equal(f.seen[1].seq, 2);
+
+  /* The new task, with the state the watch showed last */
+
+  assert_string_equal(f.seen[2].name, "late");
+  assert_int_equal(f.seen[2].state, PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(f.seen[2].pid, 13);
+  assert_int_equal(f.seen[2].seq, 3);
+  assert_string_equal(f.seen[3].name, "mark");
+  assert_int_equal(f.seen[3].seq, 4);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+
+  /* Before the first list: the list, then the event, alone */
+
+  fixture_setup(&f, "");
+  fake_set(&f.fake, "console", "ready", 7, false);
+  f.fake.hold = true;
+  fixture_read(&f);
+
+  f.until = list_held;
+  f.then  = who_unlisted;
+  fixture_run(&f);
+
+  assert_int_equal(f.rets[0], OK);
+  assert_false(f.rets[1]);
+  assert_int_equal(f.nseen, 1);
+  assert_string_equal(f.seen[0].name, "late");
+  assert_int_equal(f.seen[0].state, PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(f.seen[0].pid, 12);
+  assert_int_equal(f.seen[0].seq, 1);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
+ * Name: test_states_ready_who
+ *
+ * Description:
+ *   A program of the table that NxInit's list did not name, found by Who
+ *   before the watch has shown it, is waited for as a program started
+ *   late: the hold begun before it is given up, and config.ready is told
+ *   once it has stayed ready for a whole hold of its own.
+ ****************************************************************************/
+
+static bool half_hold(FAR struct fixture_s *f)
+{
+  return now_ms() - f->mark >= READY_HOLD_MS / 2;
+}
+
+/* Five sixths of a hold since "late" was found: the hold begun before it
+ * would be over
+ */
+
+static bool late_ready_a_while(FAR struct fixture_s *f)
+{
+  FAR struct states_service_s *late = service(f, "late");
+
+  return late != NULL && late->state == PNUT_SERVICE_STATE_STATE_READY &&
+         now_ms() - f->mark >= 5 * READY_HOLD_MS / 6;
+}
+
+static void late_held(FAR struct fixture_s *f)
+{
+  f->rets[2] = f->readies;
+  f->mark    = now_ms();
+  f->until   = told_relisted;
+  f->then    = NULL;
+}
+
+static void program_found(FAR struct fixture_s *f)
+{
+  FAR const char *name;
+
+  f->rets[0] = f->readies;
+  fake_set(&f->fake, "late", "starting", 12, false);
+  f->rets[1] = states_who(&f->states, 12, &name);
+  fake_set(&f->fake, "late", "starting", 12, true);
+  fake_set(&f->fake, "late", "ready", 12, true);
+  f->mark  = now_ms();
+  f->until = late_ready_a_while;
+  f->then  = late_held;
+}
+
+static void hold_begun(FAR struct fixture_s *f)
+{
+  f->mark  = now_ms();
+  f->until = half_hold;
+  f->then  = program_found;
+}
+
+static void test_states_ready_who(void **state)
+{
+  struct fixture_s f;
+
+  fixture_setup(&f, "system states\nlate late\n");
+  f.states.config.ready      = ready_counted;
+  f.states.config.ready_arg  = &f;
+  f.states.config.ready_hold = READY_HOLD_MS;
+
+  fake_set(&f.fake, "system", "ready", 8, false);
+  fake_set(&f.fake, "console", "ready", 7, false);
+
+  f.until = listed;
+  f.then  = hold_begun;
+  fixture_run(&f);
+
+  /* Not told within half a hold of the list, nor within a hold of
+   * "late" coming; then told once
+   */
+
+  assert_int_equal(f.rets[0], 0);
+  assert_int_equal(f.rets[1], OK);
+  assert_int_equal(f.rets[2], 0);
+  assert_int_equal(f.readies, 1);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -1641,6 +1933,8 @@ int main(void)
     cmocka_unit_test(test_states_who_named),
     cmocka_unit_test(test_states_long_name),
     cmocka_unit_test(test_states_origin),
+    cmocka_unit_test(test_states_who_published),
+    cmocka_unit_test(test_states_ready_who),
   };
 
   return cmocka_run_group_tests_name("states", tests, NULL, NULL);
