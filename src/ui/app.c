@@ -778,6 +778,9 @@ void app_gone(FAR struct ui_s *ui)
 {
   FAR struct screen_s *s = app_screen(ui);
 
+  /* A switch to it not drawn yet is not taken on the screen beneath */
+
+  display_unswitch(&ui->display);
   if (s != NULL)
     {
       ui_remove(ui, s);

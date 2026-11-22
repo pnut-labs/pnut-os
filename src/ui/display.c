@@ -338,6 +338,11 @@ void display_switch(FAR struct display_s *d)
   redraw_switch(&d->redraw);
 }
 
+void display_unswitch(FAR struct display_s *d)
+{
+  redraw_unswitch(&d->redraw);
+}
+
 void display_draw_now(FAR struct display_s *d)
 {
   if (redraw_next(&d->redraw) == UINT64_MAX)

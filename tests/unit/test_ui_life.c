@@ -1881,6 +1881,130 @@ static void test_switch_full(void **state)
   assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
 }
 
+/****************************************************************************
+ * Name: test_switch_on_screen
+ *
+ * Description:
+ *   The full refresh is the app's first screen's (the owner: on the app's
+ *   first screen or Home): not a redraw of Menu after its Open, nor the
+ *   UI's Busy; none at all for an app cancelled before it drew, or gone
+ *   before its screen reached the glass.  A warm app brought back takes
+ *   it with the Show that answers Shown.
+ ****************************************************************************/
+
+static void times_long(void)
+{
+  g_times.opening = 5000;
+  g_times.busy    = 5000;
+  g_times.hung    = 9000;
+}
+
+static void cancel_open(void)
+{
+  host_cancel(host_app(&g_ui.host));
+}
+
+static void test_switch_on_screen(void **state)
+{
+  static const struct step_s focus[] =
+  {
+    { 10, menu_two },
+    { 600, mark_fulls },
+    { 620, enter },
+    { 630, connect },
+    { 640, open_app },
+    { 1200, mark_fulls },
+    { 1300, right },                      /* Menu's focus moves */
+    { 1900, mark_fulls },                 /* Menu redrawn: not full */
+    { 2000, show_inbox },
+    { 2600, mark_fulls },                 /* The app's screen: full */
+    { 2700, NULL },
+  };
+
+  static const struct step_s cancelled[] =
+  {
+    { 10, menu_two },
+    { 600, mark_fulls },
+    { 620, enter },
+    { 630, connect },
+    { 640, open_app },
+    { 1200, cancel_open },
+    { 1800, mark_fulls },
+    { 1900, right },
+    { 2500, mark_fulls },                 /* Not full */
+    { 2600, NULL },
+  };
+
+  static const struct step_s busy[] =
+  {
+    { 10, menu_two },
+    { 600, mark_fulls },
+    { 620, enter },
+    { 630, connect },
+    { 640, open_app },
+    { 1300, mark_fulls },                 /* The Busy: not full */
+    { 1400, show_inbox },
+    { 1900, mark_fulls },                 /* The app's screen: full */
+    { 2000, NULL },
+  };
+
+  static const struct step_s gone[] =
+  {
+    { 10, mark_fulls },
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },                   /* In the tile's key window */
+    { 120, crash },                       /* Gone before it was drawn */
+    { 700, mark_fulls },
+    { 800, NULL },
+  };
+
+  static const struct step_s shown[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 700, home_now },
+    { 1300, mark_fulls },
+    { 1400, tile_notes },                 /* Warm: Shown */
+    { 2000, mark_fulls },                 /* Menu drawn: not full */
+    { 2100, show_inbox },
+    { 2700, mark_fulls },                 /* Its Show: full */
+    { 2800, NULL },
+  };
+
+  times_long();
+  g_nmarks = 0;
+  run(focus, 11);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+  assert_int_equal(g_fulls_at[2], g_fulls_at[1]);
+  assert_int_equal(g_fulls_at[3], g_fulls_at[2] + 1);
+
+  g_nmarks = 0;
+  run(cancelled, 10);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+  assert_int_equal(g_fulls_at[2], g_fulls_at[1]);
+
+  g_times.busy = 5000;
+  g_times.opening = T_OPENING;
+  g_nmarks = 0;
+  run(busy, 9);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+  assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
+
+  times_long();
+  g_nmarks = 0;
+  run(gone, 8);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+
+  g_nmarks = 0;
+  run(shown, 11);
+  assert_int_equal(g_fulls_at[1], g_fulls_at[0]);
+  assert_int_equal(g_fulls_at[2], g_fulls_at[1] + 1);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] =
@@ -1931,6 +2055,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_updates_gathered, setup,
                                     teardown),
     cmocka_unit_test_setup_teardown(test_switch_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_switch_on_screen, setup,
+                                    teardown),
   };
 
   return cmocka_run_group_tests_name("ui_life", tests, NULL, NULL);

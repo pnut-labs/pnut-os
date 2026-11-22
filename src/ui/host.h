@@ -89,6 +89,8 @@ struct host_app_s
   bool shell;                     /* Typed in a developer's shell */
   bool connected;                 /* Its Open accepted: its stream open */
   bool drawn;                     /* A screen drawn since its start */
+  bool switching;                 /* Brought to the top: its next screen
+                                   * takes the full refresh */
   uint32_t order;                 /* When it was last open */
   uint32_t start;                 /* Its Start's, which its answer names */
   FAR struct pnut_timer_s *busy;  /* Nothing drawn: the UI's Busy */

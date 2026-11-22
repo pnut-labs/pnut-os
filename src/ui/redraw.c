@@ -100,6 +100,11 @@ void redraw_switch(FAR struct redraw_s *r)
   r->switched = true;
 }
 
+void redraw_unswitch(FAR struct redraw_s *r)
+{
+  r->switched = false;
+}
+
 uint64_t redraw_next(FAR const struct redraw_s *r)
 {
   return r->window || r->pending || r->app ? r->due : UINT64_MAX;
@@ -122,8 +127,8 @@ int redraw_take(FAR struct redraw_s *r, uint64_t now)
   r->pending = false;
   r->app     = false;
   r->quiet   = false;
-  return (r->switched ||
-          (r->partials >= REDRAW_FULL_AFTER && r->screen)) && !r->typing ?
+  return r->screen && !r->typing &&
+         (r->switched || r->partials >= REDRAW_FULL_AFTER) ?
          REDRAW_FULL : REDRAW_PARTIAL;
 }
 

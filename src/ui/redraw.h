@@ -56,9 +56,9 @@ enum redraw_app_e
  * REDRAW_GATHER_MS; keys and changes within it are drawn once at its end.
  * A change no key caused (a topic, the clock) is drawn at once; an app's
  * is gathered, spaced, drawn at once or quietly, as it asks.  A full
- * refresh is due after REDRAW_FULL_AFTER partial ones, and taken at the
- * next change of screen, or at once on switching apps and going Home;
- * never while typing.  Times are in ms.
+ * refresh is due after REDRAW_FULL_AFTER partial ones, and on switching
+ * apps and going Home; it is taken at the next change of screen (the
+ * app's screen, Home), never while typing.  Times are in ms.
  */
 
 struct redraw_s
@@ -70,7 +70,8 @@ struct redraw_s
   bool typing;                    /* A text field has the keys */
   bool app;                       /* An app's change being gathered */
   bool quiet;                     /* An app's change waiting quietly */
-  bool switched;                  /* Apps switched, or Home: a full one */
+  bool switched;                  /* Apps switched, or Home: a full one
+                                   * at the screen's change */
   bool app_drawn;                 /* app_last holds a draw */
   uint64_t app_last;              /* When the app's gathered change was */
   uint8_t partials;               /* Partial refreshes since a full one */
@@ -105,9 +106,12 @@ void redraw_typing(FAR struct redraw_s *r, bool typing);
 void redraw_app(FAR struct redraw_s *r, uint64_t now, int how,
                 uint32_t gather, uint32_t spacing);
 
-/* Apps switched, or Home: the next redraw is a full one */
+/* Apps switched, or Home: the redraw that changes the screen is a full
+ * one; taken back when what was switched to goes before it is drawn
+ */
 
 void redraw_switch(FAR struct redraw_s *r);
+void redraw_unswitch(FAR struct redraw_s *r);
 
 /* When to draw next: UINT64_MAX for nothing to draw */
 

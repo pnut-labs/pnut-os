@@ -113,9 +113,12 @@ void display_app(FAR struct display_s *d, int how, uint32_t gather,
                  uint32_t spacing);
 void display_app_end(FAR struct display_s *d);
 
-/* Apps switched, or Home: the next redraw is a full one */
+/* Apps switched, or Home: the redraw that changes the screen is a full
+ * one (redraw_switch()); taken back
+ */
 
 void display_switch(FAR struct display_s *d);
+void display_unswitch(FAR struct display_s *d);
 
 /* Draw what is pending now, not when the rule says: before the frame is
  * read back (the screen command, tests)

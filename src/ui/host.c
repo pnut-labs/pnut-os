@@ -680,7 +680,7 @@ static void host_bring(FAR struct host_app_s *app)
 
   app->state = HOST_OPEN;
   app->order = ++h->orders;
-  display_switch(&h->ui->display);  /* Switching apps: a full refresh */
+  app->switching = true;          /* Its first screen: a full refresh */
   host_one_warm(h);
 }
 
@@ -1138,6 +1138,12 @@ static void host_show(FAR struct pnut_ui_server_s *server,
   host_draw_end(app);
   if (ret == 0 && !in->sheet)
     {
+      if (app->switching)
+        {
+          display_switch(&h->ui->display);  /* Switching apps */
+          app->switching = false;
+        }
+
       app->drawn = true;
       app->wait  = HOST_WAIT_NONE;  /* Its Busy replaced */
       if (app->busy != NULL)

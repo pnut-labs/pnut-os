@@ -210,7 +210,10 @@ static void test_redraw_app_now_quiet(void **state)
   assert_false(r.quiet);
 }
 
-/* Switching apps and going Home: a full refresh, never while typing */
+/* Switching apps and going Home: a full refresh on the draw that shows
+ * the app's screen or Home, not on one before it; none once the switch is
+ * taken back; never while typing
+ */
 
 static void test_redraw_switch(void **state)
 {
@@ -218,15 +221,30 @@ static void test_redraw_switch(void **state)
 
   redraw_init(&r);
   redraw_switch(&r);
+  redraw_changed(&r, 50);
+  assert_int_equal(redraw_take(&r, 50), REDRAW_PARTIAL);
+  redraw_done(&r, false);
+  redraw_screen(&r);
   redraw_changed(&r, 100);
   assert_int_equal(redraw_take(&r, 100), REDRAW_FULL);
   redraw_done(&r, true);
+  redraw_screen(&r);
   redraw_changed(&r, 200);
   assert_int_equal(redraw_take(&r, 200), REDRAW_PARTIAL);
   redraw_done(&r, false);
 
+  /* The app went before its screen was drawn */
+
+  redraw_switch(&r);
+  redraw_unswitch(&r);
+  redraw_screen(&r);
+  redraw_changed(&r, 250);
+  assert_int_equal(redraw_take(&r, 250), REDRAW_PARTIAL);
+  redraw_done(&r, false);
+
   redraw_typing(&r, true);
   redraw_switch(&r);
+  redraw_screen(&r);
   redraw_changed(&r, 300);
   assert_int_equal(redraw_take(&r, 300), REDRAW_PARTIAL);
 }
