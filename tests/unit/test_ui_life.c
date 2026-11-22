@@ -4395,6 +4395,74 @@ static void test_exiting_full(void **state)
 }
 
 /****************************************************************************
+ * Name: test_mark_guarded
+ *
+ * Description:
+ *   At Stop's deadline only an app's own task, of a name no other slot
+ *   holds alive, is stopped by Service states and marked as still
+ *   exiting: never a shell's program (no service of its name), nor
+ *   another task of an app open (a twin).
+ ****************************************************************************/
+
+static bool g_dev_marked;
+
+/* Notes opens as the second app, Who naming it again after the shell */
+
+static void notes_second(void)
+{
+  g_who = WHO_NAMED;
+  strcpy(g_named, NOTES);
+  app_connect_unstarted(&g_app2);
+}
+
+static void keep_dev_mark(void)
+{
+  keep_dev_state();
+  g_dev_marked = marked(DEV);
+  g_stops_kept = g_stops;
+}
+
+static void test_mark_guarded(void **state)
+{
+  static const struct step_s shell[] =
+  {
+    { 20, connect },
+    { 30, shell_dev },
+    { 60, home_now },                     /* Warm, nothing drawn */
+    { 80, tile_notes },
+    { 90, notes_second },
+    { 100, second_opens },
+    { 140, show_todo },
+    { 160, home_now },                    /* Two warm: the shell's told */
+    { 260 + T_STOP, keep_dev_mark },      /* Its deadline 360 */
+    { 300 + T_STOP, NULL },
+  };
+
+  static const struct step_s twin[] =
+  {
+    { 20, tile_notes },
+    { 30, connect },
+    { 40, open_app },
+    { 80, show_inbox },
+    { 100, second_task },
+    { 110, second_opens },                /* Told: its deadline 310 */
+    { 200 + T_STOP, keep_marks },
+    { 250 + T_STOP, NULL },
+  };
+
+  write_manifest(NOTES, "notes", 2, g_two);      /* An empty screen too */
+  run(shell, 10);
+  assert_int_equal(g_dev_state, HOST_FREE);
+  assert_int_equal(g_stops_kept, 0);
+  assert_false(g_dev_marked);
+
+  run(twin, 8);
+  assert_int_equal(g_app2.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_int_equal(g_stops, 0);
+  assert_false(g_marked[0]);
+}
+
+/****************************************************************************
  * Name: test_get_stale
  *
  * Description:
@@ -4694,6 +4762,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_missed_stopped, setup, teardown),
     cmocka_unit_test_setup_teardown(test_exiting_gone, setup, teardown),
     cmocka_unit_test_setup_teardown(test_exiting_full, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_mark_guarded, setup, teardown),
     cmocka_unit_test_setup_teardown(test_get_stale, setup, teardown),
     cmocka_unit_test_setup_teardown(test_exiting_remarked, setup,
                                     teardown),
