@@ -223,6 +223,63 @@ static void test_repeat(void **state)
   assert_false(keyrepeat_fire(&k, 3000));
 }
 
+/* Home is Alt and Backspace held (RFC 0037), outside a text field: Back
+ * on a short press, sent when the key is let go; Home once held 0.5 s,
+ * once; Backspace alone is unchanged.  In a text field Alt and Backspace
+ * is Delete, repeating, never Home (the owner, 2026-11-22).
+ */
+
+static void test_home_chord(void **state)
+{
+  struct keymap_state_s s;
+  struct keymap_result_s r;
+  struct keyrepeat_s k;
+
+  memset(&s, 0, sizeof(s));
+  memset(&k, 0, sizeof(k));
+
+  keymap_key(&s, KEYMAP_BACKSPACE, true, true, &r);
+  assert_int_equal(r.action, UI_ACT_BACK);
+  assert_int_equal(r.hold, UI_ACT_NONE);
+  assert_true(r.repeats);
+  keymap_key(&s, KEYMAP_BACKSPACE, true, false, &r);
+
+  hold(&s, KEYMAP_ALT, true);
+  keymap_key(&s, KEYMAP_BACKSPACE, true, true, &r);
+  assert_int_equal(r.action, UI_ACT_BACK);
+  assert_int_equal(r.hold, UI_ACT_HOME);
+  assert_false(r.repeats);
+
+  keyrepeat_press(&k, 0, &r);
+  assert_false(keyrepeat_fire(&k, 499));
+  assert_true(keyrepeat_fire(&k, 500));
+  assert_int_equal(k.action, UI_ACT_HOME);
+  assert_false(keyrepeat_fire(&k, 1000));
+  assert_int_equal(keyrepeat_release(&k), UI_ACT_NONE);
+
+  /* Let go before: the short press's action, owed */
+
+  keyrepeat_press(&k, 2000, &r);
+  assert_false(keyrepeat_fire(&k, 2100));
+  assert_int_equal(keyrepeat_release(&k), UI_ACT_BACK);
+  assert_false(keyrepeat_fire(&k, 3000));
+
+  /* In a text field */
+
+  s.typing = true;
+  keymap_key(&s, KEYMAP_BACKSPACE, true, true, &r);
+  assert_int_equal(r.action, UI_ACT_DELETE);
+  assert_int_equal(r.hold, UI_ACT_NONE);
+  assert_true(r.repeats);
+  hold(&s, KEYMAP_ALT, false);
+
+  /* A repeating key owes nothing when let go */
+
+  keymap_key(&s, KEYMAP_BACKSPACE, true, true, &r);
+  keyrepeat_press(&k, 4000, &r);
+  assert_int_equal(keyrepeat_release(&k), UI_ACT_NONE);
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -238,6 +295,7 @@ int main(void)
     cmocka_unit_test(test_find_steers),
     cmocka_unit_test(test_digits),
     cmocka_unit_test(test_repeat),
+    cmocka_unit_test(test_home_chord),
   };
 
   return cmocka_run_group_tests_name("ui_keymap", tests, NULL, NULL);

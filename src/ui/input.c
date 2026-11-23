@@ -242,6 +242,7 @@ void input_key(FAR struct input_s *in, uint32_t code, bool special,
                bool press)
 {
   struct keymap_result_s r;
+  uint8_t owed;
 
   /* Before LVGL's input devices exist (the screen not open yet) keys mean
    * nothing
@@ -255,10 +256,17 @@ void input_key(FAR struct input_s *in, uint32_t code, bool special,
   keymap_key(&in->state, code, special, press, &r);
   if (!press)
     {
+      /* A key with a hold action let go sooner: its short press now */
+
       if (in->repeat.held && code == in->held &&
           special == in->held_special)
         {
+          owed = keyrepeat_release(&in->repeat);
           input_stop_repeat(in);
+          if (owed != UI_ACT_NONE)
+            {
+              input_send(in, owed, 0);
+            }
         }
 
       return;
@@ -275,14 +283,19 @@ void input_key(FAR struct input_s *in, uint32_t code, bool special,
     }
 
   /* Another key ends a repeat; so does one a screen sends from a key's or
-   * a tap's handler, as a real key would
+   * a tap's handler, as a real key would.  A key with a hold action (Home)
+   * sends nothing yet: its hold, or its short press when let go; another
+   * key pressed meanwhile drops both.
    */
 
   keyrepeat_press(&in->repeat, glue_now(), &r);
   in->held         = code;
   in->held_special = special;
   input_arm(in);
-  input_send(in, r.action, r.ch);
+  if (r.hold == UI_ACT_NONE)
+    {
+      input_send(in, r.action, r.ch);
+    }
 }
 
 void input_touch(FAR struct input_s *in, int16_t x, int16_t y, bool down)

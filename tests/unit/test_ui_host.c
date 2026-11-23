@@ -239,8 +239,8 @@ static void test_open_unknown(void **state)
  *
  * Description:
  *   A program typed in the developer's shell opens under the id it gives,
- *   with every template when it has no manifest, with its manifest's when
- *   it has one; an id that is not one is invalid.
+ *   with every template; an id that is not one is invalid, and one that
+ *   names an app with a manifest is refused (the owner, 2026-11-22).
  ****************************************************************************/
 
 static void open_as_demo(void)
@@ -258,6 +258,13 @@ static void show_detail(void)
   show_template(&g_app, 2, PNUT_UI_TEMPLATE_UI_TEMPLATE_DETAIL);
 }
 
+static uint32_t g_open_code;
+
+static void keep_open_code(void)
+{
+  g_open_code = g_app.code;
+}
+
 static void test_open_shell(void **state)
 {
   static const struct step_s good[] =
@@ -273,6 +280,7 @@ static void test_open_shell(void **state)
   {
     { 20, connect_app },
     { 60, open_as_demo },
+    { 150, keep_open_code },
     { 200, show_detail },
     { 400, NULL },
   };
@@ -296,13 +304,13 @@ static void test_open_shell(void **state)
   assert_int_equal(g_app.opened, PNUT_STATUS_INVALID);
   assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_BAD_ID);
 
-  /* With a manifest of its own: the templates it lists, no more */
+  /* An app's id, with its manifest: never a shell's program's */
 
   write_manifest("org.pnut.demo", "notes", 1, g_list);
-  run(limited, 4);
-  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
-  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);
-  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_LISTED);
+  run(limited, 5);
+  assert_int_equal(g_app.opened, PNUT_STATUS_DENIED);
+  assert_int_equal(g_open_code, PNUT_UI_ERROR_CODE_BAD_ID);
+  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);   /* Not open */
 }
 
 /****************************************************************************
@@ -310,7 +318,7 @@ static void test_open_shell(void **state)
  *
  * Description:
  *   Service states does not answer: Open fails unavailable after
- *   HOST_WHO_MS, never accepted unnamed.
+ *   UI_TIME_WHO, never accepted unnamed.
  ****************************************************************************/
 
 static void test_open_no_answer(void **state)
@@ -319,7 +327,7 @@ static void test_open_no_answer(void **state)
   {
     { 20, connect_app },
     { 60, open_app },
-    { 60 + HOST_WHO_MS + 500, NULL },
+    { 60 + UI_TIME_WHO + 500, NULL },
   };
 
   write_manifest(NOTES, "notes", 1, g_list);
@@ -357,11 +365,104 @@ static void test_open_second(void **state)
     { 400, NULL },
   };
 
+  /* A second task of the same app, which the system UI did not start:
+   * answered with Stop
+   */
+
   write_manifest(NOTES, "notes", 1, g_list);
   run(steps, 5);
+  assert_int_equal(g_starts, 1);
+  assert_string_equal(g_started, NOTES);
   assert_int_equal(g_app.opened, PNUT_STATUS_OK);
-  assert_int_equal(g_app2.opened, PNUT_STATUS_BUSY);
-  assert_int_equal(g_app2.code, PNUT_UI_ERROR_CODE_ANOTHER_APP);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app2.nevents, 1);
+  assert_int_equal(g_app2.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+}
+
+/****************************************************************************
+ * Name: test_open_unstarted
+ *
+ * Description:
+ *   An app the system UI did not start (as after the system UI's own
+ *   restart) has its Open answered with Stop, and is never open.
+ ****************************************************************************/
+
+static void connect_unstarted(void)
+{
+  app_connect_unstarted(&g_app);
+}
+
+static void test_open_unstarted(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_unstarted },
+    { 60, open_app },
+    { 200, keep_app },
+    { 400, NULL },
+  };
+
+  write_manifest(NOTES, "notes", 1, g_list);
+  run(steps, 4);
+  assert_int_equal(g_starts, 0);
+  assert_int_equal(g_app.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app.nevents, 1);
+  assert_int_equal(g_app.events[0].which_kind, PNUT_UI_EVENT_STOP_TAG);
+  assert_false(g_open);
+}
+
+/****************************************************************************
+ * Name: test_two_apps
+ *
+ * Description:
+ *   A second app opened: it is open, the first is kept warm, still
+ *   connected, and may not Show; the first's screen is gone.
+ ****************************************************************************/
+
+#define TODO  "org.example.todo"
+
+static void connect_todo(void)
+{
+  strcpy(g_named, TODO);
+  app_connect(&g_app2);
+}
+
+static void open_todo(void)
+{
+  app_open(&g_app2, NULL, 4);
+}
+
+static void show_list_app1(void)
+{
+  show_template(&g_app, 5, PNUT_UI_TEMPLATE_UI_TEMPLATE_LIST);
+}
+
+static void test_two_apps(void **state)
+{
+  static const struct step_s steps[] =
+  {
+    { 20, connect_app },
+    { 60, open_app },
+    { 150, show_list },
+    { 200, connect_todo },
+    { 240, open_todo },
+    { 350, keep_app },
+    { 355, keep_depth },
+    { 360, show_list_app1 },
+    { 500, NULL },
+  };
+
+  write_manifest(NOTES, "notes", 1, g_list);
+  write_manifest(TODO, "reminders", 1, g_list);
+  run(steps, 9);
+  assert_int_equal(g_depth, 1);           /* Notes' screen off: Home */
+  assert_int_equal(g_starts, 2);
+  assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
+  assert_true(g_open);
+  assert_string_equal(g_id, TODO);
+  assert_int_equal(g_app.status, PNUT_STATUS_DENIED);
+  assert_int_equal(g_app.code, PNUT_UI_ERROR_CODE_NOT_OPEN);
+  assert_true(g_app.up);                  /* Warm: still connected */
 }
 
 /****************************************************************************
@@ -556,12 +657,21 @@ static void test_gone(void **state)
  * Name: test_leave
  *
  * Description:
- *   Leave takes the app off; its stream ends; another Open is accepted.
+ *   Leave takes the app off; its stream ends; once its task has exited,
+ *   another Open is accepted.
  ****************************************************************************/
 
 static void leave_app(void)
 {
   app_leave(&g_app);
+  task_exits(NOTES);
+}
+
+/* Notes opened again from Menu, after it left */
+
+static void start_again(void)
+{
+  assert_int_equal(host_start(&g_ui.host, NOTES), 0);
 }
 
 static void test_leave(void **state)
@@ -575,16 +685,18 @@ static void test_leave(void **state)
     { 200, show_list },
     { 300, leave_app },
     { 350, check_depth },
+    { 380, start_again },
     { 400, open_app2 },
     { 600, NULL },
   };
 
   write_manifest(NOTES, "notes", 1, g_list);
-  run(steps, 9);
+  run(steps, 10);
   assert_int_equal(g_app.replies, 2);       /* Show's, then Leave's */
   assert_int_equal(g_app.status, PNUT_STATUS_OK);
   assert_int_equal(g_app.ended, PNUT_STATUS_ENDED);
   assert_int_equal(g_app2.opened, PNUT_STATUS_OK);
+  assert_int_equal(g_app2.events[0].which_kind, PNUT_UI_EVENT_WELCOME_TAG);
   assert_true(g_depth_kept);
 }
 
@@ -601,6 +713,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_open_shell, setup, teardown),
     cmocka_unit_test_setup_teardown(test_open_no_answer, setup, teardown),
     cmocka_unit_test_setup_teardown(test_open_second, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_open_unstarted, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_two_apps, setup, teardown),
     cmocka_unit_test_setup_teardown(test_show_denied, setup, teardown),
     cmocka_unit_test_setup_teardown(test_credit, setup, teardown),
     cmocka_unit_test_setup_teardown(test_gone, setup, teardown),

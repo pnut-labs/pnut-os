@@ -57,21 +57,84 @@ void redraw_typing(FAR struct redraw_s *r, bool typing)
   r->typing = typing;
 }
 
+void redraw_app(FAR struct redraw_s *r, uint64_t now, int how,
+                uint32_t gather, uint32_t spacing)
+{
+  uint64_t due;
+
+  if (r->window || r->pending)
+    {
+      return;                     /* Joins the redraw due */
+    }
+
+  switch (how)
+    {
+      case REDRAW_APP_NOW:
+        r->pending = true;
+        r->due     = now;
+        break;
+
+      case REDRAW_APP_QUIET:
+        r->quiet = true;
+        break;
+
+      default:
+        if (!r->app)
+          {
+            due = now + gather;
+            if (r->app_drawn && r->app_last + spacing > due)
+              {
+                due = r->app_last + spacing;
+              }
+
+            r->app = true;
+            r->due = due;
+          }
+
+        break;
+    }
+}
+
+void redraw_switch(FAR struct redraw_s *r)
+{
+  r->switched = true;
+}
+
+void redraw_unswitch(FAR struct redraw_s *r)
+{
+  r->switched = false;
+}
+
 uint64_t redraw_next(FAR const struct redraw_s *r)
 {
-  return r->window || r->pending ? r->due : UINT64_MAX;
+  return r->window || r->pending || r->app ? r->due : UINT64_MAX;
 }
 
 int redraw_take(FAR struct redraw_s *r, uint64_t now)
 {
-  if (!(r->window || r->pending) || now < r->due)
+  if (!(r->window || r->pending || r->app) || now < r->due)
     {
       return REDRAW_NONE;
     }
 
+  if (r->app)
+    {
+      r->app_last  = now;
+      r->app_drawn = true;
+    }
+
   r->window  = false;
   r->pending = false;
-  return r->partials >= REDRAW_FULL_AFTER && r->screen && !r->typing ?
+  r->app     = false;
+  r->quiet   = false;
+
+  /* The switch's even in a text field, once, before anything is typed
+   * (the owner, 2026-11-22); the ghosting's never while typing
+   */
+
+  return r->screen &&
+         (r->switched ||
+          (!r->typing && r->partials >= REDRAW_FULL_AFTER)) ?
          REDRAW_FULL : REDRAW_PARTIAL;
 }
 
@@ -80,6 +143,7 @@ void redraw_done(FAR struct redraw_s *r, bool full)
   if (full)
     {
       r->partials = 0;
+      r->switched = false;
     }
   else if (r->partials < UINT8_MAX)
     {

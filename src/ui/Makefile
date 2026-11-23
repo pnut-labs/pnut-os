@@ -20,7 +20,7 @@ CSRCS    += list.c setting.c wifilist.c
 CSRCS    += app.c applist.c host.c manifest.c
 CSRCS    += tpl_busy.c tpl_detail.c tpl_empty.c tpl_list.c
 CSRCS    += scr_cell.c scr_home.c scr_join.c scr_menu.c scr_settings.c
-CSRCS    += scr_pin.c scr_unavailable.c
+CSRCS    += scr_opening.c scr_pin.c scr_unavailable.c
 CSRCS    += scr_wifi.c
 
 # The interfaces' code, and the fonts and icons, which the top-level

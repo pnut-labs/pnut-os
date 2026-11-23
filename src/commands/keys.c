@@ -14,7 +14,8 @@
  *   keys [-d <device>] <key>...
  *
  * A key: one character (w, q, 1...); enter, bs, space, find, f1, f2, f3;
- * a chord, alt+<key>, shift+<key> or find+<key>; or "text <word>", which
+ * a chord, alt+<key>, shift+<key> or find+<key>; either held 0.6 s with
+ * hold+ before it (hold+alt+bs: Home, RFC 0037); or "text <word>", which
  * types the word's characters.  The default device is /dev/kbd0.
  */
 
@@ -40,6 +41,7 @@
 
 #define KEYS_DEVICE  "/dev/kbd0"
 #define KEYS_PAUSE   20000        /* Between keys, in us */
+#define KEYS_HOLD    600000       /* A key held, in us */
 
 /****************************************************************************
  * Private Data
@@ -116,15 +118,26 @@ static int keys_write(int fd, FAR const struct keyboard_event_s *ev, int n)
   return 0;
 }
 
-/* A key or a chord, pressed and released */
+/* A key or a chord, pressed and released; held KEYS_HOLD first after
+ * hold+
+ */
 
 static int keys_press(int fd, FAR const char *arg)
 {
   struct keyboard_event_s ev[4];
-  FAR const char *plus = strchr(arg, '+');
+  FAR const char *plus;
   uint32_t mod = 0;
+  bool hold = false;
+  int ret;
   int n = 0;
 
+  if (strncmp(arg, "hold+", 5) == 0 && arg[5] != '\0')
+    {
+      hold = true;
+      arg += 5;
+    }
+
+  plus = strchr(arg, '+');
   if (plus != NULL && plus != arg && plus[1] != '\0')
     {
       if (strncmp(arg, "alt+", 4) == 0)
@@ -148,7 +161,24 @@ static int keys_press(int fd, FAR const char *arg)
       keys_add(ev, &n, KEYBOARD_SPECPRESS, mod);
     }
 
-  if (keys_one(arg, ev, &n, false) < 0 || keys_one(arg, ev, &n, true) < 0)
+  if (keys_one(arg, ev, &n, false) < 0)
+    {
+      return -EINVAL;
+    }
+
+  if (hold)
+    {
+      ret = keys_write(fd, ev, n);
+      if (ret < 0)
+        {
+          return ret;
+        }
+
+      usleep(KEYS_HOLD);
+      n = 0;
+    }
+
+  if (keys_one(arg, ev, &n, true) < 0)
     {
       return -EINVAL;
     }
@@ -199,7 +229,8 @@ int main(int argc, FAR char *argv[])
     {
       fprintf(stderr, "usage: keys [-d <device>] <key>...\n"
               "  a character; enter bs space find f1 f2 f3;\n"
-              "  alt+<key> shift+<key> find+<key>; text <word>\n");
+              "  alt+<key> shift+<key> find+<key>; hold+<either>;\n"
+              "  text <word>\n");
       return EXIT_FAILURE;
     }
 

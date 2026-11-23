@@ -82,6 +82,15 @@
 #define UI_T_OPTIONS          N_("Options")
 #define UI_T_MENU             N_("Menu")
 #define UI_T_CANCEL           N_("Cancel")
+#define UI_T_OPENING          N_("Opening %s\xe2\x80\xa6")
+#define UI_T_WAITING          N_("Waiting for %s\xe2\x80\xa6")
+#define UI_T_HUNG             N_("%s isn\xe2\x80\x99t responding")
+#define UI_T_HUNG_TEXT        N_("Wait for it, or close it.")
+#define UI_T_WAIT             N_("Wait")
+#define UI_T_CLOSE            N_("Close")
+#define UI_T_STOPPED          N_("%s stopped working")
+#define UI_T_TRY_AGAIN_Q      N_("Try again?")
+#define UI_T_TRY_AGAIN        N_("Try again")
 
 /* The options' heading; an app's Confirm's (Cat-Confirm) */
 

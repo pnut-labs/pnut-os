@@ -15,9 +15,9 @@
 // event about a screen names it, so that the app can drop one about a
 // screen it has left.
 //
-// Catalogue level 1, step 1 of RFC 0037's order of the work: List,
-// Detail, Confirm, Empty and Busy.  Later steps add methods (Text, Read,
-// Resume, Intent) and templates under new numbers.
+// Catalogue level 1: List, Detail, Confirm, Empty and Busy (RFC 0037's
+// step 1), and the life cycle's Shown and Resume (step 2).  Later steps
+// add methods (Text, Read, Intent) and templates under new numbers.
 
 syntax = "proto3";
 
@@ -63,6 +63,15 @@ service Ui {
   // name): its screen and its sheet go
   rpc Leave (UiLeaveRequest) returns (UiReply) {
     option (pnut.method) = 5;
+  }
+
+  // The app's resume token, given whenever its place changes (which
+  // screen, which item, a draft's id): kept in memory until the app gives
+  // another, leaves of itself or crashes, and given back in each Welcome
+  // when it is started again; an empty one forgets it.  From any app
+  // connected.
+  rpc Resume (UiResumeRequest) returns (UiReply) {
+    option (pnut.method) = 6;
   }
 }
 
@@ -110,6 +119,7 @@ message UiEvent {
     UiInput input = 2;
     UiPageNeeded page = 3;
     UiStop stop = 4;
+    UiShown shown = 5;
   }
 }
 
@@ -123,6 +133,8 @@ message UiWelcome {
   enum Reason {
     NONE = 0;
     OPENED = 1;                   // The owner opened the app
+    RESUMED = 2;                  // ... again, after it was stopped
+                                  // behind: token is its last Resume's
   }
 
   uint32 level = 1;               // The system UI's catalogue level
@@ -138,6 +150,7 @@ message UiWelcome {
   bool clock24 = 7;
 
   Reason reason = 8;
+  bytes token = 9 [(nanopb).max_size = 512];
 }
 
 // What the owner did on a screen or a sheet
@@ -168,6 +181,11 @@ message UiPageNeeded {
 
 // Save and exit
 message UiStop {
+}
+
+// The app is on top again, from warm: it answers with Show of its current
+// screen
+message UiShown {
 }
 
 // A row of a list (Cat-Rows): its lead, an icon of the system's set by
@@ -278,6 +296,12 @@ message UiShowRequest {
     UiEmpty empty = 11;
     UiBusy busy = 12;
   }
+
+  // On e-paper (RFC 0037), a Show nobody's key caused is gathered for 1 s
+  // and the app's screen drawn at most every 2 s: now draws it at once,
+  // quiet with the next redraw anything causes
+  bool now = 13;
+  bool quiet = 14;
 }
 
 // The primary action's label, or whether it is off
@@ -295,6 +319,10 @@ message UiUpdateRequest {
     UiMiddle middle = 4;
     UiBusy busy = 5;              // A Busy's: all of it, replaced
   }
+
+  // As a Show's (e-paper)
+  bool now = 6;
+  bool quiet = 7;
 }
 
 message UiRowsRequest {
@@ -304,4 +332,9 @@ message UiRowsRequest {
 }
 
 message UiLeaveRequest {
+}
+
+// An app's resume token: opaque to the system UI
+message UiResumeRequest {
+  bytes token = 1 [(nanopb).max_size = 512];
 }

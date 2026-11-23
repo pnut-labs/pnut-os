@@ -11,6 +11,8 @@
  *   W S A D      up, down, left, right; repeat when held
  *   Q, E         back, the primary action
  *   Backspace    back; while typing, deletes (never back)
+ *   Alt Bksp     held, Home (RFC 0037); let go sooner, back; while
+ *                typing, deletes as Backspace alone does
  *   Enter        the primary action; while typing, confirms the field
  *   Alt Enter    the options, while typing too
  *   Space        the next page; with Shift, the previous one
@@ -97,7 +99,18 @@ static void keymap_special(FAR struct keymap_state_s *s, uint32_t code,
         break;
 
       case KEYMAP_BACKSPACE:
-        keymap_set(out, s->typing ? UI_ACT_DELETE : UI_ACT_BACK, true);
+
+        /* With Alt held, Home (always the system's) outside a text field;
+         * in one, Delete as ever
+         */
+
+        keymap_set(out, s->typing ? UI_ACT_DELETE : UI_ACT_BACK,
+                   s->typing || !s->alt);
+        if (s->alt && !s->typing)
+          {
+            out->hold = UI_ACT_HOME;
+          }
+
         break;
     }
 }
@@ -223,15 +236,22 @@ uint32_t keymap_digit(FAR const char *layout, uint32_t ch)
 void keyrepeat_press(FAR struct keyrepeat_s *k, uint64_t now,
                      FAR const struct keymap_result_s *r)
 {
-  k->held   = r->repeats;
+  k->held   = r->repeats || r->hold != UI_ACT_NONE;
   k->action = r->action;
   k->ch     = r->ch;
+  k->hold   = r->hold;
+  k->owed   = r->hold != UI_ACT_NONE ? r->action : UI_ACT_NONE;
   k->due    = now + KEYMAP_DELAY_MS;
 }
 
-void keyrepeat_release(FAR struct keyrepeat_s *k)
+uint8_t keyrepeat_release(FAR struct keyrepeat_s *k)
 {
+  uint8_t owed = k->held ? k->owed : UI_ACT_NONE;
+
   k->held = false;
+  k->hold = UI_ACT_NONE;
+  k->owed = UI_ACT_NONE;
+  return owed;
 }
 
 bool keyrepeat_fire(FAR struct keyrepeat_s *k, uint64_t now)
@@ -239,6 +259,18 @@ bool keyrepeat_fire(FAR struct keyrepeat_s *k, uint64_t now)
   if (!k->held || now < k->due)
     {
       return false;
+    }
+
+  /* Held long enough: its hold action, once */
+
+  if (k->hold != UI_ACT_NONE)
+    {
+      k->action = k->hold;
+      k->ch     = 0;
+      k->held   = false;
+      k->hold   = UI_ACT_NONE;
+      k->owed   = UI_ACT_NONE;
+      return true;
     }
 
   /* Late (the loop was busy): no burst to catch up */

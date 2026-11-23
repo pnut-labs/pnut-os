@@ -181,19 +181,39 @@ static void ui_options_tapped(FAR lv_event_t *e)
                     lv_event_get_user_data(e));
 }
 
-static void ui_options_close(FAR struct ui_s *ui)
+/* The options off: after LVGL is done with the key or tap that may be
+ * going through them, or at once (now) for an app's request, so that what
+ * they leave is drawn as the request asks
+ */
+
+static void ui_options_end(FAR struct ui_s *ui, bool now)
 {
   FAR struct ui_options_s *o = &ui->options;
 
   if (o->box != NULL)
     {
-      lv_obj_delete_async(o->catcher);
-      lv_obj_delete_async(o->shadow);
-      lv_obj_delete_async(o->box);
+      if (now)
+        {
+          lv_obj_delete(o->catcher);
+          lv_obj_delete(o->shadow);
+          lv_obj_delete(o->box);
+        }
+      else
+        {
+          lv_obj_delete_async(o->catcher);
+          lv_obj_delete_async(o->shadow);
+          lv_obj_delete_async(o->box);
+        }
+
       o->box     = NULL;
       o->shadow  = NULL;
       o->catcher = NULL;
     }
+}
+
+static void ui_options_close(FAR struct ui_s *ui)
+{
+  ui_options_end(ui, false);
 }
 
 static void ui_options_focus(FAR struct ui_options_s *o, uint8_t focus)
@@ -280,6 +300,13 @@ static void ui_key_event(FAR lv_event_t *e)
 
   if (s != ui_top(s->ui))
     {
+      return;
+    }
+
+  if (action == UI_ACT_HOME)
+    {
+      ui_home(s->ui);             /* Never the screen's, nor the app's */
+      ui_place(s->ui);
       return;
     }
 
@@ -747,10 +774,28 @@ static void ui_stop(FAR struct pnut_module_s *module,
  * Public Functions
  ****************************************************************************/
 
+void ui_times_default(FAR struct ui_times_s *t)
+{
+  t->who     = UI_TIME_WHO;
+  t->opening = UI_TIME_OPENING;
+  t->open    = UI_TIME_OPEN;
+  t->busy    = UI_TIME_BUSY;
+  t->hung    = UI_TIME_HUNG;
+  t->stall   = UI_TIME_STALL;
+  t->stop    = UI_TIME_STOP;
+  t->gather  = UI_TIME_GATHER;
+  t->spacing = UI_TIME_SPACING;
+}
+
 void ui_init(FAR struct ui_s *ui, FAR const struct ui_config_s *config)
 {
   memset(ui, 0, sizeof(*ui));
   ui->config       = *config;
+  if (ui->config.times.who == 0)
+    {
+      ui_times_default(&ui->config.times);
+    }
+
   ui->fd           = -1;
   ui->module.name  = "ui";
   ui->module.start = ui_start;
@@ -789,6 +834,32 @@ int ui_push(FAR struct ui_s *ui, FAR const struct screen_class_s *cls,
     }
 
   return 0;
+}
+
+void ui_home(FAR struct ui_s *ui)
+{
+  if (ui_top(ui) != NULL && ui_top(ui)->cls == &g_scr_pin)
+    {
+      return;
+    }
+
+  ui_options_close(ui);
+  host_home(&ui->host);
+  if (ui->depth > 1)
+    {
+      display_switch(&ui->display);  /* Home: a full refresh */
+    }
+
+  /* The screens beneath the top go undrawn, then the top: Home is loaded
+   * once
+   */
+
+  while (ui->depth > 2)
+    {
+      ui_remove(ui, ui->stack[1]);
+    }
+
+  ui_pop(ui);
 }
 
 void ui_pop(FAR struct ui_s *ui)
@@ -948,7 +1019,7 @@ void ui_options_shut(FAR struct ui_s *ui, FAR struct screen_s *s)
 {
   if (ui->options.box != NULL && ui->options.screen == s)
     {
-      ui_options_close(ui);
+      ui_options_end(ui, true);
     }
 }
 

@@ -24,6 +24,7 @@
 #include <pnut/log.h>
 
 #include "app.h"
+#include "apps.h"
 #include "apptpl.h"
 #include "blocks.h"
 #include "describe.h"
@@ -249,10 +250,12 @@ static void app_sheet_keys(FAR struct screen_s *s)
 }
 
 /* The sheet off, the screen's softkeys back.  Its objects go after LVGL
- * is done with the tap that may have closed it.
+ * is done with the key or tap that may have closed it; at once (now) for
+ * an app's request, so that what they leave is drawn as the request asks,
+ * not by their deletion later, as a change nobody's key caused.
  */
 
-static void app_sheet_close(FAR struct screen_s *s)
+static void app_sheet_close(FAR struct screen_s *s, bool now)
 {
   FAR struct app_scr_s *st = app_state(s);
   FAR struct app_sheet_s *sh = &st->sheet;
@@ -262,9 +265,19 @@ static void app_sheet_close(FAR struct screen_s *s)
       return;
     }
 
-  lv_obj_delete_async(sh->keys);
-  lv_obj_delete_async(sh->box);
-  lv_obj_delete_async(sh->shadow);
+  if (now)
+    {
+      lv_obj_delete(sh->keys);
+      lv_obj_delete(sh->box);
+      lv_obj_delete(sh->shadow);
+    }
+  else
+    {
+      lv_obj_delete_async(sh->keys);
+      lv_obj_delete_async(sh->box);
+      lv_obj_delete_async(sh->shadow);
+    }
+
   memset(sh, 0, sizeof(*sh));
   if (st->keys != NULL)
     {
@@ -299,7 +312,7 @@ static void app_sheet_open(FAR struct screen_s *s,
   FAR const pnut_ui_confirm_t *c = &in->content.confirm;
   FAR lv_obj_t *label;
 
-  app_sheet_close(s);
+  app_sheet_close(s, true);      /* A request: one sheet replaces another */
   ui_options_shut(s->ui, s);
 
   sh->screen = in->screen;
@@ -376,7 +389,7 @@ static void app_sheet_key(FAR struct screen_s *s, uint8_t action)
 
   if (confirm || (cancel && (!sh->busy || sh->cancel)))
     {
-      app_sheet_close(s);
+      app_sheet_close(s, false);
       app_input_on(s, screen, confirm ? PNUT_UI_INPUT_ACTION_CONFIRMED :
                                         PNUT_UI_INPUT_ACTION_CANCELLED,
                    0, 0);
@@ -624,11 +637,17 @@ int app_show(FAR struct ui_s *ui, FAR const pnut_ui_show_request_t *in)
       return -EINVAL;
     }
 
-  /* The first screen goes on top; beneath the SIM PIN, which is the
-   * system's (RFC 0037, layer 5)
+  /* The first screen goes on top, or in place of the UI's Busy while
+   * the app opened; beneath the SIM PIN, which is the system's (RFC 0037,
+   * layer 5)
    */
 
   s = app_screen(ui);
+  if (s == NULL)
+    {
+      s = app_opening_screen(ui, host_app(&ui->host));
+    }
+
   if (s != NULL)
     {
       ret = ui_replace(ui, s, &g_scr_app, in);
@@ -727,19 +746,54 @@ int app_rows(FAR struct ui_s *ui, FAR const pnut_ui_rows_request_t *in)
   FAR struct screen_s *s = app_screen(ui);
 
   if (s != NULL && app_state(s)->screen == in->screen &&
-      app_state(s)->tpl != NULL && app_state(s)->tpl->rows != NULL)
+      app_state(s)->tpl != NULL && app_state(s)->tpl->rows != NULL &&
+      app_state(s)->tpl->rows(s, in) == 0)
     {
-      app_state(s)->tpl->rows(s, in);
       ui_place(ui);
+      return 1;
     }
 
-  return 0;                       /* Not the screen's: dropped */
+  return 0;                       /* Not the screen's, or not asked */
+}
+
+void app_launch(FAR struct ui_s *ui, FAR const struct ui_app_s *a)
+{
+  int ret;
+
+  if (a->settings)
+    {
+      ui_push(ui, &g_scr_settings, a);
+    }
+  else if (a->id == NULL)
+    {
+      ui_push(ui, &g_scr_unavailable, a);
+    }
+  else
+    {
+      /* With no room, or while the app's old task exits, it waits to
+       * start, its Busy up; with no manifest, the app is not there;
+       * disabled, the owner is asked to try again
+       */
+
+      ret = host_start(&ui->host, a->id);
+      if (ret == -ENOENT || ret == -EINVAL)
+        {
+          ui_push(ui, &g_scr_unavailable, a);
+        }
+      else if (ret == -EACCES)
+        {
+          ui_push(ui, &g_scr_stopped, a);
+        }
+    }
 }
 
 void app_gone(FAR struct ui_s *ui)
 {
   FAR struct screen_s *s = app_screen(ui);
 
+  /* A switch to it not drawn yet is not taken on the screen beneath */
+
+  display_unswitch(&ui->display);
   if (s != NULL)
     {
       ui_remove(ui, s);

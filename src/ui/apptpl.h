@@ -123,7 +123,8 @@ struct app_scr_s
 /* A template: whether a Show of it holds together, nothing drawn; its
  * content drawn between the header and the softkeys; its keys and taps
  * (true: taken); its share of an Update (a row; 0, or -EINVAL) and of
- * Rows; what it lets go of
+ * Rows (0 when taken; -EINVAL, dropped, when not the rows asked); what it
+ * lets go of
  */
 
 struct app_tpl_s
@@ -135,8 +136,8 @@ struct app_tpl_s
   CODE void (*event)(FAR struct screen_s *s, uint16_t id);
   CODE int (*update)(FAR struct screen_s *s,
                      FAR const pnut_ui_update_request_t *in);
-  CODE void (*rows)(FAR struct screen_s *s,
-                    FAR const pnut_ui_rows_request_t *in);
+  CODE int (*rows)(FAR struct screen_s *s,
+                   FAR const pnut_ui_rows_request_t *in);
   CODE void (*leave)(FAR struct screen_s *s);
   FAR const char *middle;         /* The primary action's own label */
 };
