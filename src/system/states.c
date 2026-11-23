@@ -243,11 +243,15 @@ static void states_known(FAR struct states_s *states, pid_t pid)
 }
 
 /****************************************************************************
- * Name: states_publish
+ * Name: states_announce
+ *
+ * Description:
+ *   Publish a service's state and task on the services topic.
+ *
  ****************************************************************************/
 
-static void states_publish(FAR struct states_s *states,
-                           FAR const struct states_service_s *service)
+static void states_announce(FAR struct states_s *states,
+                            FAR const char *name, uint8_t state, pid_t pid)
 {
   pnut_service_change_t msg;
   int ret;
@@ -258,9 +262,9 @@ static void states_publish(FAR struct states_s *states,
     }
 
   memset(&msg, 0, sizeof(msg));
-  strlcpy(msg.name, service->name, sizeof(msg.name));
-  msg.state = service->state;
-  msg.pid   = service->pid;
+  strlcpy(msg.name, name, sizeof(msg.name));
+  msg.state = state;
+  msg.pid   = pid;
   msg.seq   = ++states->seq;
 
   ret = pnut_service_change_publish(states->changes, &msg);
@@ -269,6 +273,20 @@ static void states_publish(FAR struct states_s *states,
       pnut_log(&states->module, PNUT_LOG_WARNING,
                "Cannot announce a change: %d", ret);
     }
+}
+
+/****************************************************************************
+ * Name: states_publish
+ *
+ * Description:
+ *   Publish a service as the table has it.
+ *
+ ****************************************************************************/
+
+static void states_publish(FAR struct states_s *states,
+                           FAR const struct states_service_s *service)
+{
+  states_announce(states, service->name, service->state, service->pid);
 }
 
 /****************************************************************************
@@ -482,7 +500,13 @@ static void states_ready_check(FAR struct states_s *states)
  *
  * Description:
  *   A line "<service> <state> <pid>" of NxInit's, as a list's line or an
- *   event's: changes are published once a whole list has come.
+ *   event's: changes are published once a whole list has come.  A change
+ *   Who's lookup made and held is published with the line, though the
+ *   line is the same; one that differs is published as itself, after
+ *   what Who found when that is early and the line has another task, or
+ *   none.  Either way the service is held no more, but for a start held
+ *   on a whole watch, which a line with another task, or none, leaves as
+ *   it is: that line is older, and is published as it is.
  *
  ****************************************************************************/
 
@@ -494,6 +518,8 @@ static void states_update(FAR struct states_s *states, FAR char *line)
   FAR char *end;
   long pid;
   int state;
+  bool early;
+  bool held;
 
   words[0] = strtok_r(line, " ", &save);
   words[1] = words[0] != NULL ? strtok_r(NULL, " ", &save) : NULL;
@@ -530,8 +556,41 @@ static void states_update(FAR struct states_s *states, FAR char *line)
 
   service->seen = true;
   states_known(states, (pid_t)pid);
+
+  /* A start Who found and holds, on a whole watch, is kept past a line
+   * with another task, or none (the owner's answer L39).  NxInit tells
+   * its watchers of a new task before it answers "who" about it: until
+   * its line about the start comes, such a line is older than the start.
+   * It is published as it is, and the table keeps the start, still held,
+   * for NxInit's line about it, or for the new list should the watch be
+   * lost (states_close).  A list, which NxInit may have taken after the
+   * start was found, and the lines after a lost watch may be newer: the
+   * start is not kept past those.
+   */
+
+  if (service->held && states->current &&
+      service->state == PNUT_SERVICE_STATE_STATE_STARTING &&
+      service->pid != (pid_t)pid)
+    {
+      states_announce(states, service->name, (uint8_t)state, (pid_t)pid);
+      return;
+    }
+
+  held           = service->held;
+  early          = service->early;
+  service->held  = false;
+  service->early = false;
   if (service->state != state || service->pid != (pid_t)pid)
     {
+      /* The line is newer than what Who found early, and would leave its
+       * task out
+       */
+
+      if (early && service->pid != (pid_t)pid)
+        {
+          states_publish(states, service);
+        }
+
       service->state = state;
       service->pid   = (pid_t)pid;
       if (states->listed)
@@ -542,6 +601,10 @@ static void states_update(FAR struct states_s *states, FAR char *line)
       states_halt_check(states);
       states_ready_check(states);
     }
+  else if (held && states->listed)
+    {
+      states_publish(states, service);
+    }
 }
 
 /****************************************************************************
@@ -549,7 +612,8 @@ static void states_update(FAR struct states_s *states, FAR char *line)
  *
  * Description:
  *   A whole list has come: a service it did not name has gone from NxInit
- *   (a oneshot that ended), and counts as stopped.
+ *   (a oneshot that ended), and counts as stopped, after what Who found
+ *   for it early; what Who found is held no more.
  *
  ****************************************************************************/
 
@@ -562,9 +626,20 @@ static void states_listed(FAR struct states_s *states)
   for (i = 0; i < states->nservices; i++)
     {
       service = &states->services[i];
-      if (!service->seen &&
-          (service->state != PNUT_SERVICE_STATE_STATE_STOPPED ||
-           service->pid != 0))
+      if (service->seen)
+        {
+          continue;
+        }
+
+      if (service->early)
+        {
+          states_publish(states, service);
+        }
+
+      service->held  = false;
+      service->early = false;
+      if (service->state != PNUT_SERVICE_STATE_STATE_STOPPED ||
+          service->pid != 0)
         {
           service->state = PNUT_SERVICE_STATE_STATE_STOPPED;
           service->pid   = 0;
@@ -642,7 +717,22 @@ static void states_answer(FAR struct states_s *states,
 
 static void states_close(FAR struct states_s *states)
 {
+  FAR struct states_service_s *service;
   FAR struct states_command_s *command;
+  uint8_t i;
+
+  /* A start Who found on a whole watch, and holds, is early: older than
+   * any line to come.  A whole watch came after the first list, so an
+   * early start is one to publish.  A new task held with the state the
+   * watch showed (ready, stopping) is no start.
+   */
+
+  for (i = 0; states->current && i < states->nservices; i++)
+    {
+      service        = &states->services[i];
+      service->early = service->held &&
+                       service->state == PNUT_SERVICE_STATE_STATE_STARTING;
+    }
 
   /* The states are old until a list comes again */
 
@@ -1536,6 +1626,7 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
 {
   FAR struct states_service_s *service;
   char name[STATES_NAME_MAX + 1];
+  uint8_t state;
   uint8_t i;
   int ret;
 
@@ -1606,8 +1697,8 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
       return -EAGAIN;
     }
 
-  /* The watch's event about it comes later, and publishes it.  With no
-   * room left in the table the name is kept aside, for this answer.
+  /* With no room left in the table the name is kept aside, for this
+   * answer.
    */
 
   service = states_insert(states, name);
@@ -1618,11 +1709,30 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
       return OK;
     }
 
-  service->pid = pid;
-  if (service->state == PNUT_SERVICE_STATE_STATE_STOPPED ||
-      service->state == PNUT_SERVICE_STATE_STATE_RESTARTING)
+  /* The task changes the service in the table at once, as the watch's
+   * line about it would; the change is held, and published with NxInit's
+   * next line about the service, so that it does not go ahead of older
+   * lines still unread.  On a whole watch a start waits past those for
+   * the line with its task (states_update).  It is not early: a list
+   * being read may be older (states_close).  A program not ready yet
+   * holds config.ready back.  A halt waits for no fewer programs: none
+   * has stopped.
+   */
+
+  state = service->state;
+  if (state == PNUT_SERVICE_STATE_STATE_STOPPED ||
+      state == PNUT_SERVICE_STATE_STATE_RESTARTING)
     {
-      service->state = PNUT_SERVICE_STATE_STATE_STARTING;
+      state = PNUT_SERVICE_STATE_STATE_STARTING;
+    }
+
+  if (service->state != state || service->pid != pid)
+    {
+      service->state = state;
+      service->pid   = pid;
+      service->held  = true;
+      service->early = false;
+      states_ready_check(states);
     }
 
   *namep = service->name;

@@ -120,6 +120,22 @@ struct states_service_s
   char name[STATES_NAME_MAX + 1];
   uint8_t state;                  /* pnut_service_state_state_t */
   bool seen;                      /* In the list being read */
+
+  /* Changed by Who, not yet published: NxInit's next line about the
+   * service publishes it, though that line is the same.  A start held on
+   * a whole watch waits for the line with its task: one with another
+   * task, or none, is older
+   */
+
+  bool held;
+
+  /* A start held when a whole watch was lost: NxInit's lines from then on
+   * are newer than what Who found, which is published before one that
+   * has the service stopped, restarting or with another task, and before
+   * a whole list that does not name it
+   */
+
+  bool early;
   pid_t pid;                      /* 0 when not running */
 };
 
