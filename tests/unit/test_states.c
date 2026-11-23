@@ -2844,8 +2844,8 @@ static void test_states_who_unwatched(void **state)
  *   first (L37): the topic has NxInit's lines in NxInit's order.
  *   NxInit's own line about the start, with its task, publishes it once
  *   and ends the hold, as before; a line after it moves the table.  A new
- *   task held with the state the watch showed, ready (L43), is no start:
- *   an older line ends its hold as before.
+ *   task held with the state the watch showed, ready or stopping (L43),
+ *   is no start: an older line ends its hold as before.
  ****************************************************************************/
 
 /* Lines to the module's watch, as NxInit's; read after the step */
@@ -3065,6 +3065,22 @@ static void test_states_who_older(void **state)
   seen_is(&f, 1, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 2);
   assert_int_equal(f.nseen, 2);
   assert_int_equal(f.rets[1], PNUT_SERVICE_STATE_STATE_READY);
+  assert_int_equal(f.rets[2], 12);
+  assert_int_equal(f.rets[3], PNUT_SERVICE_STATE_STATE_STOPPED);
+  assert_int_equal(f.rets[4], 0);
+  assert_false(f.fake.broken);
+  fixture_teardown(&f);
+
+  /* Task 11 stopping: task 12 is held stopping, no start either (L43),
+   * and the older line ends the hold: the table takes it, and the new
+   * list's line, the same, publishes nothing more
+   */
+
+  older_run(&f, "stopping", 11, "event late stopped 0\n", relist_held);
+  seen_is(&f, 0, "late", PNUT_SERVICE_STATE_STATE_STOPPED, 0, 1);
+  seen_is(&f, 1, "mark", PNUT_SERVICE_STATE_STATE_READY, 50, 2);
+  assert_int_equal(f.nseen, 2);
+  assert_int_equal(f.rets[1], PNUT_SERVICE_STATE_STATE_STOPPING);
   assert_int_equal(f.rets[2], 12);
   assert_int_equal(f.rets[3], PNUT_SERVICE_STATE_STATE_STOPPED);
   assert_int_equal(f.rets[4], 0);
