@@ -122,7 +122,9 @@ struct states_service_s
   bool seen;                      /* In the list being read */
 
   /* Changed by Who, not yet published: NxInit's next line about the
-   * service publishes it, though that line is the same
+   * service publishes it, though that line is the same.  A start held on
+   * a whole watch waits for the line with its task: one with another
+   * task, or none, is older
    */
 
   bool held;

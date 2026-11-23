@@ -243,11 +243,15 @@ static void states_known(FAR struct states_s *states, pid_t pid)
 }
 
 /****************************************************************************
- * Name: states_publish
+ * Name: states_announce
+ *
+ * Description:
+ *   Publish a service's state and task on the services topic.
+ *
  ****************************************************************************/
 
-static void states_publish(FAR struct states_s *states,
-                           FAR const struct states_service_s *service)
+static void states_announce(FAR struct states_s *states,
+                            FAR const char *name, uint8_t state, pid_t pid)
 {
   pnut_service_change_t msg;
   int ret;
@@ -258,9 +262,9 @@ static void states_publish(FAR struct states_s *states,
     }
 
   memset(&msg, 0, sizeof(msg));
-  strlcpy(msg.name, service->name, sizeof(msg.name));
-  msg.state = service->state;
-  msg.pid   = service->pid;
+  strlcpy(msg.name, name, sizeof(msg.name));
+  msg.state = state;
+  msg.pid   = pid;
   msg.seq   = ++states->seq;
 
   ret = pnut_service_change_publish(states->changes, &msg);
@@ -269,6 +273,20 @@ static void states_publish(FAR struct states_s *states,
       pnut_log(&states->module, PNUT_LOG_WARNING,
                "Cannot announce a change: %d", ret);
     }
+}
+
+/****************************************************************************
+ * Name: states_publish
+ *
+ * Description:
+ *   Publish a service as the table has it.
+ *
+ ****************************************************************************/
+
+static void states_publish(FAR struct states_s *states,
+                           FAR const struct states_service_s *service)
+{
+  states_announce(states, service->name, service->state, service->pid);
 }
 
 /****************************************************************************
@@ -486,7 +504,9 @@ static void states_ready_check(FAR struct states_s *states)
  *   Who's lookup made and held is published with the line, though the
  *   line is the same; one that differs is published as itself, after
  *   what Who found when that is early and the line has another task, or
- *   none.  Either way the service is held no more.
+ *   none.  Either way the service is held no more, but for a start held
+ *   on a whole watch, which a line with another task, or none, leaves as
+ *   it is: that line is older, and is published as it is.
  *
  ****************************************************************************/
 
@@ -534,12 +554,32 @@ static void states_update(FAR struct states_s *states, FAR char *line)
       return;
     }
 
-  service->seen  = true;
+  service->seen = true;
+  states_known(states, (pid_t)pid);
+
+  /* A start Who found and holds, on a whole watch, is kept past a line
+   * with another task, or none (the owner's answer L39).  NxInit tells
+   * its watchers of a new task before it answers "who" about it: until
+   * its line about the start comes, such a line is older than the start.
+   * It is published as it is, and the table keeps the start, still held,
+   * for NxInit's line about it, or for the new list should the watch be
+   * lost (states_close).  A list, which NxInit may have taken after the
+   * start was found, and the lines after a lost watch may be newer: the
+   * start is not kept past those.
+   */
+
+  if (service->held && states->current &&
+      service->state == PNUT_SERVICE_STATE_STATE_STARTING &&
+      service->pid != (pid_t)pid)
+    {
+      states_announce(states, service->name, (uint8_t)state, (pid_t)pid);
+      return;
+    }
+
   held           = service->held;
   early          = service->early;
   service->held  = false;
   service->early = false;
-  states_known(states, (pid_t)pid);
   if (service->state != state || service->pid != (pid_t)pid)
     {
       /* The line is newer than what Who found early, and would leave its
@@ -1672,10 +1712,11 @@ static int states_lookup(FAR struct states_s *states, pid_t pid,
   /* The task changes the service in the table at once, as the watch's
    * line about it would; the change is held, and published with NxInit's
    * next line about the service, so that it does not go ahead of older
-   * lines still unread (states_update).  It is not early: a list being
-   * read may be older (states_close).  A program not ready yet holds
-   * config.ready back.  A halt waits for no fewer programs: none has
-   * stopped.
+   * lines still unread.  On a whole watch a start waits past those for
+   * the line with its task (states_update).  It is not early: a list
+   * being read may be older (states_close).  A program not ready yet
+   * holds config.ready back.  A halt waits for no fewer programs: none
+   * has stopped.
    */
 
   state = service->state;
